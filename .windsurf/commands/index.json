@@ -1,0 +1,22 @@
+{
+  "opsx": {
+    "new": {
+      "command": "/opsx:new",
+      "skill": "openspec-new-change",
+      "description": "Start a new change using the experimental artifact workflow",
+      "file": "opsx/new.md"
+    },
+    "continue": {
+      "command": "/opsx:continue", 
+      "skill": "openspec-continue-change",
+      "description": "Continue working on a change - create the next artifact",
+      "file": "opsx/continue.md"
+    },
+    "apply": {
+      "command": "/opsx:apply",
+      "skill": "openspec-apply-change", 
+      "description": "Implement tasks from an OpenSpec change",
+      "file": "opsx/apply.md"
+    }
+  }
+}
