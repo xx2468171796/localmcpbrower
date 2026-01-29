@@ -2,6 +2,49 @@
 
 基于 Streamable HTTP 的数据库操作 MCP 服务，支持 PostgreSQL 和 MySQL。
 
+## 快速配置（一键连接）
+
+### 第一步：复制配置文件
+
+```bash
+copy .env.example .env
+```
+
+### 第二步：编辑 `.env` 文件，填写数据库信息
+
+```ini
+# 数据库类型 (postgresql 或 mysql)
+DB_TYPE=postgresql
+
+# 数据库主机地址
+DB_HOST=localhost
+
+# 数据库端口 (PostgreSQL默认5432, MySQL默认3306)
+DB_PORT=5432
+
+# 数据库名称
+DB_NAME=mydb
+
+# 数据库用户名
+DB_USER=postgres
+
+# 数据库密码
+DB_PASSWORD=your_password_here
+
+# 是否启用SSL连接 (true/false)
+DB_SSL=false
+```
+
+### 第三步：启动服务
+
+```bash
+npm start
+```
+
+服务启动后会**自动连接**到配置的数据库！
+
+---
+
 ## 功能
 
 | 工具 | 说明 |
