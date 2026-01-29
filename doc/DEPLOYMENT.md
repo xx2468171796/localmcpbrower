@@ -55,10 +55,27 @@ cd D:\MCPliulanqi
 npm install
 ```
 
-### 第五步：安装浏览器
+### 第五步：安装 Chromium 浏览器内核
+
+**重要：** MCP 需要 Playwright Chromium 浏览器才能运行！
 
 ```powershell
 npx playwright install chromium
+```
+
+**如果下载慢或失败，使用国内镜像：**
+```powershell
+# 设置镜像源
+$env:PLAYWRIGHT_DOWNLOAD_HOST="https://npmmirror.com/mirrors/playwright"
+
+# 重新安装
+npx playwright install chromium
+```
+
+**验证安装：**
+```powershell
+npx playwright --version
+# 应显示类似 Version 1.x.x
 ```
 
 ### 第六步：构建项目

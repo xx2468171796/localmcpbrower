@@ -49,13 +49,22 @@ if errorlevel 1 (
 )
 echo [OK] 依赖已安装
 
-:: 安装 Playwright 浏览器
-echo [4/4] 安装 Playwright 浏览器...
+:: 安装 Playwright Chromium 浏览器内核
+echo [4/5] 安装 Playwright Chromium 浏览器内核...
+echo [提示] 这会下载约 150MB 的 Chromium 浏览器
+echo [提示] 如果下载慢，可设置镜像: set PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright
 npx playwright install chromium
 if errorlevel 1 (
-    echo [警告] Playwright 浏览器安装失败，请手动执行: npx playwright install chromium
+    echo.
+    echo [警告] Chromium 浏览器安装失败！
+    echo [解决] 方法1: 手动执行 npx playwright install chromium
+    echo [解决] 方法2: 使用镜像下载:
+    echo         set PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright
+    echo         npx playwright install chromium
+    echo.
+    pause
 )
-echo [OK] Playwright 已安装
+echo [OK] Chromium 浏览器已安装
 
 :: 创建配置文件
 if not exist .env (
