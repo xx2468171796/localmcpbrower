@@ -44,12 +44,11 @@ cls
 echo Starting service...
 call pm2 start ecosystem.config.cjs
 echo.
-echo MCP Config:
+echo MCP Config (Streamable HTTP):
 echo {
 echo   "mcpServers": {
 echo     "stable-browser": {
-echo       "type": "sse",
-echo       "url": "http://localhost:%PORT%/sse"
+echo       "serverUrl": "http://localhost:%PORT%/mcp"
 echo     }
 echo   }
 echo }
@@ -120,14 +119,13 @@ for /f "tokens=2 delims=:" %%a in ('ipconfig ^| findstr /c:"IPv4"') do (
 )
 echo.
 echo [Local Config]
-echo   http://localhost:%PORT%/sse
+echo   http://localhost:%PORT%/mcp
 echo.
 echo [Remote Config - use your IP]
 echo {
 echo   "mcpServers": {
 echo     "stable-browser": {
-echo       "type": "sse",
-echo       "url": "http://YOUR_IP:%PORT%/sse"
+echo       "serverUrl": "http://YOUR_IP:%PORT%/mcp"
 echo     }
 echo   }
 echo }
@@ -155,9 +153,9 @@ curl.exe -s http://localhost:%PORT%/health
 echo.
 echo.
 echo ----------------------------------------
-echo Recent SSE Connections (last 10 lines):
+echo Recent MCP Connections (last 10 lines):
 echo ----------------------------------------
-call pm2 logs windsurf-mcp-bridge --lines 10 --nostream 2>nul | findstr /i "SSE"
+call pm2 logs windsurf-mcp-bridge --lines 10 --nostream 2>nul | findstr /i "MCP"
 echo.
 echo ----------------------------------------
 echo If browserAlive=true, service is ready.
