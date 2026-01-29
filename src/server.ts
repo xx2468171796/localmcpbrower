@@ -333,135 +333,65 @@ function createApp(): express.Application {
 </html>`);
   });
 
-  // ========== Streamable HTTP 传输 (MCP现代标准) ==========
-  interface ConnectionInfo {
-    sessionId: string;
-    connectedAt: number;
-    lastActivity: number;
-    messageCount: number;
-    clientIp: string;
-  }
-  const transports: Record<string, StreamableHTTPServerTransport> = {};
-  const connections: Record<string, ConnectionInfo> = {};
+  // ========== Streamable HTTP 传输 (无状态模式 - 官方推荐) ==========
+  // 创建全局的transport和server实例
+  const mcpTransport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined  // undefined = 无状态服务器
+  });
+  const mcpServer = createMcpServer();
+  
+  // 请求计数
+  let requestCount = 0;
 
   // 连接状态端点
   app.get('/connections', async (_req: Request, res: Response) => {
-    const list = Object.values(connections).map(conn => ({
-      ID: conn.sessionId.substring(0, 8),
-      IP: conn.clientIp,
-      msg: conn.messageCount,
-      time: Math.floor((Date.now() - conn.connectedAt) / 1000) + 's'
-    }));
-    
-    res.json({ count: list.length, list });
+    res.json({ 
+      mode: 'stateless',
+      requestCount,
+      uptime: Math.floor((Date.now() - startTime) / 1000) + 's'
+    });
   });
 
-  // Streamable HTTP 端点 - 单端点处理所有MCP请求
-  app.all('/mcp', async (req: Request, res: Response) => {
+  // Streamable HTTP 端点 - 无状态模式
+  app.post('/mcp', async (req: Request, res: Response) => {
     const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    requestCount++;
+    console.log(`[MCP] POST请求 #${requestCount}, IP: ${clientIp}`);
     
-    // 处理 GET 请求 - 用于服务端推送通知
-    if (req.method === 'GET') {
-      console.log(`[MCP] GET请求(通知流), IP: ${clientIp}`);
-      
-      const sessionId = req.headers['mcp-session-id'] as string;
-      if (!sessionId) {
-        res.status(400).json({ error: 'Missing mcp-session-id header' });
-        return;
-      }
-      
-      const existingTransport = transports[sessionId];
-      if (existingTransport) {
-        res.setHeader('Content-Type', 'text/event-stream');
-        res.setHeader('Cache-Control', 'no-cache');
-        res.setHeader('Connection', 'keep-alive');
-        res.setHeader('mcp-session-id', sessionId);
-        await existingTransport.handleRequest(req, res);
-      } else {
-        res.status(404).json({ error: 'Session not found. Send POST first to initialize.' });
-      }
-      return;
-    }
-    
-    // 处理 POST 请求 - 主要的请求/响应
-    if (req.method === 'POST') {
-      let sessionId = req.headers['mcp-session-id'] as string;
-      
-      // 新会话或会话不存在
-      if (!sessionId || !transports[sessionId]) {
-        sessionId = sessionId || randomUUID();
-        console.log(`[MCP] 新会话, sessionId: ${sessionId.substring(0, 8)}..., IP: ${clientIp}`);
-        
-        const transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => sessionId,
-          onsessioninitialized: (sid) => {
-            console.log(`[MCP] 会话初始化完成: ${sid.substring(0, 8)}...`);
-          }
+    try {
+      await mcpTransport.handleRequest(req, res, req.body);
+    } catch (error) {
+      console.error('[MCP] 请求处理错误:', error);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: '2.0',
+          error: { code: -32603, message: 'Internal server error' },
+          id: null
         });
-        
-        transports[sessionId] = transport;
-        connections[sessionId] = {
-          sessionId,
-          connectedAt: Date.now(),
-          lastActivity: Date.now(),
-          messageCount: 0,
-          clientIp
-        };
-        
-        // 连接MCP服务器
-        const server = createMcpServer();
-        await server.connect(transport);
-        
-        // 清理回调
-        transport.onclose = () => {
-          console.log(`[MCP] 会话关闭: ${sessionId.substring(0, 8)}...`);
-          delete transports[sessionId];
-          delete connections[sessionId];
-        };
       }
-      
-      // 更新活动时间
-      const connInfo = connections[sessionId];
-      if (connInfo) {
-        connInfo.lastActivity = Date.now();
-        connInfo.messageCount++;
-      }
-      
-      // 处理请求
-      const transport = transports[sessionId];
-      if (!transport) {
-        res.status(500).json({ error: 'Transport initialization failed' });
-        return;
-      }
-      res.setHeader('mcp-session-id', sessionId);
-      
-      try {
-        await transport.handleRequest(req, res);
-      } catch (error) {
-        console.error('[MCP] 请求处理错误:', error);
-        if (!res.headersSent) {
-          res.status(500).json({ error: 'Request handling failed' });
-        }
-      }
-      return;
     }
-    
-    // 处理 DELETE 请求 - 关闭会话
-    if (req.method === 'DELETE') {
-      const sessionId = req.headers['mcp-session-id'] as string;
-      if (sessionId && transports[sessionId]) {
-        console.log(`[MCP] 删除会话: ${sessionId.substring(0, 8)}...`);
-        await transports[sessionId].close();
-        delete transports[sessionId];
-        delete connections[sessionId];
-        res.status(200).json({ message: 'Session closed' });
-      } else {
-        res.status(404).json({ error: 'Session not found' });
-      }
-      return;
-    }
-    
-    res.status(405).json({ error: 'Method not allowed. Use GET, POST or DELETE.' });
+  });
+
+  // GET/DELETE 方法不支持（无状态模式）
+  app.get('/mcp', async (_req: Request, res: Response) => {
+    res.status(405).json({
+      jsonrpc: '2.0',
+      error: { code: -32000, message: 'Method not allowed. Use POST.' },
+      id: null
+    });
+  });
+
+  app.delete('/mcp', async (_req: Request, res: Response) => {
+    res.status(405).json({
+      jsonrpc: '2.0',
+      error: { code: -32000, message: 'Method not allowed. Use POST.' },
+      id: null
+    });
+  });
+
+  // 连接MCP服务器到transport（只需执行一次）
+  mcpServer.connect(mcpTransport).catch(err => {
+    console.error('[MCP] 连接失败:', err);
   });
 
   return app;
