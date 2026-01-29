@@ -12,8 +12,8 @@ import type { ConsoleLogEntry, NetworkRequestEntry, BrowserConfig } from './type
 const DEFAULT_CONFIG: BrowserConfig = {
   headless: process.env['HEADLESS'] === 'true',
   userDataDir: process.env['USER_DATA_DIR'] ?? 'storage/user_data',
-  viewportWidth: parseInt(process.env['VIEWPORT_WIDTH'] ?? '1280', 10),
-  viewportHeight: parseInt(process.env['VIEWPORT_HEIGHT'] ?? '720', 10),
+  viewportWidth: parseInt(process.env['VIEWPORT_WIDTH'] ?? '1920', 10),
+  viewportHeight: parseInt(process.env['VIEWPORT_HEIGHT'] ?? '1080', 10),
   devtools: process.env['DEVTOOLS'] === 'true',
   slowMo: parseInt(process.env['SLOW_MO'] ?? '0', 10)
 };

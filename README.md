@@ -12,7 +12,13 @@
 
 ## 快速开始
 
-### 1. 安装依赖
+### 方式一：一键安装（推荐）
+
+**Windows 用户** - 双击 `install.bat`
+
+自动完成：Node.js检查 → PM2安装 → 依赖安装 → Playwright安装 → 项目构建
+
+### 方式二：手动安装
 
 ```bash
 npm install
