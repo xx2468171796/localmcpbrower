@@ -8,7 +8,7 @@ module.exports = {
     restart_delay: 500,
     env: {
       NODE_ENV: 'production',
-      PORT: 3210,
+      PORT: 3211,
       HEADLESS: 'false',
       DEVTOOLS: 'true'
     }

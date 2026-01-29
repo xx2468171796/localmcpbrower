@@ -15,11 +15,25 @@ import {
   ClickSchema,
   TypeSchema,
   ScreenshotSchema,
-  ExecuteJsSchema
+  ExecuteJsSchema,
+  ScrollSchema,
+  WaitForSelectorSchema,
+  GetElementTextSchema,
+  GetElementAttributeSchema,
+  HoverSchema,
+  SelectOptionSchema,
+  FillFormSchema,
+  GetPageContentSchema,
+  PdfExportSchema,
+  GetCookiesSchema,
+  SetCookiesSchema,
+  PageReportSchema
 } from './schemas.js';
 
 const PORT = parseInt(process.env['PORT'] ?? '3000', 10);
-const HEARTBEAT_INTERVAL = parseInt(process.env['HEARTBEAT_INTERVAL'] ?? '30000', 10);
+const HEARTBEAT_INTERVAL = 10000; // 10秒心跳，比NAT超时短
+const CONNECTION_TIMEOUT = 0; // 禁用超时
+const MAX_RETRIES = 3; // 消息处理重试次数
 
 /** 服务启动时间 */
 const startTime = Date.now();
@@ -73,6 +87,90 @@ function createMcpServer(): McpServer {
     return { content: [{ type: 'text', text: JSON.stringify(result) }] };
   });
 
+  // 注册 scroll 工具
+  server.tool('scroll', '页面滚动到指定位置或元素', ScrollSchema.shape, async (args) => {
+    const result = await tools.scroll(args);
+    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+  });
+
+  // 注册 go_back 工具
+  server.tool('go_back', '浏览器后退', {}, async () => {
+    const result = await tools.goBack();
+    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+  });
+
+  // 注册 go_forward 工具
+  server.tool('go_forward', '浏览器前进', {}, async () => {
+    const result = await tools.goForward();
+    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+  });
+
+  // 注册 hover 工具
+  server.tool('hover', '鼠标悬停在元素上', HoverSchema.shape, async (args) => {
+    const result = await tools.hover(args);
+    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+  });
+
+  // 注册 wait_for_selector 工具
+  server.tool('wait_for_selector', '等待元素出现/消失/可见/隐藏', WaitForSelectorSchema.shape, async (args) => {
+    const result = await tools.waitForSelector(args);
+    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+  });
+
+  // 注册 get_element_text 工具
+  server.tool('get_element_text', '获取元素的文本内容', GetElementTextSchema.shape, async (args) => {
+    const result = await tools.getElementText(args);
+    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+  });
+
+  // 注册 get_element_attribute 工具
+  server.tool('get_element_attribute', '获取元素的属性值', GetElementAttributeSchema.shape, async (args) => {
+    const result = await tools.getElementAttribute(args);
+    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+  });
+
+  // 注册 select_option 工具
+  server.tool('select_option', '选择下拉框选项', SelectOptionSchema.shape, async (args) => {
+    const result = await tools.selectOption(args);
+    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+  });
+
+  // 注册 fill_form 工具
+  server.tool('fill_form', '批量填充表单字段', FillFormSchema.shape, async (args) => {
+    const result = await tools.fillForm(args);
+    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+  });
+
+  // 注册 get_page_content 工具
+  server.tool('get_page_content', '获取页面HTML或纯文本内容', GetPageContentSchema.shape, async (args) => {
+    const result = await tools.getPageContent(args);
+    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+  });
+
+  // 注册 pdf_export 工具
+  server.tool('pdf_export', '导出页面为PDF文件', PdfExportSchema.shape, async (args) => {
+    const result = await tools.pdfExport(args);
+    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+  });
+
+  // 注册 get_cookies 工具
+  server.tool('get_cookies', '获取页面Cookie', GetCookiesSchema.shape, async (args) => {
+    const result = await tools.getCookies(args);
+    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+  });
+
+  // 注册 set_cookies 工具
+  server.tool('set_cookies', '设置Cookie', SetCookiesSchema.shape, async (args) => {
+    const result = await tools.setCookies(args);
+    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+  });
+
+  // 注册 generate_page_report 工具
+  server.tool('generate_page_report', '生成页面分析报告(链接/表单/图片统计)', PageReportSchema.shape, async (args) => {
+    const result = await tools.generatePageReport(args);
+    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+  });
+
   return server;
 }
 
@@ -101,39 +199,274 @@ function createApp(): express.Application {
     res.json(result);
   });
 
-  // SSE 端点 - MCP 连接
-  const mcpServer = createMcpServer();
-  let currentTransport: SSEServerTransport | null = null;
+  // 存储最新报告
+  let latestReport: unknown = null;
 
-  app.get('/sse', async (req: Request, res: Response) => {
-    console.log('[SSE] 新客户端连接');
-
-    // 创建 SSE Transport
-    const transport = new SSEServerTransport('/messages', res);
-    currentTransport = transport;
-
-    // 连接 MCP 服务器
-    await mcpServer.connect(transport);
-
-    // 客户端断开连接
-    req.on('close', () => {
-      console.log('[SSE] 客户端断开连接');
-      currentTransport = null;
-    });
+  // 报告数据API
+  app.get('/report/data', async (_req: Request, res: Response) => {
+    res.json(latestReport || { error: 'No report generated yet' });
   });
 
-  // 消息接收端点 - 处理来自客户端的 MCP 消息
+  // 更新报告数据
+  app.post('/report/update', express.json(), async (req: Request, res: Response) => {
+    latestReport = req.body;
+    res.json({ success: true });
+  });
+
+  // 报告页面
+  app.get('/report', async (_req: Request, res: Response) => {
+    res.send(`<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MCP Page Report</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    h1 { color: #58a6ff; margin-bottom: 20px; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; margin-bottom: 16px; }
+    .card h2 { color: #8b949e; font-size: 14px; text-transform: uppercase; margin-bottom: 12px; }
+    .stat { display: inline-block; margin-right: 24px; margin-bottom: 8px; }
+    .stat-value { font-size: 32px; font-weight: bold; color: #58a6ff; }
+    .stat-label { font-size: 12px; color: #8b949e; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+    .issue { padding: 12px; background: #1c2128; border-radius: 6px; margin-bottom: 8px; border-left: 3px solid #f85149; }
+    .issue.warning { border-left-color: #d29922; }
+    .issue.info { border-left-color: #58a6ff; }
+    .refresh-btn { background: #238636; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-size: 14px; }
+    .refresh-btn:hover { background: #2ea043; }
+    .no-data { text-align: center; padding: 60px; color: #8b949e; }
+    .url { color: #58a6ff; word-break: break-all; }
+    .time { color: #8b949e; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>📊 MCP Page Report</h1>
+    <button class="refresh-btn" onclick="loadReport()">🔄 Refresh Report</button>
+    <div id="content" class="no-data">Loading...</div>
+  </div>
+  <script>
+    async function loadReport() {
+      try {
+        const res = await fetch('/report/data');
+        const data = await res.json();
+        if (data.error) {
+          document.getElementById('content').innerHTML = '<div class="no-data">No report yet. Use generate_page_report tool first.</div>';
+          return;
+        }
+        renderReport(data);
+      } catch (e) {
+        document.getElementById('content').innerHTML = '<div class="no-data">Error loading report</div>';
+      }
+    }
+    
+    function renderReport(r) {
+      const d = r.data || r;
+      let issues = [];
+      
+      // 检查问题
+      if (d.images && d.images.withoutAlt > 0) {
+        issues.push({ type: 'warning', text: d.images.withoutAlt + ' images missing alt attribute (accessibility issue)' });
+      }
+      if (d.links && d.links.external > d.links.internal) {
+        issues.push({ type: 'info', text: 'More external links (' + d.links.external + ') than internal (' + d.links.internal + ')' });
+      }
+      if (d.stats && d.stats.scripts > 30) {
+        issues.push({ type: 'warning', text: 'High script count (' + d.stats.scripts + ') may affect performance' });
+      }
+      
+      let html = '<div class="card"><h2>Page Info</h2>';
+      html += '<p class="url">' + (d.url || 'N/A') + '</p>';
+      html += '<p><strong>' + (d.title || 'No title') + '</strong></p>';
+      html += '<p class="time">' + (d.timestamp || '') + '</p></div>';
+      
+      html += '<div class="grid">';
+      
+      if (d.stats) {
+        html += '<div class="card"><h2>📦 Elements</h2>';
+        html += '<div class="stat"><div class="stat-value">' + d.stats.elements + '</div><div class="stat-label">Total Elements</div></div>';
+        html += '<div class="stat"><div class="stat-value">' + d.stats.scripts + '</div><div class="stat-label">Scripts</div></div>';
+        html += '<div class="stat"><div class="stat-value">' + d.stats.styles + '</div><div class="stat-label">Styles</div></div></div>';
+      }
+      
+      if (d.links) {
+        html += '<div class="card"><h2>🔗 Links</h2>';
+        html += '<div class="stat"><div class="stat-value">' + d.links.total + '</div><div class="stat-label">Total</div></div>';
+        html += '<div class="stat"><div class="stat-value">' + d.links.internal + '</div><div class="stat-label">Internal</div></div>';
+        html += '<div class="stat"><div class="stat-value">' + d.links.external + '</div><div class="stat-label">External</div></div></div>';
+      }
+      
+      if (d.forms) {
+        html += '<div class="card"><h2>📝 Forms</h2>';
+        html += '<div class="stat"><div class="stat-value">' + d.forms.total + '</div><div class="stat-label">Forms</div></div>';
+        html += '<div class="stat"><div class="stat-value">' + d.forms.inputs + '</div><div class="stat-label">Inputs</div></div>';
+        html += '<div class="stat"><div class="stat-value">' + d.forms.buttons + '</div><div class="stat-label">Buttons</div></div></div>';
+      }
+      
+      if (d.images) {
+        html += '<div class="card"><h2>🖼️ Images</h2>';
+        html += '<div class="stat"><div class="stat-value">' + d.images.total + '</div><div class="stat-label">Total</div></div>';
+        html += '<div class="stat"><div class="stat-value">' + d.images.withAlt + '</div><div class="stat-label">With Alt</div></div>';
+        html += '<div class="stat"><div class="stat-value" style="color:#f85149">' + d.images.withoutAlt + '</div><div class="stat-label">Missing Alt</div></div></div>';
+      }
+      
+      html += '</div>';
+      
+      if (issues.length > 0) {
+        html += '<div class="card"><h2>⚠️ Issues Found (' + issues.length + ')</h2>';
+        issues.forEach(i => {
+          html += '<div class="issue ' + i.type + '">' + i.text + '</div>';
+        });
+        html += '</div>';
+      }
+      
+      document.getElementById('content').innerHTML = html;
+    }
+    
+    loadReport();
+    setInterval(loadReport, 5000);
+  </script>
+</body>
+</html>`);
+  });
+
+  // 连接信息存储
+  interface ConnectionInfo {
+    sessionId: string;
+    connectedAt: number;
+    lastActivity: number;
+    messageCount: number;
+    clientIp: string;
+  }
+  const transports: Record<string, SSEServerTransport> = {};
+  const connections: Record<string, ConnectionInfo> = {};
+
+  // 连接状态端点
+  app.get('/connections', async (_req: Request, res: Response) => {
+    const list = Object.values(connections).map(conn => ({
+      ID: conn.sessionId.substring(0, 8),
+      IP: conn.clientIp,
+      msg: conn.messageCount,
+      time: Math.floor((Date.now() - conn.connectedAt) / 1000) + 's'
+    }));
+    
+    res.json({ count: list.length, list });
+  });
+
+  // SSE连接端点 - 增强稳定性
+  app.get('/sse', async (req: Request, res: Response) => {
+    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    console.log(`[SSE] 新客户端连接, IP: ${clientIp}`);
+    
+    // 设置SSE响应头，禁用缓冲
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no'); // Nginx禁用缓冲
+    
+    // 禁用Node.js socket超时
+    req.socket.setKeepAlive(true, 30000);
+    req.socket.setTimeout(0);
+    
+    const transport = new SSEServerTransport('/messages', res);
+    const sessionId = transport.sessionId;
+    
+    console.log(`[SSE] 创建transport, sessionId: ${sessionId}`);
+    transports[sessionId] = transport;
+    connections[sessionId] = {
+      sessionId,
+      connectedAt: Date.now(),
+      lastActivity: Date.now(),
+      messageCount: 0,
+      clientIp
+    };
+    
+    console.log(`[SSE] 当前连接数: ${Object.keys(connections).length}`);
+    
+    // 心跳机制 - 每10秒发送一次，比NAT超时(30-60s)短
+    const heartbeat = setInterval(() => {
+      try {
+        if (!res.writableEnded && res.writable) {
+          res.write(': heartbeat\n\n');
+          if (connections[sessionId]) {
+            connections[sessionId].lastActivity = Date.now();
+          }
+        } else {
+          clearInterval(heartbeat);
+        }
+      } catch {
+        clearInterval(heartbeat);
+      }
+    }, HEARTBEAT_INTERVAL);
+    
+    res.on('close', () => {
+      clearInterval(heartbeat);
+      console.log(`[SSE] 客户端断开, sessionId: ${sessionId.substring(0, 8)}..., IP: ${clientIp}`);
+      delete transports[sessionId];
+      delete connections[sessionId];
+      console.log(`[SSE] 剩余连接数: ${Object.keys(connections).length}`);
+    });
+    
+    res.on('error', (err) => {
+      clearInterval(heartbeat);
+      console.error(`[SSE] 连接错误, sessionId: ${sessionId.substring(0, 8)}...:`, err.message);
+      delete transports[sessionId];
+      delete connections[sessionId];
+    });
+    
+    const server = createMcpServer();
+    await server.connect(transport);
+  });
+
+  // 消息接收端点 - 增强健壮性
   app.post('/messages', async (req: Request, res: Response) => {
-    if (!currentTransport) {
-      res.status(503).json({ error: 'No active SSE connection' });
+    const sessionId = req.query.sessionId as string;
+    
+    if (!sessionId) {
+      res.status(400).json({ error: 'Missing sessionId parameter' });
       return;
     }
     
-    try {
-      await currentTransport.handlePostMessage(req, res);
-    } catch (error) {
-      console.error('[SSE] 消息处理错误:', error);
-      res.status(500).json({ error: 'Message handling failed' });
+    // 更新连接活动信息
+    if (connections[sessionId]) {
+      connections[sessionId].lastActivity = Date.now();
+      connections[sessionId].messageCount++;
+    }
+    
+    const transport = transports[sessionId];
+    
+    if (!transport) {
+      const activeCount = Object.keys(transports).length;
+      console.error(`[SSE] 找不到transport, sessionId: ${sessionId.substring(0, 8)}...`);
+      console.error(`[SSE] 当前活跃连接数: ${activeCount}`);
+      // 提供更有用的错误信息
+      res.status(400).json({ 
+        error: 'No transport found for sessionId',
+        hint: 'SSE connection may have been closed. Please refresh MCP connection.',
+        activeConnections: activeCount
+      });
+      return;
+    }
+    
+    // 带重试的消息处理
+    let lastError: Error | null = null;
+    for (let i = 0; i < MAX_RETRIES; i++) {
+      try {
+        await transport.handlePostMessage(req, res, req.body);
+        return; // 成功则直接返回
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        if (i < MAX_RETRIES - 1) {
+          await new Promise(r => setTimeout(r, 100 * (i + 1))); // 递增延迟
+        }
+      }
+    }
+    
+    console.error('[SSE] 消息处理失败(重试后):', lastError?.message);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Message handling failed after retries' });
     }
   });
 
@@ -163,12 +496,14 @@ async function main(): Promise<void> {
   await getBrowserManager().getContext();
   console.log('[Server] 浏览器已就绪');
 
-  // 启动 HTTP 服务
+  // 启动 HTTP 服务 - 监听所有接口以支持远程连接
   const app = createApp();
-  app.listen(PORT, () => {
-    console.log(`[Server] MCP Bridge 已启动: http://localhost:${PORT}`);
-    console.log(`[Server] SSE 端点: http://localhost:${PORT}/sse`);
-    console.log(`[Server] 健康检查: http://localhost:${PORT}/health`);
+  const HOST = process.env['HOST'] ?? '0.0.0.0';
+  app.listen(PORT, HOST, () => {
+    console.log(`[Server] MCP Bridge 已启动: http://${HOST}:${PORT}`);
+    console.log(`[Server] SSE 端点: http://${HOST}:${PORT}/sse`);
+    console.log(`[Server] 健康检查: http://${HOST}:${PORT}/health`);
+    console.log(`[Server] 报告页面: http://${HOST}:${PORT}/report`);
   });
 }
 
