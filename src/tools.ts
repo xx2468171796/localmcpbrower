@@ -85,19 +85,10 @@ export async function click(input: unknown): Promise<ToolResult<ClickResult>> {
     const { selector } = parsed.data;
     const page = await getBrowserManager().getPage();
     
-    // 重试机制
-    let lastError: Error | null = null;
-    for (let i = 0; i < 3; i++) {
-      try {
-        await page.waitForSelector(selector, { timeout: 10000, state: 'visible' });
-        await page.click(selector, { timeout: 10000 });
-        return { success: true, data: { selector, clicked: true } };
-      } catch (e) {
-        lastError = e instanceof Error ? e : new Error(String(e));
-        await new Promise(r => setTimeout(r, 300));
-      }
-    }
-    return { success: false, error: lastError?.message ?? '点击失败' };
+    // 快速点击，减少等待
+    await page.waitForSelector(selector, { timeout: 3000, state: 'visible' });
+    await page.click(selector, { timeout: 3000 });
+    return { success: true, data: { selector, clicked: true } };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
@@ -114,19 +105,10 @@ export async function type(input: unknown): Promise<ToolResult<TypeResult>> {
     const { selector, text } = parsed.data;
     const page = await getBrowserManager().getPage();
     
-    // 重试机制
-    let lastError: Error | null = null;
-    for (let i = 0; i < 3; i++) {
-      try {
-        await page.waitForSelector(selector, { timeout: 10000, state: 'visible' });
-        await page.fill(selector, text, { timeout: 10000 });
-        return { success: true, data: { selector, typed: true } };
-      } catch (e) {
-        lastError = e instanceof Error ? e : new Error(String(e));
-        await new Promise(r => setTimeout(r, 300));
-      }
-    }
-    return { success: false, error: lastError?.message ?? '输入失败' };
+    // 快速输入，减少等待
+    await page.waitForSelector(selector, { timeout: 3000, state: 'visible' });
+    await page.fill(selector, text, { timeout: 3000 });
+    return { success: true, data: { selector, typed: true } };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
@@ -147,13 +129,13 @@ export async function takeScreenshot(input: unknown): Promise<ToolResult<Screens
     const fileName = name ?? `screenshot-${Date.now()}`;
     const filePath = path.join(screenshotDir, `${fileName}.png`);
 
-    // 增加超时时间，禁用动画加快截图速度
+    // 快速截图
     await page.screenshot({
       path: filePath,
       fullPage,
-      timeout: 30000,
+      timeout: 5000,
       animations: 'disabled',
-      scale: 'css'  // 使用CSS像素减小文件大小
+      scale: 'css'
     });
 
     return {
@@ -236,22 +218,13 @@ export async function scroll(input: unknown): Promise<ToolResult<{ scrolled: boo
     const { x, y, selector } = parsed.data;
     const page = await getBrowserManager().getPage();
 
-    // 重试机制
-    let lastError: Error | null = null;
-    for (let i = 0; i < 3; i++) {
-      try {
-        if (selector) {
-          await page.locator(selector).scrollIntoViewIfNeeded({ timeout: 15000 });
-        } else {
-          await page.evaluate(`window.scrollTo(${x ?? 0}, ${y ?? 0})`);
-        }
-        return { success: true, data: { scrolled: true } };
-      } catch (e) {
-        lastError = e instanceof Error ? e : new Error(String(e));
-        await new Promise(r => setTimeout(r, 500)); // 重试前等待
-      }
+    // 快速滚动
+    if (selector) {
+      await page.locator(selector).scrollIntoViewIfNeeded({ timeout: 3000 });
+    } else {
+      await page.evaluate(`window.scrollTo(${x ?? 0}, ${y ?? 0})`);
     }
-    return { success: false, error: lastError?.message ?? '滚动失败' };
+    return { success: true, data: { scrolled: true } };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
@@ -261,7 +234,7 @@ export async function scroll(input: unknown): Promise<ToolResult<{ scrolled: boo
 export async function goBack(): Promise<ToolResult<NavigateResult>> {
   try {
     const page = await getBrowserManager().getPage();
-    await page.goBack({ timeout: 30000, waitUntil: 'domcontentloaded' });
+    await page.goBack({ timeout: 10000, waitUntil: 'commit' });
     return { success: true, data: { url: page.url(), title: await page.title() } };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
@@ -272,7 +245,7 @@ export async function goBack(): Promise<ToolResult<NavigateResult>> {
 export async function goForward(): Promise<ToolResult<NavigateResult>> {
   try {
     const page = await getBrowserManager().getPage();
-    await page.goForward({ timeout: 30000, waitUntil: 'domcontentloaded' });
+    await page.goForward({ timeout: 10000, waitUntil: 'commit' });
     return { success: true, data: { url: page.url(), title: await page.title() } };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
