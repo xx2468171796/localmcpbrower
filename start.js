@@ -11,20 +11,19 @@ import { dirname, join } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const PORT = process.env.PORT || 3210;
+const PORT = process.env.PORT || 3211;
 
-// MCP 配置信息
+// MCP 配置信息 (Streamable HTTP - 现代标准)
 const mcpConfig = {
   "mcpServers": {
     "stable-browser": {
-      "type": "sse",
-      "url": `http://localhost:${PORT}/sse`
+      "serverUrl": `http://localhost:${PORT}/mcp`
     }
   }
 };
 
 console.log('\n╔══════════════════════════════════════════════════════════════╗');
-console.log('║           Windsurf MCP Bridge - 一键启动                      ║');
+console.log('║     Windsurf MCP Bridge - Streamable HTTP                    ║');
 console.log('╚══════════════════════════════════════════════════════════════╝\n');
 
 console.log('📋 复制以下配置到 Windsurf MCP 设置中:\n');
@@ -33,9 +32,9 @@ console.log(JSON.stringify(mcpConfig, null, 2));
 console.log('─'.repeat(60));
 
 console.log('\n🔗 服务地址:');
-console.log(`   SSE 端点: http://localhost:${PORT}/sse`);
+console.log(`   MCP 端点: http://localhost:${PORT}/mcp (Streamable HTTP)`);
 console.log(`   健康检查: http://localhost:${PORT}/health`);
-console.log(`   DevTools: http://localhost:9222 (如启用)\n`);
+console.log(`   连接状态: http://localhost:${PORT}/connections\n`);
 
 console.log('⏳ 正在启动服务...\n');
 

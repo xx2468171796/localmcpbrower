@@ -99,8 +99,7 @@ pm2-startup install
 {
   "mcpServers": {
     "stable-browser": {
-      "type": "sse",
-      "url": "http://localhost:3210/sse"
+      "serverUrl": "http://localhost:3211/mcp"
     }
   }
 }
@@ -169,8 +168,7 @@ pm2 start ecosystem.config.cjs
 {
   "mcpServers": {
     "stable-browser": {
-      "type": "sse",
-      "url": "http://localhost:3210/sse"
+      "serverUrl": "http://localhost:3211/mcp"
     }
   }
 }
@@ -254,7 +252,7 @@ yum install -y git
 在**本地 Windows** 执行：
 
 ```bash
-ssh -R 3210:localhost:3210 user@your-vps-ip
+ssh -R 3211:localhost:3211 user@your-vps-ip
 ```
 
 VPS 上的 MCP 配置使用 `localhost:3210`：
@@ -263,8 +261,7 @@ VPS 上的 MCP 配置使用 `localhost:3210`：
 {
   "mcpServers": {
     "stable-browser": {
-      "type": "sse",
-      "url": "http://localhost:3210/sse"
+      "serverUrl": "http://localhost:3211/mcp"
     }
   }
 }
@@ -273,15 +270,14 @@ VPS 上的 MCP 配置使用 `localhost:3210`：
 ### 方案二：直接暴露端口
 
 1. 在 VPS 上启动 MCP Bridge
-2. 配置防火墙允许 3210 端口
+2. 配置防火墙允许 3211 端口
 3. 本地 MCP 配置：
 
 ```json
 {
   "mcpServers": {
     "stable-browser": {
-      "type": "sse",
-      "url": "http://YOUR_VPS_IP:3210/sse"
+      "serverUrl": "http://YOUR_VPS_IP:3211/mcp"
     }
   }
 }
@@ -296,7 +292,7 @@ server {
     server_name mcp.yourdomain.com;
 
     location / {
-        proxy_pass http://127.0.0.1:3210;
+        proxy_pass http://127.0.0.1:3211;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -314,10 +310,10 @@ server {
 
 | 端点 | 说明 |
 |------|------|
-| `http://localhost:3210/sse` | MCP SSE 连接端点 |
-| `http://localhost:3210/health` | 健康检查 |
-| `http://localhost:3210/connections` | 查看活跃连接 |
-| `http://localhost:3210/report` | 页面分析报告 |
+| `http://localhost:3211/mcp` | MCP Streamable HTTP 端点 |
+| `http://localhost:3211/health` | 健康检查 |
+| `http://localhost:3211/connections` | 查看活跃连接 |
+| `http://localhost:3211/report` | 页面分析报告 |
 
 ---
 
