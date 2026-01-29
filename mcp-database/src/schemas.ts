@@ -15,6 +15,14 @@ export const ConnectSchema = z.object({
   ssl: z.boolean().optional().describe('是否启用SSL')
 });
 
+/** 通过别名切换预设数据库 */
+export const SwitchDbSchema = z.object({
+  alias: z.string().min(1).describe('预设数据库别名(如PROD/TEST)')
+});
+
+/** 列出预设数据库 */
+export const ListPresetsSchema = z.object({});
+
 /** 执行查询 */
 export const QuerySchema = z.object({
   sql: z.string().min(1).describe('SQL查询语句'),

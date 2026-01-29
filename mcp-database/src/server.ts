@@ -13,7 +13,8 @@ import {
   QuerySchema,
   ExecuteSchema,
   ListTablesSchema,
-  DescribeTableSchema
+  DescribeTableSchema,
+  SwitchDbSchema
 } from './schemas.js';
 import type { DatabaseType } from './types.js';
 
@@ -107,6 +108,18 @@ function createMcpServer(): McpServer {
   // 列出数据库
   server.tool('list_databases', '列出所有可用数据库', {}, async () => {
     const result = await tools.listDatabases();
+    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+  });
+
+  // 列出预设数据库
+  server.tool('list_presets', '列出.env中配置的所有预设数据库', {}, async () => {
+    const result = await tools.listPresets();
+    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+  });
+
+  // 切换预设数据库
+  server.tool('switch_db', '切换到预设数据库(通过别名)', SwitchDbSchema.shape, async (args) => {
+    const result = await tools.switchDb(args);
     return { content: [{ type: 'text', text: JSON.stringify(result) }] };
   });
 
