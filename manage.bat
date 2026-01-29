@@ -1,13 +1,16 @@
 @echo off
-chcp 65001 >nul
+chcp 65001 >nul 2>&1
 setlocal enabledelayedexpansion
 title Windsurf MCP Bridge - 管理控制台
 cd /d "%~dp0"
 
 :: 读取当前端口配置
-for /f "tokens=2 delims=: " %%a in ('findstr "PORT:" ecosystem.config.cjs') do set PORT=%%a
-set PORT=%PORT:,=%
-if "%PORT%"=="" set PORT=3210
+set PORT=3210
+if exist ecosystem.config.cjs (
+    for /f "tokens=2 delims=: " %%a in ('findstr "PORT:" ecosystem.config.cjs 2^>nul') do set PORT=%%a
+    set PORT=!PORT:,=!
+)
+if "!PORT!"=="" set PORT=3210
 
 :menu
 cls
@@ -16,7 +19,7 @@ echo ╔════════════════════════
 echo ║           Windsurf MCP Bridge - 管理控制台                    ║
 echo ╚══════════════════════════════════════════════════════════════╝
 echo.
-echo   当前端口: %PORT%
+echo   当前端口: !PORT!
 echo.
 echo   [1] 快速启动 (前台运行, 关窗口会停止)
 echo   [2] 查看服务状态
@@ -54,22 +57,22 @@ echo {
 echo   "mcpServers": {
 echo     "stable-browser": {
 echo       "type": "sse",
-echo       "url": "http://localhost:%PORT%/sse"
+echo       "url": "http://localhost:!PORT!/sse"
 echo     }
 echo   }
 echo }
 echo ────────────────────────────────────────────────
 echo.
 echo [地址] 服务地址:
-echo    SSE 端点: http://localhost:%PORT%/sse
-echo    健康检查: http://localhost:%PORT%/health
+echo    SSE 端点: http://localhost:!PORT!/sse
+echo    健康检查: http://localhost:!PORT!/health
 echo    DevTools: http://localhost:9222
 echo.
 echo [启动] 正在启动服务 (按 Ctrl+C 停止)...
 echo.
 set HEADLESS=false
 set DEVTOOLS=true
-set PORT=%PORT%
+set PORT=!PORT!
 node dist/server.js
 pause
 goto menu
@@ -82,7 +85,7 @@ echo.
 pm2 list
 echo.
 echo 正在检查健康状态...
-curl -s http://localhost:%PORT%/health 2>nul
+curl -s http://localhost:!PORT!/health 2>nul
 if %errorlevel% neq 0 (
     echo.
     echo [X] 服务未运行或无法连接
@@ -110,7 +113,7 @@ echo {
 echo   "mcpServers": {
 echo     "stable-browser": {
 echo       "type": "sse",
-echo       "url": "http://localhost:%PORT%/sse"
+echo       "url": "http://localhost:!PORT!/sse"
 echo     }
 echo   }
 echo }
@@ -148,9 +151,9 @@ cls
 echo.
 echo ═══════════════════ 当前配置 ═══════════════════
 echo.
-echo [*] 服务端口: %PORT%
-echo [*] SSE 端点: http://localhost:%PORT%/sse
-echo [*] 健康检查: http://localhost:%PORT%/health
+echo [*] 服务端口: !PORT!
+echo [*] SSE 端点: http://localhost:!PORT!/sse
+echo [*] 健康检查: http://localhost:!PORT!/health
 echo [*] DevTools:  http://localhost:9222
 echo.
 echo [配置] Windsurf MCP 配置 (复制以下内容):
@@ -159,7 +162,7 @@ echo {
 echo   "mcpServers": {
 echo     "stable-browser": {
 echo       "type": "sse",
-echo       "url": "http://localhost:%PORT%/sse"
+echo       "url": "http://localhost:!PORT!/sse"
 echo     }
 echo   }
 echo }
@@ -177,7 +180,7 @@ cls
 echo.
 echo ═══════════════════ 更换端口 ═══════════════════
 echo.
-echo 当前端口: %PORT%
+echo 当前端口: !PORT!
 echo.
 set /p newport=请输入新端口号: 
 
