@@ -4,7 +4,7 @@
 
 ## 特性
 
-- 🔗 **SSE 连接** - 基于 HTTP + SSE 协议，比 stdio 更稳定
+- 🔗 **Streamable HTTP** - 基于 MCP 现代标准，比 SSE 更稳定
 - 🍪 **状态持久化** - 保持登录状态，跨窗口共享
 - 📸 **截图能力** - AI 可"看见"网页
 - 🔍 **日志透传** - 实时获取 console 输出
@@ -41,8 +41,7 @@ npm start
 {
   "mcpServers": {
     "stable-browser": {
-      "type": "sse",
-      "url": "http://localhost:3210/sse"
+      "serverUrl": "http://localhost:3211/mcp"
     }
   }
 }
@@ -72,7 +71,7 @@ npm run pm2:start
 windsurf-mcp-bridge/
 ├── src/
 │   ├── browser.ts    # Playwright 浏览器管理
-│   ├── server.ts     # Express + SSE 服务
+│   ├── server.ts     # Express + Streamable HTTP 服务
 │   ├── tools.ts      # MCP 工具定义
 │   ├── types.ts      # TypeScript 类型
 │   └── schemas.ts    # Zod 验证
@@ -88,7 +87,7 @@ windsurf-mcp-bridge/
 
 | 变量 | 默认值 | 描述 |
 |------|--------|------|
-| `PORT` | 3000 | 服务端口 |
+| `PORT` | 3211 | 服务端口 |
 | `HEADLESS` | false | 无头模式 |
 | `USER_DATA_DIR` | storage/user_data | 用户数据目录 |
 | `DEVTOOLS` | true | 自动打开 Chrome DevTools |

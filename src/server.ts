@@ -360,9 +360,9 @@ function createApp(): express.Application {
   app.all('/mcp', async (req: Request, res: Response) => {
     const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
     
-    // 处理 GET 请求 - 用于 SSE 流（服务端通知）
+    // 处理 GET 请求 - 用于服务端推送通知
     if (req.method === 'GET') {
-      console.log(`[MCP] GET请求(SSE流), IP: ${clientIp}`);
+      console.log(`[MCP] GET请求(通知流), IP: ${clientIp}`);
       
       const sessionId = req.headers['mcp-session-id'] as string;
       if (!sessionId) {

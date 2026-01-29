@@ -2,7 +2,7 @@
 
 ## 为什么需要SSH隧道？
 
-SSE连接在跨网络环境下容易被NAT/防火墙断开。SSH隧道可以：
+远程连接在跨网络环境下可能被NAT/防火墙影响。SSH隧道可以：
 - 把远程连接变成"本地连接"
 - 自带心跳和重连机制
 - 加密传输更安全
@@ -40,8 +40,7 @@ ssh -R 3211:localhost:3211 root@192.168.110.253 -N -o ServerAliveInterval=30
 {
   "mcpServers": {
     "stable-browser": {
-      "type": "sse",
-      "url": "http://localhost:3211/sse"
+      "serverUrl": "http://localhost:3211/mcp"
     }
   }
 }
@@ -67,7 +66,7 @@ ssh -L 3211:localhost:3211 Administrator@192.168.10.213 -N
 
 ```json
 {
-  "url": "http://localhost:3211/sse"
+  "serverUrl": "http://localhost:3211/mcp"
 }
 ```
 

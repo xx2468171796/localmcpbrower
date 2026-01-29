@@ -44,16 +44,6 @@ export interface BrowserConfig {
   slowMo: number;
 }
 
-/** SSE 消息格式 */
-export interface SSEMessage {
-  event: 'tool_result' | 'error' | 'heartbeat';
-  data: {
-    id: string;
-    result?: unknown;
-    error?: string;
-  };
-}
-
 /** 导航结果 */
 export interface NavigateResult {
   url: string;
