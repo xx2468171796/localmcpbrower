@@ -6,7 +6,9 @@
 import express, { type Request, type Response, type NextFunction } from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
+import { randomUUID } from 'crypto';
 import { getBrowserManager } from './browser.js';
 import * as tools from './tools.js';
 import type { HealthCheckResult } from './types.js';
@@ -468,6 +470,140 @@ function createApp(): express.Application {
     if (!res.headersSent) {
       res.status(500).json({ error: 'Message handling failed after retries' });
     }
+  });
+
+  // ========== Streamable HTTP 传输 (现代标准，更稳定) ==========
+  const httpTransports: Record<string, StreamableHTTPServerTransport> = {};
+  const httpConnections: Record<string, ConnectionInfo> = {};
+
+  // Streamable HTTP 端点 - 单端点处理所有请求
+  app.all('/mcp', async (req: Request, res: Response) => {
+    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    
+    // 处理 GET 请求 - 用于 SSE 流（服务端推送）
+    if (req.method === 'GET') {
+      console.log(`[HTTP] SSE流连接, IP: ${clientIp}`);
+      
+      const sessionId = req.headers['mcp-session-id'] as string || randomUUID();
+      
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('mcp-session-id', sessionId);
+      
+      // 如果已有transport，使用它处理GET
+      const existingTransport = httpTransports[sessionId];
+      if (existingTransport) {
+        await existingTransport.handleRequest(req, res);
+      } else {
+        res.status(400).json({ error: 'No session found. Send POST first.' });
+      }
+      return;
+    }
+    
+    // 处理 POST 请求 - 主要的请求/响应
+    if (req.method === 'POST') {
+      let sessionId = req.headers['mcp-session-id'] as string;
+      
+      // 新会话
+      if (!sessionId || !httpTransports[sessionId]) {
+        sessionId = sessionId || randomUUID();
+        console.log(`[HTTP] 新会话, sessionId: ${sessionId.substring(0, 8)}..., IP: ${clientIp}`);
+        
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => sessionId,
+          onsessioninitialized: (sid) => {
+            console.log(`[HTTP] 会话初始化: ${sid.substring(0, 8)}...`);
+          }
+        });
+        
+        httpTransports[sessionId] = transport;
+        httpConnections[sessionId] = {
+          sessionId,
+          connectedAt: Date.now(),
+          lastActivity: Date.now(),
+          messageCount: 0,
+          clientIp
+        };
+        
+        // 连接MCP服务器
+        const server = createMcpServer();
+        await server.connect(transport);
+        
+        // 清理回调
+        transport.onclose = () => {
+          console.log(`[HTTP] 会话关闭: ${sessionId.substring(0, 8)}...`);
+          delete httpTransports[sessionId];
+          delete httpConnections[sessionId];
+        };
+      }
+      
+      // 更新活动时间
+      const connInfo = httpConnections[sessionId];
+      if (connInfo) {
+        connInfo.lastActivity = Date.now();
+        connInfo.messageCount++;
+      }
+      
+      // 处理请求
+      const transport = httpTransports[sessionId];
+      if (!transport) {
+        res.status(500).json({ error: 'Transport not found' });
+        return;
+      }
+      res.setHeader('mcp-session-id', sessionId);
+      
+      try {
+        await transport.handleRequest(req, res);
+      } catch (error) {
+        console.error('[HTTP] 请求处理错误:', error);
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Request handling failed' });
+        }
+      }
+      return;
+    }
+    
+    // 处理 DELETE 请求 - 关闭会话
+    if (req.method === 'DELETE') {
+      const sessionId = req.headers['mcp-session-id'] as string;
+      if (sessionId && httpTransports[sessionId]) {
+        await httpTransports[sessionId].close();
+        delete httpTransports[sessionId];
+        delete httpConnections[sessionId];
+        res.status(200).json({ message: 'Session closed' });
+      } else {
+        res.status(404).json({ error: 'Session not found' });
+      }
+      return;
+    }
+    
+    res.status(405).json({ error: 'Method not allowed' });
+  });
+
+  // 更新连接状态端点 - 包含两种传输的连接
+  app.get('/connections/all', async (_req: Request, res: Response) => {
+    const sseList = Object.values(connections).map(conn => ({
+      type: 'SSE',
+      ID: conn.sessionId.substring(0, 8),
+      IP: conn.clientIp,
+      msg: conn.messageCount,
+      time: Math.floor((Date.now() - conn.connectedAt) / 1000) + 's'
+    }));
+    
+    const httpList = Object.values(httpConnections).map(conn => ({
+      type: 'HTTP',
+      ID: conn.sessionId.substring(0, 8),
+      IP: conn.clientIp,
+      msg: conn.messageCount,
+      time: Math.floor((Date.now() - conn.connectedAt) / 1000) + 's'
+    }));
+    
+    res.json({ 
+      sse: { count: sseList.length, list: sseList },
+      http: { count: httpList.length, list: httpList },
+      total: sseList.length + httpList.length
+    });
   });
 
   return app;
