@@ -115,6 +115,12 @@ export const PageReportSchema = z.object({
   includeImages: z.boolean().default(true)
 });
 
+/** 设置视口大小工具输入 Schema */
+export const SetViewportSchema = z.object({
+  width: z.number().min(320).max(7680),
+  height: z.number().min(240).max(4320)
+});
+
 /** 导出类型推断 */
 export type NavigateInput = z.infer<typeof NavigateSchema>;
 export type ClickInput = z.infer<typeof ClickSchema>;
@@ -133,3 +139,4 @@ export type PdfExportInput = z.infer<typeof PdfExportSchema>;
 export type GetCookiesInput = z.infer<typeof GetCookiesSchema>;
 export type SetCookiesInput = z.infer<typeof SetCookiesSchema>;
 export type PageReportInput = z.infer<typeof PageReportSchema>;
+export type SetViewportInput = z.infer<typeof SetViewportSchema>;

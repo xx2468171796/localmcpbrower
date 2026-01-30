@@ -88,6 +88,7 @@ mcp-all-manage.bat
 | `click` | 点击页面元素 |
 | `type` | 输入文本 |
 | `take_screenshot` | 截取页面截图 |
+| `set_viewport` | **设置浏览器窗口大小（320-7680 x 240-4320）** |
 | `get_console_logs` | 获取控制台日志 |
 | `get_network` | 获取网络请求 |
 | `execute_js` | 执行 JavaScript |
@@ -97,6 +98,24 @@ mcp-all-manage.bat
 | `get_page_content` | 获取页面内容 |
 | `get_cookies` | 获取 Cookie |
 | `set_cookies` | 设置 Cookie |
+
+### 常用分辨率预设
+
+```javascript
+// 1080p (默认)
+set_viewport({ width: 1920, height: 1080 })
+
+// 4K
+set_viewport({ width: 3840, height: 2160 })
+
+// 移动端
+set_viewport({ width: 375, height: 667 })  // iPhone SE
+set_viewport({ width: 414, height: 896 })  // iPhone 11 Pro Max
+
+// 平板
+set_viewport({ width: 768, height: 1024 }) // iPad
+set_viewport({ width: 1024, height: 1366 }) // iPad Pro
+```
 
 ---
 

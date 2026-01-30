@@ -23,7 +23,8 @@ import {
   PdfExportSchema,
   GetCookiesSchema,
   SetCookiesSchema,
-  PageReportSchema
+  PageReportSchema,
+  SetViewportSchema
 } from './schemas.js';
 import type {
   ToolResult,
@@ -65,6 +66,31 @@ export async function navigate(input: unknown): Promise<ToolResult<NavigateResul
     return {
       success: true,
       data: { url, title }
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+/** 设置视口大小 */
+export async function setViewport(input: unknown): Promise<ToolResult<{ width: number; height: number }>> {
+  try {
+    const parsed = SetViewportSchema.safeParse(input);
+    if (!parsed.success) {
+      return { success: false, error: `参数验证失败: ${parsed.error.message}` };
+    }
+
+    const { width, height } = parsed.data;
+    const page = await getBrowserManager().getPage();
+    
+    await page.setViewportSize({ width, height });
+
+    return {
+      success: true,
+      data: { width, height }
     };
   } catch (error) {
     return {

@@ -29,7 +29,8 @@ import {
   PdfExportSchema,
   GetCookiesSchema,
   SetCookiesSchema,
-  PageReportSchema
+  PageReportSchema,
+  SetViewportSchema
 } from './schemas.js';
 
 const PORT = parseInt(process.env['PORT'] ?? '3000', 10);
@@ -168,6 +169,12 @@ function createMcpServer(): McpServer {
   // 注册 generate_page_report 工具
   server.tool('generate_page_report', '生成页面分析报告(链接/表单/图片统计)', PageReportSchema.shape, async (args) => {
     const result = await tools.generatePageReport(args);
+    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+  });
+
+  // 注册 set_viewport 工具
+  server.tool('set_viewport', '设置浏览器窗口大小(width: 320-7680, height: 240-4320)', SetViewportSchema.shape, async (args) => {
+    const result = await tools.setViewport(args);
     return { content: [{ type: 'text', text: JSON.stringify(result) }] };
   });
 
