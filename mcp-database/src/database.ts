@@ -14,6 +14,12 @@ import type {
   ConnectionStatus 
 } from './types.js';
 
+/** 简单的查询缓存 */
+interface CacheEntry {
+  result: QueryResult;
+  timestamp: number;
+}
+
 /** 数据库管理器单例 */
 class DatabaseManager {
   private static instance: DatabaseManager | null = null;
@@ -21,8 +27,14 @@ class DatabaseManager {
   private mysqlPool: mysql.Pool | null = null;
   private currentType: DatabaseType | null = null;
   private currentConfig: DatabaseConfig | null = null;
+  private queryCache: Map<string, CacheEntry> = new Map();
+  private readonly CACHE_TTL = 30000; // 30秒缓存
+  private readonly MAX_CACHE_SIZE = 100;
 
-  private constructor() {}
+  private constructor() {
+    // 定期清理过期缓存
+    setInterval(() => this.cleanCache(), 60000);
+  }
 
   public static getInstance(): DatabaseManager {
     if (!DatabaseManager.instance) {
@@ -47,9 +59,13 @@ class DatabaseManager {
         user: config.user,
         password: config.password,
         ssl: config.ssl ? { rejectUnauthorized: false } : undefined,
-        max: 10,
-        idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: 5000
+        max: 20,
+        min: 2,
+        idleTimeoutMillis: 60000,
+        connectionTimeoutMillis: 10000,
+        allowExitOnIdle: false,
+        statement_timeout: 30000,
+        query_timeout: 30000
       });
       // 测试连接
       const client = await this.pgPool.connect();
@@ -63,8 +79,12 @@ class DatabaseManager {
         password: config.password,
         ssl: config.ssl ? { rejectUnauthorized: false } : undefined,
         waitForConnections: true,
-        connectionLimit: 10,
-        queueLimit: 0
+        connectionLimit: 20,
+        maxIdle: 10,
+        idleTimeout: 60000,
+        queueLimit: 0,
+        enableKeepAlive: true,
+        keepAliveInitialDelay: 0
       });
       // 测试连接
       const conn = await this.mysqlPool.getConnection();
@@ -101,30 +121,72 @@ class DatabaseManager {
     return this.pgPool !== null || this.mysqlPool !== null;
   }
 
-  /** 执行查询 */
+  /** 清理过期缓存 */
+  private cleanCache(): void {
+    const now = Date.now();
+    for (const [key, entry] of this.queryCache.entries()) {
+      if (now - entry.timestamp > this.CACHE_TTL) {
+        this.queryCache.delete(key);
+      }
+    }
+    // 如果缓存过大，删除最旧的条目
+    if (this.queryCache.size > this.MAX_CACHE_SIZE) {
+      const entries = Array.from(this.queryCache.entries());
+      entries.sort((a, b) => a[1].timestamp - b[1].timestamp);
+      const toDelete = entries.slice(0, entries.length - this.MAX_CACHE_SIZE);
+      toDelete.forEach(([key]) => this.queryCache.delete(key));
+    }
+  }
+
+  /** 生成缓存键 */
+  private getCacheKey(sql: string, params?: unknown[]): string {
+    return `${sql}:${JSON.stringify(params || [])}`;
+  }
+
+  /** 执行查询（带缓存） */
   public async query(sql: string, params?: unknown[]): Promise<QueryResult> {
     if (!this.isConnected()) {
       throw new Error('未连接数据库，请先调用 connect 工具');
     }
 
+    // 只缓存 SELECT 查询
+    const isSelect = sql.trim().toLowerCase().startsWith('select');
+    if (isSelect) {
+      const cacheKey = this.getCacheKey(sql, params);
+      const cached = this.queryCache.get(cacheKey);
+      if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
+        console.log('[Cache Hit] 使用缓存结果');
+        return cached.result;
+      }
+    }
+
+    let result: QueryResult;
     if (this.currentType === 'postgresql' && this.pgPool) {
-      const result = await this.pgPool.query(sql, params);
-      return {
-        rows: result.rows,
-        rowCount: result.rowCount ?? 0,
-        fields: result.fields?.map(f => f.name)
+      const pgResult = await this.pgPool.query(sql, params);
+      result = {
+        rows: pgResult.rows,
+        rowCount: pgResult.rowCount ?? 0,
+        fields: pgResult.fields?.map(f => f.name)
       };
     } else if (this.mysqlPool) {
       const [rows, fields] = await this.mysqlPool.execute(sql, params);
       const rowArray = Array.isArray(rows) ? rows : [rows];
-      return {
+      result = {
         rows: rowArray as Record<string, unknown>[],
         rowCount: rowArray.length,
         fields: (fields as mysql.FieldPacket[])?.map(f => f.name)
       };
+    } else {
+      throw new Error('数据库连接异常');
     }
 
-    throw new Error('数据库连接异常');
+    // 缓存 SELECT 查询结果
+    if (isSelect) {
+      const cacheKey = this.getCacheKey(sql, params);
+      this.queryCache.set(cacheKey, { result, timestamp: Date.now() });
+    }
+
+    return result;
   }
 
   /** 执行操作(INSERT/UPDATE/DELETE) */
