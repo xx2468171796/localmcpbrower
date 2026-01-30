@@ -15,13 +15,24 @@
 
 ## 一、快速开始
 
-### 1. 一键安装
+### 1. 一键安装（推荐）
 
+**双击 `install-all.bat`** - 自动安装全部组件
+
+包含：
+- ✅ Node.js 版本检查
+- ✅ PM2 进程管理器
+- ✅ 浏览器 MCP 依赖
+- ✅ **Playwright Chromium 内核**（~150MB）
+- ✅ 数据库 MCP 依赖
+- ✅ 项目构建
+
+**分别安装：**
 ```bash
-# 安装浏览器 MCP
+# 仅安装浏览器 MCP（含 Playwright）
 install.bat
 
-# 安装数据库 MCP
+# 仅安装数据库 MCP
 cd mcp-database && install.bat
 ```
 
