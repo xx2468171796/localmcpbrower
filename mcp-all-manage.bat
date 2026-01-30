@@ -86,7 +86,26 @@ echo ========================================
 echo   Restarting All MCP Services...
 echo ========================================
 echo.
-call pm2 restart windsurf-mcp-bridge mcp-database-bridge
+echo [1/2] Browser MCP...
+cd /d "%~dp0"
+call pm2 restart ecosystem.config.cjs 2>nul
+if errorlevel 1 (
+    echo [INFO] Process not found, starting instead...
+    call pm2 start ecosystem.config.cjs
+)
+echo.
+echo [2/2] Database MCP...
+cd /d "%~dp0mcp-database"
+call pm2 restart ecosystem.config.cjs 2>nul
+if errorlevel 1 (
+    echo [INFO] Process not found, starting instead...
+    call pm2 start ecosystem.config.cjs
+)
+echo.
+echo ========================================
+echo   Status:
+echo ========================================
+call pm2 status
 echo.
 echo Press any key to continue...
 pause >nul
