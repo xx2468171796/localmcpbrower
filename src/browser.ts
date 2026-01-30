@@ -55,14 +55,13 @@ class BrowserManager {
 
     this.ensureUserDataDir();
 
-    // 构建启动参数
+    // 构建启动参数（高性能模式）
     const launchArgs = [
       // 性能优化参数
       '--disable-blink-features=AutomationControlled',
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
       '--no-first-run',
       '--disable-extensions',
       '--disable-background-networking',
@@ -83,8 +82,13 @@ class BrowserManager {
       '--metrics-recording-only',
       '--password-store=basic',
       '--use-mock-keychain',
-      // 内存优化
-      '--js-flags=--max-old-space-size=512'
+      // 高性能模式：增加内存和GPU加速
+      '--js-flags=--max-old-space-size=2048',
+      '--enable-gpu-rasterization',
+      '--enable-zero-copy',
+      '--enable-features=VaapiVideoDecoder',
+      '--ignore-gpu-blocklist',
+      '--disable-gpu-driver-bug-workarounds'
     ];
 
     // 如果启用 DevTools，添加远程调试端口
@@ -137,9 +141,9 @@ class BrowserManager {
         timestamp: Date.now()
       });
 
-      // 限制日志数量，防止内存溢出
-      if (this.consoleLogs.length > 1000) {
-        this.consoleLogs = this.consoleLogs.slice(-500);
+      // 限制日志数量，防止内存溢出（高性能模式：增加容量）
+      if (this.consoleLogs.length > 2000) {
+        this.consoleLogs = this.consoleLogs.slice(-1000);
       }
     });
 

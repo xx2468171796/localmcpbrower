@@ -28,8 +28,8 @@ class DatabaseManager {
   private currentType: DatabaseType | null = null;
   private currentConfig: DatabaseConfig | null = null;
   private queryCache: Map<string, CacheEntry> = new Map();
-  private readonly CACHE_TTL = 30000; // 30秒缓存
-  private readonly MAX_CACHE_SIZE = 100;
+  private readonly CACHE_TTL = 60000; // 60秒缓存（高性能模式）
+  private readonly MAX_CACHE_SIZE = 500; // 增加缓存容量
 
   private constructor() {
     // 定期清理过期缓存
@@ -59,13 +59,14 @@ class DatabaseManager {
         user: config.user,
         password: config.password,
         ssl: config.ssl ? { rejectUnauthorized: false } : undefined,
-        max: 20,
-        min: 2,
-        idleTimeoutMillis: 60000,
-        connectionTimeoutMillis: 10000,
+        max: 50,              // 高性能：50个连接
+        min: 5,               // 保持5个热连接
+        idleTimeoutMillis: 120000,  // 2分钟空闲超时
+        connectionTimeoutMillis: 15000,
         allowExitOnIdle: false,
-        statement_timeout: 30000,
-        query_timeout: 30000
+        statement_timeout: 60000,   // 60秒语句超时
+        query_timeout: 60000,
+        application_name: 'mcp-database-bridge-turbo'
       });
       // 测试连接
       const client = await this.pgPool.connect();
@@ -79,12 +80,14 @@ class DatabaseManager {
         password: config.password,
         ssl: config.ssl ? { rejectUnauthorized: false } : undefined,
         waitForConnections: true,
-        connectionLimit: 20,
-        maxIdle: 10,
-        idleTimeout: 60000,
+        connectionLimit: 50,  // 高性能：50个连接
+        maxIdle: 20,          // 保持20个空闲连接
+        idleTimeout: 120000,  // 2分钟空闲超时
         queueLimit: 0,
         enableKeepAlive: true,
-        keepAliveInitialDelay: 0
+        keepAliveInitialDelay: 0,
+        multipleStatements: false,
+        namedPlaceholders: true
       });
       // 测试连接
       const conn = await this.mysqlPool.getConnection();
