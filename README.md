@@ -240,20 +240,71 @@ mcp-bridge/
 
 ---
 
-## 七、常见问题
+## 七、故障排查
 
-### Q: 端口被占用怎么办？
+### 🔍 一键诊断
+
+**双击 `diagnose.bat`** - 自动检测所有问题
+
+诊断项目：
+- ✅ Node.js 版本
+- ✅ PM2 安装状态
+- ✅ 依赖完整性
+- ✅ 项目构建状态
+- ✅ Playwright Chromium
+- ✅ 端口占用情况
+- ✅ 防火墙配置
+- ✅ 服务运行状态
+
+### 移植到新电脑连不上？
+
+**常见原因：**
+
+1. **Playwright 未安装**（最常见）
+   ```bash
+   npx playwright install chromium
+   ```
+
+2. **端口被占用**
+   ```bash
+   # 检查端口
+   netstat -ano | findstr "3211"
+   # 杀死进程
+   taskkill /PID <进程ID> /F
+   ```
+
+3. **防火墙拦截**
+   - 允许 Node.js 通过 Windows 防火墙
+   - 或临时关闭防火墙测试
+
+4. **依赖未安装**
+   ```bash
+   npm install
+   npm run build
+   ```
+
+5. **PM2 未安装**
+   ```bash
+   npm install -g pm2
+   ```
+
+### 常见问题
+
+**Q: 端口被占用怎么办？**
 修改 `.env` 中的 `PORT` 变量，然后重启服务。
 
-### Q: 数据库连接失败？
+**Q: 数据库连接失败？**
 1. 检查数据库服务是否运行
 2. 检查防火墙是否允许端口
 3. 检查用户名密码是否正确
 
-### Q: 浏览器没有打开？
-检查是否安装了 Chromium：`npx playwright install chromium`
+**Q: 浏览器没有打开？**
+运行 `npx playwright install chromium` 安装 Chromium 内核。
 
-### Q: 如何查看服务日志？
+**Q: 如何查看服务日志？**
 ```bash
 pm2 logs --lines 100
 ```
+
+**Q: 服务启动后立即停止？**
+查看日志找到错误原因：`pm2 logs windsurf-mcp-bridge --lines 50`
