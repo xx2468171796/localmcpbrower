@@ -1,97 +1,94 @@
 @echo off
-chcp 65001 >nul
-title MCP Browser Bridge 安装程序
+title MCP Browser Bridge Installer
 
 echo ========================================
-echo   MCP Browser Bridge 一键安装
+echo   MCP Browser Bridge - Installation
 echo ========================================
 echo.
 
-:: 检查 Node.js
-echo [1/4] 检查 Node.js...
+:: Check Node.js
+echo [1/5] Checking Node.js...
 node -v >nul 2>&1
 if errorlevel 1 (
-    echo [错误] 未安装 Node.js，请先安装 Node.js 18+
-    echo 下载地址: https://nodejs.org/
+    echo [ERROR] Node.js not installed. Please install Node.js 18+
+    echo Download: https://nodejs.org/
     pause
     exit /b 1
 )
 for /f "tokens=1,2,3 delims=." %%a in ('node -v') do set NODE_VER=%%a
 set NODE_VER=%NODE_VER:v=%
 if %NODE_VER% LSS 18 (
-    echo [错误] Node.js 版本过低，需要 18+，当前: %NODE_VER%
+    echo [ERROR] Node.js version too low. Required: 18+, Current: %NODE_VER%
     pause
     exit /b 1
 )
-echo [OK] Node.js 已安装
+echo [OK] Node.js installed
 
-:: 检查 PM2
-echo [2/4] 检查 PM2...
+:: Check PM2
+echo [2/5] Checking PM2...
 pm2 -v >nul 2>&1
 if errorlevel 1 (
-    echo [提示] 正在安装 PM2...
+    echo [INFO] Installing PM2...
     npm install -g pm2
     if errorlevel 1 (
-        echo [错误] PM2 安装失败
+        echo [ERROR] PM2 installation failed
         pause
         exit /b 1
     )
 )
-echo [OK] PM2 已安装
+echo [OK] PM2 installed
 
-:: 安装依赖
-echo [3/4] 安装项目依赖...
+:: Install dependencies
+echo [3/5] Installing dependencies...
 call npm install
 if errorlevel 1 (
-    echo [错误] 依赖安装失败
+    echo [ERROR] Dependencies installation failed
     pause
     exit /b 1
 )
-echo [OK] 依赖已安装
+echo [OK] Dependencies installed
 
-:: 安装 Playwright Chromium 浏览器内核
-echo [4/5] 安装 Playwright Chromium 浏览器内核...
-echo [提示] 这会下载约 150MB 的 Chromium 浏览器
-echo [提示] 如果下载慢，可设置镜像: set PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright
+:: Install Playwright Chromium
+echo [4/5] Installing Playwright Chromium...
+echo [INFO] This will download ~150MB Chromium browser
+echo [INFO] If slow, set mirror: set PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright
 npx playwright install chromium
 if errorlevel 1 (
     echo.
-    echo [警告] Chromium 浏览器安装失败！
-    echo [解决] 方法1: 手动执行 npx playwright install chromium
-    echo [解决] 方法2: 使用镜像下载:
+    echo [WARN] Chromium installation failed!
+    echo [FIX] Method 1: Run manually: npx playwright install chromium
+    echo [FIX] Method 2: Use mirror:
     echo         set PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright
     echo         npx playwright install chromium
     echo.
     pause
 )
-echo [OK] Chromium 浏览器已安装
+echo [OK] Chromium installed
 
-:: 创建配置文件
+:: Create config file
 if not exist .env (
-    echo [提示] 创建配置文件...
+    echo [INFO] Creating config file...
     copy .env.example .env >nul
-    echo [OK] 配置文件已创建
+    echo [OK] Config file created
 )
 
-:: 构建项目
-echo [5/5] 构建项目...
+:: Build project
+echo [5/5] Building project...
 call npm run build
 if errorlevel 1 (
-    echo [错误] 构建失败
+    echo [ERROR] Build failed
     pause
     exit /b 1
 )
 
 echo.
 echo ========================================
-echo   安装完成！
+echo   Installation Complete!
 echo ========================================
 echo.
-echo 启动服务: manage.bat start
-echo 查看状态: manage.bat status
-echo 查看日志: manage.bat logs
+echo Start service: manage.bat
 echo.
-echo MCP 配置 (添加到 Windsurf/Cursor):
+echo MCP Config (add to Windsurf/Cursor):
 echo {
 echo   "mcpServers": {
 echo     "stable-browser": {
