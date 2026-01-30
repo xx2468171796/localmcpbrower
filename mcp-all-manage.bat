@@ -95,14 +95,36 @@ goto menu
 :status_all
 cls
 echo ========================================
-echo   All Services Status:
+echo   All Services Status [Live Monitor]
+echo ========================================
+echo   Press any key to stop monitoring...
 echo ========================================
 echo.
-call pm2 status
+
+:status_loop
+cls
+echo ========================================
+echo   MCP Bridge Status - %date% %time%
+echo ========================================
 echo.
-echo Press any key to continue...
-pause >nul
-goto menu
+echo [PM2 Processes]
+call pm2 list 2>nul
+echo.
+echo [Browser MCP - Port 3211]
+curl.exe -s http://localhost:3211/health 2>nul
+echo.
+echo.
+echo [Database MCP - Port 3212]
+curl.exe -s http://localhost:3212/health 2>nul
+echo.
+echo.
+echo ========================================
+echo   Refreshing in 3 seconds...
+echo   Press any key to return to menu
+echo ========================================
+timeout /t 3 /nobreak >nul 2>nul
+if errorlevel 1 goto menu
+goto status_loop
 
 :browser_manage
 cd /d "%~dp0"
