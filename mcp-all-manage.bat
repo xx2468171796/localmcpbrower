@@ -1,122 +1,139 @@
 @echo off
+setlocal enabledelayedexpansion
 title MCP Bridge Manager
+cd /d "%~dp0"
 
 :menu
 cls
 echo ========================================
-echo   MCP Bridge Manager (Browser + Database)
+echo   MCP Bridge Manager [Browser + Database]
 echo ========================================
 echo.
 echo   Ports:
-echo     - Browser MCP: 3211
-echo     - Database MCP: 3212
+echo     Browser MCP: 3211
+echo     Database MCP: 3212
 echo.
 echo ========================================
-echo   [All Services]
 echo   1. Start All
 echo   2. Stop All
 echo   3. Restart All
 echo   4. Status
-echo.
-echo   [Individual]
 echo   5. Browser MCP
 echo   6. Database MCP
-echo.
-echo   [Config]
-echo   7. Edit Database Config (.env)
+echo   7. Edit DB Config
 echo   8. Show MCP Config
-echo.
 echo   0. Exit
 echo ========================================
-set /p choice=Select [0-8]: 
+echo.
+choice /c 123456780 /n /m "Select [0-8]: "
+set sel=%errorlevel%
 
-if "%choice%"=="1" goto start_all
-if "%choice%"=="2" goto stop_all
-if "%choice%"=="3" goto restart_all
-if "%choice%"=="4" goto status_all
-if "%choice%"=="5" goto browser_manage
-if "%choice%"=="6" goto database_manage
-if "%choice%"=="7" goto edit_db_config
-if "%choice%"=="8" goto show_mcp_config
-if "%choice%"=="0" goto exit
+if %sel%==1 goto start_all
+if %sel%==2 goto stop_all
+if %sel%==3 goto restart_all
+if %sel%==4 goto status_all
+if %sel%==5 goto browser_manage
+if %sel%==6 goto database_manage
+if %sel%==7 goto edit_db_config
+if %sel%==8 goto show_mcp_config
+if %sel%==9 goto exit
 goto menu
 
 :start_all
+cls
+echo ========================================
+echo   Starting All MCP Services...
+echo ========================================
 echo.
-echo [START] Starting all MCP services...
-echo.
-echo [1/2] Starting Browser MCP...
+echo [1/2] Browser MCP...
 cd /d "%~dp0"
-pm2 start ecosystem.config.cjs
+call pm2 start ecosystem.config.cjs
+if errorlevel 1 (
+    echo [ERROR] Browser MCP start failed!
+)
 echo.
-echo [2/2] Starting Database MCP...
+echo [2/2] Database MCP...
 cd /d "%~dp0mcp-database"
-pm2 start ecosystem.config.cjs
+call pm2 start ecosystem.config.cjs
+if errorlevel 1 (
+    echo [ERROR] Database MCP start failed!
+)
 echo.
-echo [DONE] All services started!
-pm2 status
+echo ========================================
+echo   Status:
+echo ========================================
+call pm2 status
 echo.
-pause
+echo Press any key to continue...
+pause >nul
 goto menu
 
 :stop_all
+cls
+echo ========================================
+echo   Stopping All MCP Services...
+echo ========================================
 echo.
-echo [STOP] Stopping all MCP services...
-pm2 stop windsurf-mcp-bridge mcp-database-bridge
+call pm2 stop windsurf-mcp-bridge mcp-database-bridge
 echo.
-pause
+echo Press any key to continue...
+pause >nul
 goto menu
 
 :restart_all
+cls
+echo ========================================
+echo   Restarting All MCP Services...
+echo ========================================
 echo.
-echo [RESTART] Restarting all MCP services...
-pm2 restart windsurf-mcp-bridge mcp-database-bridge
+call pm2 restart windsurf-mcp-bridge mcp-database-bridge
 echo.
-pause
+echo Press any key to continue...
+pause >nul
 goto menu
 
 :status_all
+cls
+echo ========================================
+echo   All Services Status:
+echo ========================================
 echo.
-echo [STATUS] All services:
+call pm2 status
 echo.
-pm2 status
-echo.
-pause
+echo Press any key to continue...
+pause >nul
 goto menu
 
 :browser_manage
-echo.
 cd /d "%~dp0"
 call manage.bat
 goto menu
 
 :database_manage
-echo.
 cd /d "%~dp0mcp-database"
 call manage.bat
 goto menu
 
 :edit_db_config
-echo.
 cd /d "%~dp0mcp-database"
 if not exist .env (
     copy .env.example .env >nul
     echo [INFO] Database config file created
 )
-notepad .env
+start notepad .env
 goto menu
 
 :show_mcp_config
 cls
 echo ========================================
-echo   MCP Config (Windsurf/Cursor)
+echo   MCP Config [Windsurf/Cursor]
 echo ========================================
 echo.
 echo Config file location:
 echo   Windsurf: C:\Users\USERNAME\.codeium\windsurf\mcp_config.json
 echo   Cursor:   C:\Users\USERNAME\.cursor\mcp.json
 echo.
-echo Config content (copy JSON below):
+echo Config content:
 echo.
 echo {
 echo   "mcpServers": {
@@ -129,10 +146,10 @@ echo     }
 echo   }
 echo }
 echo.
-echo ========================================
-echo.
-pause
+echo Press any key to continue...
+pause >nul
 goto menu
 
 :exit
+endlocal
 exit /b 0

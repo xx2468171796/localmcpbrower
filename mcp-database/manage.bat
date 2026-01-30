@@ -1,5 +1,7 @@
 @echo off
+setlocal
 title MCP Database Bridge Manager
+cd /d "%~dp0"
 
 :menu
 cls
@@ -16,64 +18,89 @@ echo   6. Edit Config
 echo   0. Exit
 echo.
 echo ========================================
-set /p choice=Select [0-6]: 
+echo.
+choice /c 1234560 /n /m "Select [0-6]: "
+set sel=%errorlevel%
 
-if "%choice%"=="1" goto start
-if "%choice%"=="2" goto stop
-if "%choice%"=="3" goto restart
-if "%choice%"=="4" goto status
-if "%choice%"=="5" goto logs
-if "%choice%"=="6" goto config
-if "%choice%"=="0" goto exit
+if %sel%==1 goto start
+if %sel%==2 goto stop
+if %sel%==3 goto restart
+if %sel%==4 goto status
+if %sel%==5 goto logs
+if %sel%==6 goto config
+if %sel%==7 goto exit
 goto menu
 
 :start
+cls
+echo ========================================
+echo   Starting MCP Database Bridge...
+echo ========================================
 echo.
-echo [START] Starting MCP Database Bridge...
-pm2 start ecosystem.config.cjs
+call pm2 start ecosystem.config.cjs
 echo.
-pause
+call pm2 status mcp-database-bridge
+echo.
+echo Press any key to continue...
+pause >nul
 goto menu
 
 :stop
+cls
+echo ========================================
+echo   Stopping MCP Database Bridge...
+echo ========================================
 echo.
-echo [STOP] Stopping service...
-pm2 stop mcp-database-bridge
+call pm2 stop mcp-database-bridge
 echo.
-pause
+echo Press any key to continue...
+pause >nul
 goto menu
 
 :restart
+cls
+echo ========================================
+echo   Restarting MCP Database Bridge...
+echo ========================================
 echo.
-echo [RESTART] Restarting service...
-pm2 restart mcp-database-bridge
+call pm2 restart mcp-database-bridge
 echo.
-pause
+echo Press any key to continue...
+pause >nul
 goto menu
 
 :status
+cls
+echo ========================================
+echo   Service Status:
+echo ========================================
 echo.
-echo [STATUS] Service status:
-pm2 status mcp-database-bridge
+call pm2 status mcp-database-bridge
 echo.
-pause
+echo Press any key to continue...
+pause >nul
 goto menu
 
 :logs
+cls
+echo ========================================
+echo   Live Logs [Ctrl+C to exit]
+echo ========================================
 echo.
-echo [LOGS] Live logs (Ctrl+C to exit):
-pm2 logs mcp-database-bridge --lines 50
+call pm2 logs mcp-database-bridge --lines 50
+echo.
+echo Press any key to continue...
+pause >nul
 goto menu
 
 :config
-echo.
-echo [CONFIG] Opening config file...
 if not exist .env (
     copy .env.example .env >nul
     echo [INFO] Created .env config file
 )
-notepad .env
+start notepad .env
 goto menu
 
 :exit
+endlocal
 exit /b 0
