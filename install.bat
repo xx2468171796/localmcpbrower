@@ -52,7 +52,7 @@ echo [OK] Dependencies installed
 echo [4/5] Installing Playwright Chromium...
 echo [INFO] This will download ~150MB Chromium browser
 echo [INFO] If slow, set mirror: set PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright
-npx playwright install chromium
+call npx playwright install chromium
 if errorlevel 1 (
     echo.
     echo [WARN] Chromium installation failed!
