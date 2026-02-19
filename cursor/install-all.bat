@@ -8,7 +8,6 @@ echo   Browser MCP + Database MCP
 echo ========================================
 echo.
 
-:: Check Node.js
 echo [1/6] Checking Node.js...
 node -v >nul 2>&1
 if errorlevel 1 (
@@ -27,7 +26,6 @@ if %NODE_VER% LSS 18 (
 echo [OK] Node.js installed
 echo.
 
-:: Check PM2
 echo [2/6] Checking PM2...
 pm2 -v >nul 2>&1
 if errorlevel 1 (
@@ -37,7 +35,6 @@ if errorlevel 1 (
 echo [OK] PM2 installed
 echo.
 
-:: Install Browser MCP
 echo [3/6] Installing Browser MCP dependencies...
 call npm install
 if errorlevel 1 (
@@ -48,13 +45,11 @@ if errorlevel 1 (
 echo [OK] Browser MCP dependencies installed
 echo.
 
-:: Install Playwright Chromium
 echo [4/6] Installing Playwright Chromium...
 call npx playwright install chromium
 echo [OK] Chromium installed
 echo.
 
-:: Build Browser MCP
 echo [5/6] Building Browser MCP...
 call npm run build
 if errorlevel 1 (
@@ -65,8 +60,7 @@ if errorlevel 1 (
 echo [OK] Browser MCP built
 echo.
 
-:: Install + Build Database MCP
-echo [6/6] Installing Database MCP...
+echo [6/6] Installing + Building Database MCP...
 cd /d "%~dp0mcp-database"
 call npm install
 if errorlevel 1 (
@@ -83,7 +77,6 @@ if errorlevel 1 (
 echo [OK] Database MCP built
 echo.
 
-:: Create config
 cd /d "%~dp0mcp-database"
 if not exist .env (
     copy .env.example .env >nul

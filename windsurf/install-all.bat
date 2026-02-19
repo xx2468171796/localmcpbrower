@@ -12,6 +12,7 @@ echo [1/6] Checking Node.js...
 node -v >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Node.js not installed. Please install Node.js 18+
+    echo Download: https://nodejs.org/
     pause
     exit /b 1
 )
@@ -59,7 +60,7 @@ if errorlevel 1 (
 echo [OK] Browser MCP built
 echo.
 
-echo [6/6] Installing Database MCP...
+echo [6/6] Installing + Building Database MCP...
 cd /d "%~dp0mcp-database"
 call npm install
 if errorlevel 1 (
@@ -80,6 +81,7 @@ cd /d "%~dp0mcp-database"
 if not exist .env (
     copy .env.example .env >nul
     echo [INFO] Created database config: mcp-database\.env
+    echo [INFO] Please edit it with your database credentials.
     start notepad .env
 )
 

@@ -1,5 +1,4 @@
 @echo off
-chcp 65001 >nul 2>&1
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
@@ -8,27 +7,27 @@ set DB_NAME=cursor-mcp-database
 set BROWSER_PORT=3211
 set DB_PORT=3212
 
-title Cursor MCP 服务管理 [Browser + Database]
+title Cursor MCP Service Manager [Browser + Database]
 
 :menu
 cls
 echo.
 echo  ====================================================
-echo    Cursor MCP 服务管理 [Browser %BROWSER_PORT% + Database %DB_PORT%]
+echo    Cursor MCP Service Manager [Browser %BROWSER_PORT% + Database %DB_PORT%]
 echo  ====================================================
 echo.
-echo    1. 启动全部    (PM2 守护，被kill自动重启)
-echo    2. 停止全部    (彻底停止，不自动重启)
-echo    3. 重启全部
-echo    4. 查看状态 + 健康检查
-echo    5. 查看日志    (Browser)
-echo    6. 查看日志    (Database)
-echo    7. 编辑数据库配置
-echo    8. 显示 IDE 配置
-echo    9. 一键安装    (依赖 + Playwright + 构建)
-echo    0. 退出
+echo    1. Start All     (PM2 daemon, auto-restart on kill)
+echo    2. Stop All      (Full stop, no auto-restart)
+echo    3. Restart All
+echo    4. Status + Health Check
+echo    5. View Logs     (Browser)
+echo    6. View Logs     (Database)
+echo    7. Edit Database Config
+echo    8. Show IDE Config
+echo    9. Full Install  (deps + Playwright + build)
+echo    0. Exit
 echo.
-set /p choice=请选择操作 (0-9): 
+set /p choice=Select option (0-9): 
 
 if "%choice%"=="1" goto start_all
 if "%choice%"=="2" goto stop_all
@@ -41,17 +40,17 @@ if "%choice%"=="8" goto show_mcp_config
 if "%choice%"=="9" goto install_all
 if "%choice%"=="0" exit /b 0
 
-echo 无效的选择！
+echo Invalid selection!
 timeout /t 2 >nul
 goto menu
 
 :check_pm2
 where pm2 >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
-    echo [错误] PM2 未安装！正在安装...
+    echo [ERROR] PM2 not installed! Installing...
     call npm install -g pm2
     if %ERRORLEVEL% NEQ 0 (
-        echo [错误] PM2 安装失败
+        echo [ERROR] PM2 installation failed
         pause
         goto menu
     )
@@ -60,15 +59,15 @@ exit /b 0
 
 :check_build_browser
 if not exist "%~dp0dist\server.js" (
-    echo [提示] Browser 尚未构建，正在自动构建...
+    echo [INFO] Browser not built yet, building now...
     cd /d "%~dp0"
     if not exist "node_modules" (
-        echo [提示] 正在安装 Browser 依赖...
+        echo [INFO] Installing Browser dependencies...
         call npm install
     )
     call npm run build
     if %ERRORLEVEL% NEQ 0 (
-        echo [错误] Browser 构建失败！
+        echo [ERROR] Browser build failed!
         pause
         goto menu
     )
@@ -77,16 +76,16 @@ exit /b 0
 
 :check_build_database
 if not exist "%~dp0mcp-database\dist\server.js" (
-    echo [提示] Database 尚未构建，正在自动构建...
+    echo [INFO] Database not built yet, building now...
     cd /d "%~dp0mcp-database"
     if not exist "node_modules" (
-        echo [提示] 正在安装 Database 依赖...
+        echo [INFO] Installing Database dependencies...
         call npm install
     )
     call npm run build
     cd /d "%~dp0"
     if %ERRORLEVEL% NEQ 0 (
-        echo [错误] Database 构建失败！
+        echo [ERROR] Database build failed!
         pause
         goto menu
     )
@@ -100,30 +99,30 @@ call :check_pm2
 call :check_build_browser
 call :check_build_database
 echo ================================================
-echo   启动全部 Cursor MCP 服务...
+echo   Starting all Cursor MCP services...
 echo ================================================
 echo.
-echo [1/2] Browser MCP (端口 %BROWSER_PORT%)...
+echo [1/2] Browser MCP (port %BROWSER_PORT%)...
 pm2 delete %BROWSER_NAME% >nul 2>&1
 cd /d "%~dp0"
 pm2 start ecosystem.config.cjs
 echo.
-echo [2/2] Database MCP (端口 %DB_PORT%)...
+echo [2/2] Database MCP (port %DB_PORT%)...
 pm2 delete %DB_NAME% >nul 2>&1
 cd /d "%~dp0mcp-database"
 pm2 start ecosystem.config.cjs
 cd /d "%~dp0"
 echo.
-echo [启动] 全部服务已启动！被 kill 会自动重启。
+echo [STARTED] All services running. Auto-restart on kill.
 echo.
 timeout /t 5 >nul
-echo [验证] 健康检查:
+echo [VERIFY] Health check:
 echo.
 echo --- Browser MCP ---
-node -e "fetch('http://localhost:%BROWSER_PORT%/health').then(r=>r.json()).then(d=>console.log(JSON.stringify(d,null,2))).catch(e=>console.log('等待中...',e.message))" 2>nul
+node -e "fetch('http://localhost:%BROWSER_PORT%/health').then(r=>r.json()).then(d=>console.log(JSON.stringify(d,null,2))).catch(e=>console.log('Waiting...',e.message))" 2>nul
 echo.
 echo --- Database MCP ---
-node -e "fetch('http://localhost:%DB_PORT%/health').then(r=>r.json()).then(d=>console.log(JSON.stringify(d,null,2))).catch(e=>console.log('等待中...',e.message))" 2>nul
+node -e "fetch('http://localhost:%DB_PORT%/health').then(r=>r.json()).then(d=>console.log(JSON.stringify(d,null,2))).catch(e=>console.log('Waiting...',e.message))" 2>nul
 echo.
 pause
 goto menu
@@ -132,16 +131,17 @@ goto menu
 cls
 echo.
 echo ================================================
-echo   彻底停止全部 Cursor MCP 服务...
+echo   Stopping all Cursor MCP services...
 echo ================================================
 echo.
 pm2 stop %BROWSER_NAME% >nul 2>&1
 pm2 delete %BROWSER_NAME% >nul 2>&1
-echo [停止] Browser MCP 已停止。
+echo [STOPPED] Browser MCP stopped.
 pm2 stop %DB_NAME% >nul 2>&1
 pm2 delete %DB_NAME% >nul 2>&1
-echo [停止] Database MCP 已停止。
+echo [STOPPED] Database MCP stopped.
 echo.
+echo [INFO] Services will NOT auto-restart. Use [1.Start All] to start again.
 timeout /t 2 >nul
 goto menu
 
@@ -152,39 +152,39 @@ call :check_pm2
 call :check_build_browser
 call :check_build_database
 echo ================================================
-echo   重启全部 Cursor MCP 服务...
+echo   Restarting all Cursor MCP services...
 echo ================================================
 echo.
 echo [1/2] Browser MCP...
 cd /d "%~dp0"
 pm2 restart %BROWSER_NAME% >nul 2>&1 || (
-    echo [提示] Browser 未运行，正在启动...
+    echo [INFO] Browser not running, starting...
     pm2 start ecosystem.config.cjs
 )
 echo.
 echo [2/2] Database MCP...
 cd /d "%~dp0mcp-database"
 pm2 restart %DB_NAME% >nul 2>&1 || (
-    echo [提示] Database 未运行，正在启动...
+    echo [INFO] Database not running, starting...
     pm2 start ecosystem.config.cjs
 )
 cd /d "%~dp0"
 echo.
-echo [重启] 全部服务已重启！
+echo [RESTARTED] All services restarted!
 timeout /t 2 >nul
 goto menu
 
 :status_all
 cls
 echo.
-echo ---- PM2 进程状态 ----
+echo ---- PM2 Process Status ----
 pm2 status
 echo.
-echo ---- Browser MCP (端口 %BROWSER_PORT%) ----
-node -e "fetch('http://localhost:%BROWSER_PORT%/health').then(r=>r.json()).then(d=>console.log(JSON.stringify(d,null,2))).catch(e=>console.log('服务未响应:',e.message))" 2>nul
+echo ---- Browser MCP (port %BROWSER_PORT%) ----
+node -e "fetch('http://localhost:%BROWSER_PORT%/health').then(r=>r.json()).then(d=>console.log(JSON.stringify(d,null,2))).catch(e=>console.log('Not responding:',e.message))" 2>nul
 echo.
-echo ---- Database MCP (端口 %DB_PORT%) ----
-node -e "fetch('http://localhost:%DB_PORT%/health').then(r=>r.json()).then(d=>console.log(JSON.stringify(d,null,2))).catch(e=>console.log('服务未响应:',e.message))" 2>nul
+echo ---- Database MCP (port %DB_PORT%) ----
+node -e "fetch('http://localhost:%DB_PORT%/health').then(r=>r.json()).then(d=>console.log(JSON.stringify(d,null,2))).catch(e=>console.log('Not responding:',e.message))" 2>nul
 echo.
 pause
 goto menu
@@ -192,7 +192,7 @@ goto menu
 :logs_browser
 cls
 echo.
-echo [Browser MCP 日志] 最近 50 行
+echo [Browser MCP Logs] Last 50 lines
 echo.
 pm2 logs %BROWSER_NAME% --lines 50 --nostream
 echo.
@@ -202,7 +202,7 @@ goto menu
 :logs_database
 cls
 echo.
-echo [Database MCP 日志] 最近 50 行
+echo [Database MCP Logs] Last 50 lines
 echo.
 pm2 logs %DB_NAME% --lines 50 --nostream
 echo.
@@ -214,9 +214,9 @@ cd /d "%~dp0mcp-database"
 if not exist .env (
     if exist .env.example (
         copy .env.example .env >nul
-        echo [提示] 已从 .env.example 创建 .env 配置文件
+        echo [INFO] Created .env from .env.example
     ) else (
-        echo [错误] 未找到 .env.example 模板
+        echo [ERROR] .env.example not found
         pause
         goto menu
     )
@@ -229,10 +229,10 @@ goto menu
 cls
 echo.
 echo ================================================
-echo   Cursor MCP 配置
+echo   Cursor MCP Config
 echo ================================================
 echo.
-echo 文件: C:\Users\你的用户名\.cursor\mcp.json
+echo File: C:\Users\YOUR_USERNAME\.cursor\mcp.json
 echo.
 echo {
 echo   "mcpServers": {
@@ -252,36 +252,36 @@ goto menu
 cls
 echo.
 echo ================================================
-echo   Cursor MCP 一键安装
+echo   Cursor MCP Full Install
 echo ================================================
 echo.
-echo [1/6] 安装 PM2...
+echo [1/6] Installing PM2...
 where pm2 >nul 2>&1 || call npm install -g pm2
 echo.
-echo [2/6] 安装 Browser 依赖...
+echo [2/6] Installing Browser dependencies...
 cd /d "%~dp0"
 call npm install
 echo.
-echo [3/6] 安装 Playwright Chromium...
+echo [3/6] Installing Playwright Chromium...
 call npx playwright install chromium
 echo.
-echo [4/6] 构建 Browser...
+echo [4/6] Building Browser MCP...
 call npm run build
 echo.
-echo [5/6] 安装 Database 依赖...
+echo [5/6] Installing Database dependencies...
 cd /d "%~dp0mcp-database"
 call npm install
 echo.
-echo [6/6] 构建 Database...
+echo [6/6] Building Database MCP...
 call npm run build
 cd /d "%~dp0"
 echo.
 if %ERRORLEVEL% EQU 0 (
     echo ================================================
-    echo   安装完成！请选择 [1.启动全部] 开始使用
+    echo   Install complete! Select [1.Start All] to run.
     echo ================================================
 ) else (
-    echo [错误] 安装过程中出现问题，请检查上方日志
+    echo [ERROR] Something went wrong. Check logs above.
 )
 echo.
 pause
