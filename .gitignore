@@ -1,8 +1,8 @@
 node_modules/
 dist/
-storage/user_data/
-storage/screenshots/
+storage/
 .env
 *.log
 .DS_Store
 Thumbs.db
+package-lock.json
