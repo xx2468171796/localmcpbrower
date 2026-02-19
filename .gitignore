@@ -1,0 +1,8 @@
+node_modules/
+dist/
+storage/user_data/
+storage/screenshots/
+.env
+*.log
+.DS_Store
+Thumbs.db
