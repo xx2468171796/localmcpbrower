@@ -49,23 +49,23 @@ function text(result: unknown) {
 }
 
 function createMcpServer(): McpServer {
-  const server = new McpServer({ name: 'windsurf-mcp-bridge', version: '1.0.0' });
+  const server = new McpServer({ name: 'cursor-mcp-bridge', version: '1.0.0' });
 
   // === Navigation ===
   server.tool('navigate', '跳转至指定网址', NavigateSchema.shape, async (args) => text(await tools.navigate(args)));
-  server.tool('set_viewport', '设置浏览器视口大�?, SetViewportSchema.shape, async (args) => text(await tools.setViewport(args)));
+  server.tool('set_viewport', '设置浏览器视口大小', SetViewportSchema.shape, async (args) => text(await tools.setViewport(args)));
   server.tool('go_back', '浏览器后退', {}, async () => text(await tools.goBack()));
-  server.tool('go_forward', '浏览器前�?, {}, async () => text(await tools.goForward()));
+  server.tool('go_forward', '浏览器前进', {}, async () => text(await tools.goForward()));
 
   // === Interaction ===
   server.tool('click', '点击页面元素', ClickSchema.shape, async (args) => text(await tools.click(args)));
-  server.tool('type', '在输入框中输入文�?, TypeSchema.shape, async (args) => text(await tools.type(args)));
+  server.tool('type', '在输入框中输入文本', TypeSchema.shape, async (args) => text(await tools.type(args)));
   server.tool('hover', '悬停在元素上', HoverSchema.shape, async (args) => text(await tools.hover(args)));
   server.tool('scroll', '滚动页面', ScrollSchema.shape, async (args) => text(await tools.scroll(args)));
   server.tool('select_option', '选择下拉选项', SelectOptionSchema.shape, async (args) => text(await tools.selectOption(args)));
   server.tool('fill_form', '批量填写表单', FillFormSchema.shape, async (args) => text(await tools.fillForm(args)));
-  server.tool('keyboard_press', '按下键盘按键(Enter/Tab/Escape�?', KeyboardPressSchema.shape, async (args) => text(await tools.keyboardPress(args)));
-  server.tool('drag_and_drop', '拖拽元素到目标位�?, DragAndDropSchema.shape, async (args) => text(await tools.dragAndDrop(args)));
+  server.tool('keyboard_press', '按下键盘按键(Enter/Tab/Escape等)', KeyboardPressSchema.shape, async (args) => text(await tools.keyboardPress(args)));
+  server.tool('drag_and_drop', '拖拽元素到目标位置', DragAndDropSchema.shape, async (args) => text(await tools.dragAndDrop(args)));
   server.tool('file_upload', '上传文件到input[type=file]', FileUploadSchema.shape, async (args) => text(await tools.fileUpload(args)));
 
   // === Observation ===
@@ -80,13 +80,13 @@ function createMcpServer(): McpServer {
     return text(result);
   });
   server.tool('get_console_logs', '获取页面console输出', {}, async () => text(await tools.getConsoleLogs()));
-  server.tool('get_network', '获取网络请求状�?, {}, async () => text(await tools.getNetwork()));
+  server.tool('get_network', '获取网络请求状态', {}, async () => text(await tools.getNetwork()));
   server.tool('execute_js', '执行自定义JavaScript', ExecuteJsSchema.shape, async (args) => text(await tools.executeJs(args)));
   server.tool('wait_for_selector', '等待元素出现', WaitForSelectorSchema.shape, async (args) => text(await tools.waitForSelector(args)));
 
   // === Content extraction ===
   server.tool('get_element_text', '获取元素文本内容', GetElementTextSchema.shape, async (args) => text(await tools.getElementText(args)));
-  server.tool('get_element_attribute', '获取元素属性�?, GetElementAttributeSchema.shape, async (args) => text(await tools.getElementAttribute(args)));
+  server.tool('get_element_attribute', '获取元素属性值', GetElementAttributeSchema.shape, async (args) => text(await tools.getElementAttribute(args)));
   server.tool('get_page_content', '获取页面内容(HTML/文本)', GetPageContentSchema.shape, async (args) => text(await tools.getPageContent(args)));
   server.tool('get_cookies', '获取Cookie', GetCookiesSchema.shape, async (args) => text(await tools.getCookies(args)));
   server.tool('set_cookies', '设置Cookie', SetCookiesSchema.shape, async (args) => text(await tools.setCookies(args)));
@@ -99,7 +99,7 @@ function createMcpServer(): McpServer {
   server.tool('list_tabs', '列出所有标签页', {}, async () => text(await tools.listTabs()));
   server.tool('new_tab', '打开新标签页', NewTabSchema.shape, async (args) => text(await tools.newTab(args)));
   server.tool('switch_tab', '切换到指定标签页', TabIndexSchema.shape, async (args) => text(await tools.switchTab(args)));
-  server.tool('close_tab', '关闭指定标签�?, TabIndexSchema.shape, async (args) => text(await tools.closeTab(args)));
+  server.tool('close_tab', '关闭指定标签页', TabIndexSchema.shape, async (args) => text(await tools.closeTab(args)));
 
   // === Network intercept ===
   server.tool('intercept_requests', '拦截/修改网络请求', InterceptRequestsSchema.shape, async (args) => text(await tools.interceptRequests(args)));

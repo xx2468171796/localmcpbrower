@@ -483,12 +483,12 @@ export async function interceptRequests(input: unknown): Promise<ToolResult<{ in
 
 export const toolRegistry = {
   navigate: { name: 'navigate', description: '跳转至指定网址', inputSchema: { type: 'object', properties: { url: { type: 'string', description: '要跳转的 URL' } }, required: ['url'] }, handler: navigate },
-  click: { name: 'click', description: '点击页面元素', inputSchema: { type: 'object', properties: { selector: { type: 'string', description: 'CSS 选择�? } }, required: ['selector'] }, handler: click },
-  type: { name: 'type', description: '在输入框中输入文�?, inputSchema: { type: 'object', properties: { selector: { type: 'string', description: 'CSS 选择�? }, text: { type: 'string', description: '要输入的文本' } }, required: ['selector', 'text'] }, handler: type },
-  take_screenshot: { name: 'take_screenshot', description: '截取当前页面截图', inputSchema: { type: 'object', properties: { name: { type: 'string', description: '截图文件�? }, fullPage: { type: 'boolean', description: '是否全屏截图' } } }, handler: takeScreenshot },
+  click: { name: 'click', description: '点击页面元素', inputSchema: { type: 'object', properties: { selector: { type: 'string', description: 'CSS 选择器' } }, required: ['selector'] }, handler: click },
+  type: { name: 'type', description: '在输入框中输入文本', inputSchema: { type: 'object', properties: { selector: { type: 'string', description: 'CSS 选择器' }, text: { type: 'string', description: '要输入的文本' } }, required: ['selector', 'text'] }, handler: type },
+  take_screenshot: { name: 'take_screenshot', description: '截取当前页面截图', inputSchema: { type: 'object', properties: { name: { type: 'string', description: '截图文件名' }, fullPage: { type: 'boolean', description: '是否全屏截图' } } }, handler: takeScreenshot },
   get_console_logs: { name: 'get_console_logs', description: '获取页面 console 输出', inputSchema: { type: 'object', properties: {} }, handler: getConsoleLogs },
-  get_network: { name: 'get_network', description: '获取网络请求状�?, inputSchema: { type: 'object', properties: {} }, handler: getNetwork },
-  execute_js: { name: 'execute_js', description: '执行自定�?JavaScript', inputSchema: { type: 'object', properties: { script: { type: 'string', description: 'JavaScript 代码' } }, required: ['script'] }, handler: executeJs }
+  get_network: { name: 'get_network', description: '获取网络请求状态', inputSchema: { type: 'object', properties: {} }, handler: getNetwork },
+  execute_js: { name: 'execute_js', description: '执行自定义 JavaScript', inputSchema: { type: 'object', properties: { script: { type: 'string', description: 'JavaScript 代码' } }, required: ['script'] }, handler: executeJs }
 } as const;
 
 export type ToolName = keyof typeof toolRegistry;

@@ -1,5 +1,5 @@
 /**
- * MCP 数据库工具定�?
+ * MCP 数据库工具定义
  */
 
 import { getDatabaseManager } from './database.js';
@@ -54,7 +54,7 @@ export async function connect(input: unknown): Promise<ToolResult<{ message: str
 }
 
 export async function disconnect(): Promise<ToolResult<{ message: string }>> {
-  try { await getDatabaseManager().disconnect(); return { success: true, data: { message: '已断开数据库连�? } }; }
+  try { await getDatabaseManager().disconnect(); return { success: true, data: { message: '已断开数据库连接' } }; }
   catch (error) { return { success: false, error: error instanceof Error ? error.message : String(error) }; }
 }
 

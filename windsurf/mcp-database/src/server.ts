@@ -1,5 +1,5 @@
 /**
- * MCP Database Bridge - Windsurf 版本
+ * MCP Database Bridge - Cursor 版本
  */
 
 import 'dotenv/config';
@@ -29,7 +29,7 @@ async function autoConnect(): Promise<boolean> {
   const dbPassword = process.env['DB_PASSWORD'];
   const dbSsl = process.env['DB_SSL'] === 'true';
   if (!dbType || !dbHost || !dbPort || !dbName || !dbUser) {
-    console.log('[提示] 未配置数据库信息，请编辑 .env 文件或使�?connect 工具手动连接');
+    console.log('[提示] 未配置数据库信息，请编辑 .env 文件或使用 connect 工具手动连接');
     return false;
   }
   try {
@@ -47,12 +47,12 @@ function text(result: unknown) {
 }
 
 function createMcpServer(): McpServer {
-  const server = new McpServer({ name: 'windsurf-mcp-database', version: '1.0.0' });
+  const server = new McpServer({ name: 'cursor-mcp-database', version: '1.0.0' });
 
   // === Connection ===
-  server.tool('connect', '连接�?PostgreSQL �?MySQL 数据�?, ConnectSchema.shape, async (args) => text(await tools.connect(args)));
-  server.tool('disconnect', '断开数据库连�?, {}, async () => text(await tools.disconnect()));
-  server.tool('status', '获取当前数据库连接状�?, {}, async () => text(await tools.status()));
+  server.tool('connect', '连接到 PostgreSQL 或 MySQL 数据库', ConnectSchema.shape, async (args) => text(await tools.connect(args)));
+  server.tool('disconnect', '断开数据库连接', {}, async () => text(await tools.disconnect()));
+  server.tool('status', '获取当前数据库连接状态', {}, async () => text(await tools.status()));
   server.tool('list_presets', '列出.env中配置的所有预设数据库', {}, async () => text(await tools.listPresets()));
   server.tool('switch_db', '切换到预设数据库(通过别名)', SwitchDbSchema.shape, async (args) => text(await tools.switchDb(args)));
 
@@ -62,7 +62,7 @@ function createMcpServer(): McpServer {
 
   // === Schema inspection ===
   server.tool('list_tables', '列出数据库中所有表', ListTablesSchema.shape, async (args) => text(await tools.listTables(args)));
-  server.tool('describe_table', '获取表的列信�?, DescribeTableSchema.shape, async (args) => text(await tools.describeTable(args)));
+  server.tool('describe_table', '获取表的列信息', DescribeTableSchema.shape, async (args) => text(await tools.describeTable(args)));
   server.tool('list_databases', '列出所有可用数据库', {}, async () => text(await tools.listDatabases()));
 
   // === New: Performance & Analysis ===
@@ -97,7 +97,7 @@ function createApp(): express.Application {
   app.use(express.json());
 
   app.get('/health', (_req, res) => {
-    res.json({ status: 'ok', uptime: Math.floor((Date.now() - startTime) / 1000), service: 'windsurf-mcp-database', sessions: transports.size });
+    res.json({ status: 'ok', uptime: Math.floor((Date.now() - startTime) / 1000), service: 'cursor-mcp-database', sessions: transports.size });
   });
 
   app.post('/mcp', async (req, res) => {
@@ -169,7 +169,7 @@ async function main(): Promise<void> {
   const app = createApp();
   app.listen(PORT, '0.0.0.0', async () => {
     console.log('========================================');
-    console.log('  MCP Database Bridge (Windsurf) v1.0.0');
+    console.log('  MCP Database Bridge (Cursor) v1.0.0');
     console.log(`  http://0.0.0.0:${PORT}`);
     console.log(`  MCP: http://0.0.0.0:${PORT}/mcp`);
     console.log('========================================');

@@ -5,17 +5,17 @@
 import { z } from 'zod';
 
 export const ConnectSchema = z.object({
-  type: z.enum(['postgresql', 'mysql']).describe('数据库类�?),
+  type: z.enum(['postgresql', 'mysql']).describe('数据库类型'),
   host: z.string().min(1).describe('主机地址'),
-  port: z.number().int().positive().describe('端口�?),
+  port: z.number().int().positive().describe('端口号'),
   database: z.string().min(1).describe('数据库名'),
-  user: z.string().min(1).describe('用户�?),
+  user: z.string().min(1).describe('用户名'),
   password: z.string().describe('密码'),
   ssl: z.boolean().optional().describe('是否启用SSL')
 });
 
 export const SwitchDbSchema = z.object({
-  alias: z.string().min(1).describe('预设数据库别�?如PROD/TEST)')
+  alias: z.string().min(1).describe('预设数据库别名(如PROD/TEST)')
 });
 
 export const QuerySchema = z.object({
@@ -29,12 +29,12 @@ export const ExecuteSchema = z.object({
 });
 
 export const ListTablesSchema = z.object({
-  schema: z.string().optional().describe('模式�?PostgreSQL)')
+  schema: z.string().optional().describe('模式名(PostgreSQL)')
 });
 
 export const DescribeTableSchema = z.object({
   table: z.string().min(1).describe('表名'),
-  schema: z.string().optional().describe('模式�?PostgreSQL)')
+  schema: z.string().optional().describe('模式名(PostgreSQL)')
 });
 
 export const ExplainQuerySchema = z.object({
@@ -43,16 +43,16 @@ export const ExplainQuerySchema = z.object({
 
 export const TableIndexesSchema = z.object({
   table: z.string().min(1).describe('表名'),
-  schema: z.string().optional().describe('模式�?)
+  schema: z.string().optional().describe('模式名')
 });
 
 export const TableRelationsSchema = z.object({
   table: z.string().min(1).describe('表名'),
-  schema: z.string().optional().describe('模式�?)
+  schema: z.string().optional().describe('模式名')
 });
 
 export const TableStatsSchema = z.object({
-  schema: z.string().optional().describe('模式�?)
+  schema: z.string().optional().describe('模式名')
 });
 
 export const ExportCsvSchema = z.object({
