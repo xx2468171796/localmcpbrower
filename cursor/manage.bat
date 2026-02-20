@@ -92,6 +92,19 @@ if not exist "%~dp0mcp-database\dist\server.js" (
 )
 exit /b 0
 
+:show_status
+echo.
+echo ---- PM2 Process Status ----
+pm2 status
+echo.
+echo ---- Browser MCP (port %BROWSER_PORT%) ----
+node -e "fetch('http://localhost:%BROWSER_PORT%/health').then(r=>r.json()).then(d=>console.log(JSON.stringify(d,null,2))).catch(e=>console.log('Not responding:',e.message))" 2>nul
+echo.
+echo ---- Database MCP (port %DB_PORT%) ----
+node -e "fetch('http://localhost:%DB_PORT%/health').then(r=>r.json()).then(d=>console.log(JSON.stringify(d,null,2))).catch(e=>console.log('Not responding:',e.message))" 2>nul
+echo.
+exit /b 0
+
 :start_all
 cls
 echo.
@@ -114,16 +127,9 @@ pm2 start ecosystem.config.cjs
 cd /d "%~dp0"
 echo.
 echo [STARTED] All services running. Auto-restart on kill.
-echo.
+echo [INFO] Waiting 5s for services to initialize...
 timeout /t 5 >nul
-echo [VERIFY] Health check:
-echo.
-echo --- Browser MCP ---
-node -e "fetch('http://localhost:%BROWSER_PORT%/health').then(r=>r.json()).then(d=>console.log(JSON.stringify(d,null,2))).catch(e=>console.log('Waiting...',e.message))" 2>nul
-echo.
-echo --- Database MCP ---
-node -e "fetch('http://localhost:%DB_PORT%/health').then(r=>r.json()).then(d=>console.log(JSON.stringify(d,null,2))).catch(e=>console.log('Waiting...',e.message))" 2>nul
-echo.
+call :show_status
 pause
 goto menu
 
@@ -142,7 +148,8 @@ pm2 delete %DB_NAME% >nul 2>&1
 echo [STOPPED] Database MCP stopped.
 echo.
 echo [INFO] Services will NOT auto-restart. Use [1.Start All] to start again.
-timeout /t 2 >nul
+call :show_status
+pause
 goto menu
 
 :restart_all
@@ -171,21 +178,15 @@ pm2 restart %DB_NAME% >nul 2>&1 || (
 cd /d "%~dp0"
 echo.
 echo [RESTARTED] All services restarted!
-timeout /t 2 >nul
+echo [INFO] Waiting 5s for services to initialize...
+timeout /t 5 >nul
+call :show_status
+pause
 goto menu
 
 :status_all
 cls
-echo.
-echo ---- PM2 Process Status ----
-pm2 status
-echo.
-echo ---- Browser MCP (port %BROWSER_PORT%) ----
-node -e "fetch('http://localhost:%BROWSER_PORT%/health').then(r=>r.json()).then(d=>console.log(JSON.stringify(d,null,2))).catch(e=>console.log('Not responding:',e.message))" 2>nul
-echo.
-echo ---- Database MCP (port %DB_PORT%) ----
-node -e "fetch('http://localhost:%DB_PORT%/health').then(r=>r.json()).then(d=>console.log(JSON.stringify(d,null,2))).catch(e=>console.log('Not responding:',e.message))" 2>nul
-echo.
+call :show_status
 pause
 goto menu
 
@@ -196,6 +197,7 @@ echo [Browser MCP Logs] Last 50 lines
 echo.
 pm2 logs %BROWSER_NAME% --lines 50 --nostream
 echo.
+call :show_status
 pause
 goto menu
 
@@ -206,6 +208,7 @@ echo [Database MCP Logs] Last 50 lines
 echo.
 pm2 logs %DB_NAME% --lines 50 --nostream
 echo.
+call :show_status
 pause
 goto menu
 
@@ -223,6 +226,8 @@ if not exist .env (
 )
 start notepad .env
 cd /d "%~dp0"
+call :show_status
+pause
 goto menu
 
 :show_mcp_config
@@ -245,6 +250,7 @@ echo     }
 echo   }
 echo }
 echo.
+call :show_status
 pause
 goto menu
 
@@ -284,5 +290,6 @@ if %ERRORLEVEL% EQU 0 (
     echo [ERROR] Something went wrong. Check logs above.
 )
 echo.
+call :show_status
 pause
 goto menu
