@@ -108,7 +108,7 @@ class BrowserManager {
 
   public async getPage(): Promise<Page> {
     if (!this.isAlive()) {
-      console.log('[BrowserManager] 检测到浏览器/页面已失效，正在重建...');
+      console.log('[BrowserManager] 检测到浏览�?页面已失效，正在重建...');
       this.context = null;
       this.page = null;
     }
@@ -170,6 +170,11 @@ class BrowserManager {
     } catch {
       return false;
     }
+  }
+
+  public setActivePage(page: Page): void {
+    this.page = page;
+    this.setupPageListeners(page);
   }
 
   public async close(): Promise<void> {

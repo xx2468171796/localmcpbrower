@@ -18,269 +18,257 @@ import {
   GetElementTextSchema, GetElementAttributeSchema, HoverSchema,
   SelectOptionSchema, FillFormSchema, GetPageContentSchema,
   PdfExportSchema, GetCookiesSchema, SetCookiesSchema,
-  PageReportSchema, SetViewportSchema
+  PageReportSchema, SetViewportSchema,
+  KeyboardPressSchema, DragAndDropSchema, FileUploadSchema,
+  NewTabSchema, TabIndexSchema, InterceptRequestsSchema
 } from './schemas.js';
 
 const PORT = parseInt(process.env['PORT'] ?? '3211', 10);
 const startTime = Date.now();
 
+// Session management
+const SESSION_TTL = 30 * 60 * 1000;
+const MAX_SESSIONS = 20;
+const transports: Map<string, { transport: StreamableHTTPServerTransport; lastAccess: number }> = new Map();
+
+function cleanupSessions(): void {
+  const now = Date.now();
+  for (const [sid, entry] of transports) {
+    if (now - entry.lastAccess > SESSION_TTL) {
+      entry.transport.close?.();
+      transports.delete(sid);
+      console.log(`[Session] Expired: ${sid}`);
+    }
+  }
+}
+setInterval(cleanupSessions, 5 * 60 * 1000);
+
+// Helper to wrap tool results
+function text(result: unknown) {
+  return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+}
+
 function createMcpServer(): McpServer {
   const server = new McpServer({ name: 'windsurf-mcp-bridge', version: '1.0.0' });
 
-  server.tool('navigate', '跳转至指定网址', NavigateSchema.shape, async (args) => {
-    const result = await tools.navigate(args);
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('click', '点击页面元素', ClickSchema.shape, async (args) => {
-    const result = await tools.click(args);
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('type', '在输入框中输入文�?, TypeSchema.shape, async (args) => {
-    const result = await tools.type(args);
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('take_screenshot', '截取当前页面截图', ScreenshotSchema.shape, async (args) => {
+  // === Navigation ===
+  server.tool('navigate', '跳转至指定网址', NavigateSchema.shape, async (args) => text(await tools.navigate(args)));
+  server.tool('set_viewport', '设置浏览器视口大�?, SetViewportSchema.shape, async (args) => text(await tools.setViewport(args)));
+  server.tool('go_back', '浏览器后退', {}, async () => text(await tools.goBack()));
+  server.tool('go_forward', '浏览器前�?, {}, async () => text(await tools.goForward()));
+
+  // === Interaction ===
+  server.tool('click', '点击页面元素', ClickSchema.shape, async (args) => text(await tools.click(args)));
+  server.tool('type', '在输入框中输入文�?, TypeSchema.shape, async (args) => text(await tools.type(args)));
+  server.tool('hover', '悬停在元素上', HoverSchema.shape, async (args) => text(await tools.hover(args)));
+  server.tool('scroll', '滚动页面', ScrollSchema.shape, async (args) => text(await tools.scroll(args)));
+  server.tool('select_option', '选择下拉选项', SelectOptionSchema.shape, async (args) => text(await tools.selectOption(args)));
+  server.tool('fill_form', '批量填写表单', FillFormSchema.shape, async (args) => text(await tools.fillForm(args)));
+  server.tool('keyboard_press', '按下键盘按键(Enter/Tab/Escape�?', KeyboardPressSchema.shape, async (args) => text(await tools.keyboardPress(args)));
+  server.tool('drag_and_drop', '拖拽元素到目标位�?, DragAndDropSchema.shape, async (args) => text(await tools.dragAndDrop(args)));
+  server.tool('file_upload', '上传文件到input[type=file]', FileUploadSchema.shape, async (args) => text(await tools.fileUpload(args)));
+
+  // === Observation ===
+  server.tool('take_screenshot', '截取当前页面截图(返回base64图片)', ScreenshotSchema.shape, async (args) => {
     const result = await tools.takeScreenshot(args);
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    if (result.success && result.data.base64) {
+      return { content: [
+        { type: 'image' as const, data: result.data.base64, mimeType: 'image/png' as const },
+        { type: 'text' as const, text: JSON.stringify({ success: true, data: { path: result.data.path, fullPage: result.data.fullPage } }) }
+      ] };
+    }
+    return text(result);
   });
-  server.tool('get_console_logs', '获取页面 console 输出', {}, async () => {
-    const result = await tools.getConsoleLogs();
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('get_network', '获取网络请求状�?, {}, async () => {
-    const result = await tools.getNetwork();
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('execute_js', '执行自定�?JavaScript', ExecuteJsSchema.shape, async (args) => {
-    const result = await tools.executeJs(args);
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('scroll', '页面滚动', ScrollSchema.shape, async (args) => {
-    const result = await tools.scroll(args);
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('go_back', '浏览器后退', {}, async () => {
-    const result = await tools.goBack();
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('go_forward', '浏览器前�?, {}, async () => {
-    const result = await tools.goForward();
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('hover', '鼠标悬停', HoverSchema.shape, async (args) => {
-    const result = await tools.hover(args);
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('wait_for_selector', '等待元素出现', WaitForSelectorSchema.shape, async (args) => {
-    const result = await tools.waitForSelector(args);
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('get_element_text', '获取元素文本', GetElementTextSchema.shape, async (args) => {
-    const result = await tools.getElementText(args);
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('get_element_attribute', '获取元素属�?, GetElementAttributeSchema.shape, async (args) => {
-    const result = await tools.getElementAttribute(args);
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('select_option', '选择下拉框选项', SelectOptionSchema.shape, async (args) => {
-    const result = await tools.selectOption(args);
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('fill_form', '批量填充表单', FillFormSchema.shape, async (args) => {
-    const result = await tools.fillForm(args);
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('get_page_content', '获取页面内容', GetPageContentSchema.shape, async (args) => {
-    const result = await tools.getPageContent(args);
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('pdf_export', '导出页面为PDF', PdfExportSchema.shape, async (args) => {
-    const result = await tools.pdfExport(args);
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('get_cookies', '获取Cookie', GetCookiesSchema.shape, async (args) => {
-    const result = await tools.getCookies(args);
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('set_cookies', '设置Cookie', SetCookiesSchema.shape, async (args) => {
-    const result = await tools.setCookies(args);
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('generate_page_report', '生成页面分析报告', PageReportSchema.shape, async (args) => {
-    const result = await tools.generatePageReport(args);
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('set_viewport', '设置浏览器窗口大�?, SetViewportSchema.shape, async (args) => {
-    const result = await tools.setViewport(args);
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
+  server.tool('get_console_logs', '获取页面console输出', {}, async () => text(await tools.getConsoleLogs()));
+  server.tool('get_network', '获取网络请求状�?, {}, async () => text(await tools.getNetwork()));
+  server.tool('execute_js', '执行自定义JavaScript', ExecuteJsSchema.shape, async (args) => text(await tools.executeJs(args)));
+  server.tool('wait_for_selector', '等待元素出现', WaitForSelectorSchema.shape, async (args) => text(await tools.waitForSelector(args)));
+
+  // === Content extraction ===
+  server.tool('get_element_text', '获取元素文本内容', GetElementTextSchema.shape, async (args) => text(await tools.getElementText(args)));
+  server.tool('get_element_attribute', '获取元素属性�?, GetElementAttributeSchema.shape, async (args) => text(await tools.getElementAttribute(args)));
+  server.tool('get_page_content', '获取页面内容(HTML/文本)', GetPageContentSchema.shape, async (args) => text(await tools.getPageContent(args)));
+  server.tool('get_cookies', '获取Cookie', GetCookiesSchema.shape, async (args) => text(await tools.getCookies(args)));
+  server.tool('set_cookies', '设置Cookie', SetCookiesSchema.shape, async (args) => text(await tools.setCookies(args)));
+
+  // === Export & report ===
+  server.tool('pdf_export', '导出页面为PDF', PdfExportSchema.shape, async (args) => text(await tools.pdfExport(args)));
+  server.tool('generate_page_report', '生成页面分析报告', PageReportSchema.shape, async (args) => text(await tools.generatePageReport(args)));
+
+  // === Multi-tab ===
+  server.tool('list_tabs', '列出所有标签页', {}, async () => text(await tools.listTabs()));
+  server.tool('new_tab', '打开新标签页', NewTabSchema.shape, async (args) => text(await tools.newTab(args)));
+  server.tool('switch_tab', '切换到指定标签页', TabIndexSchema.shape, async (args) => text(await tools.switchTab(args)));
+  server.tool('close_tab', '关闭指定标签�?, TabIndexSchema.shape, async (args) => text(await tools.closeTab(args)));
+
+  // === Network intercept ===
+  server.tool('intercept_requests', '拦截/修改网络请求', InterceptRequestsSchema.shape, async (args) => text(await tools.interceptRequests(args)));
 
   return server;
 }
 
 function createApp(): express.Application {
   const app = express();
+  app.use(express.json({ limit: '10mb' }));
 
+  // CORS
   app.use((_req: Request, res: Response, next: NextFunction) => {
     res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, mcp-session-id');
+    if (_req.method === 'OPTIONS') { res.sendStatus(204); return; }
     next();
   });
-  app.use(express.json());
 
+  // Rate limiter: 100 req/s per IP
+  const requestCounts = new Map<string, { count: number; resetAt: number }>();
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    const ip = req.ip ?? 'unknown';
+    const now = Date.now();
+    const entry = requestCounts.get(ip);
+    if (!entry || now > entry.resetAt) {
+      requestCounts.set(ip, { count: 1, resetAt: now + 1000 });
+    } else {
+      entry.count++;
+      if (entry.count > 100) { res.status(429).json({ error: 'Too many requests' }); return; }
+    }
+    next();
+  });
+
+  // Health
   app.get('/health', async (_req: Request, res: Response) => {
-    const browserManager = getBrowserManager();
+    const bm = getBrowserManager();
     const result: HealthCheckResult = {
-      status: browserManager.isAlive() ? 'ok' : 'error',
-      browserAlive: browserManager.isAlive(),
-      uptime: Date.now() - startTime
+      status: bm.isAlive() ? 'ok' : 'error',
+      browserAlive: bm.isAlive(),
+      uptime: Date.now() - startTime,
+      sessions: transports.size
     };
     res.json(result);
   });
 
-  // Session-based transport management
-  const transports: { [sessionId: string]: StreamableHTTPServerTransport } = {};
   let requestCount = 0;
-
   app.get('/connections', async (_req: Request, res: Response) => {
-    res.json({ mode: 'session', sessions: Object.keys(transports).length, requestCount, uptime: Math.floor((Date.now() - startTime) / 1000) + 's' });
+    res.json({ mode: 'session', sessions: transports.size, requestCount, uptime: Math.floor((Date.now() - startTime) / 1000) + 's' });
   });
 
+  // MCP POST
   app.post('/mcp', async (req: Request, res: Response) => {
     requestCount++;
-    console.log(`[MCP] POST请求 #${requestCount}`);
     try {
       const sessionId = req.headers['mcp-session-id'] as string | undefined;
       let transport: StreamableHTTPServerTransport;
 
-      if (sessionId && transports[sessionId]) {
-        // Reuse existing transport
-        transport = transports[sessionId];
+      if (sessionId && transports.has(sessionId)) {
+        const entry = transports.get(sessionId)!;
+        entry.lastAccess = Date.now();
+        transport = entry.transport;
       } else if (!sessionId && isInitializeRequest(req.body)) {
-        // New initialization request - create new transport + session
+        if (transports.size >= MAX_SESSIONS) {
+          cleanupSessions();
+          if (transports.size >= MAX_SESSIONS) {
+            res.status(503).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Too many sessions' }, id: null });
+            return;
+          }
+        }
         const eventStore = new InMemoryEventStore();
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           eventStore,
-          onsessioninitialized: (newSessionId) => {
-            transports[newSessionId] = transport;
-            console.log(`[MCP] New session: ${newSessionId}`);
+          onsessioninitialized: (sid) => {
+            transports.set(sid, { transport, lastAccess: Date.now() });
+            console.log(`[Session] New: ${sid} (total: ${transports.size})`);
           }
         });
-
         transport.onclose = () => {
-          const sid = Object.entries(transports).find(([_, t]) => t === transport)?.[0];
-          if (sid) {
-            delete transports[sid];
-            console.log(`[MCP] Session closed: ${sid}`);
-          }
+          const sid = [...transports.entries()].find(([_, e]) => e.transport === transport)?.[0];
+          if (sid) { transports.delete(sid); console.log(`[Session] Closed: ${sid}`); }
         };
-
         const mcpServer = createMcpServer();
         await mcpServer.connect(transport);
       } else {
-        res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Bad Request: No valid session ID or not an initialize request' }, id: null });
+        res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Bad Request' }, id: null });
         return;
       }
-
       await transport.handleRequest(req, res, req.body);
     } catch (error) {
-      console.error('[MCP] 请求处理错误:', error);
-      if (!res.headersSent) {
-        res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal server error' }, id: null });
-      }
+      console.error('[MCP] Error:', error);
+      if (!res.headersSent) res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal server error' }, id: null });
     }
   });
 
+  // MCP GET (SSE streaming)
   app.get('/mcp', async (req: Request, res: Response) => {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
-    if (sessionId && transports[sessionId]) {
-      const transport = transports[sessionId];
-      await transport.handleRequest(req, res);
+    if (sessionId && transports.has(sessionId)) {
+      transports.get(sessionId)!.lastAccess = Date.now();
+      await transports.get(sessionId)!.transport.handleRequest(req, res);
     } else {
-      res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Bad Request: No valid session' }, id: null });
+      res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'No valid session' }, id: null });
     }
   });
 
+  // MCP DELETE
   app.delete('/mcp', async (req: Request, res: Response) => {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
-    if (sessionId && transports[sessionId]) {
-      const transport = transports[sessionId];
-      await transport.handleRequest(req, res);
+    if (sessionId && transports.has(sessionId)) {
+      await transports.get(sessionId)!.transport.handleRequest(req, res);
     } else {
-      res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Bad Request: No valid session' }, id: null });
+      res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'No valid session' }, id: null });
     }
   });
 
   return app;
 }
 
-async function gracefulShutdown(): Promise<void> {
-  console.log('[Server] 正在关闭...');
-  try { await getBrowserManager().close(); console.log('[Server] 浏览器已关闭'); }
-  catch (error) { console.error('[Server] 关闭浏览器失�?', error); }
-  process.exit(0);
+function listenWithRetry(app: express.Application, host: string, port: number, retries: number): void {
+  const server = app.listen(port, host, () => {
+    console.log('========================================');
+    console.log(`  Cursor MCP Browser Bridge v1.0.0`);
+    console.log(`  http://${host}:${port}`);
+    console.log(`  MCP: http://${host}:${port}/mcp`);
+    console.log('========================================');
+  });
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE' && retries > 0) {
+      console.log(`[Server] Port ${port} in use, retrying in 2s...`);
+      setTimeout(() => listenWithRetry(app, host, port, retries - 1), 2000);
+    } else { console.error('[Server] Failed:', err.message); process.exit(1); }
+  });
+
+  // Graceful shutdown
+  const shutdown = async () => {
+    console.log('[Server] Shutting down...');
+    for (const [sid, entry] of transports) { try { entry.transport.close?.(); } catch {} transports.delete(sid); }
+    try { await getBrowserManager().close(); } catch {}
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(1), 5000);
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }
 
-async function killPortProcess(port: number): Promise<boolean> {
-  const { execSync } = await import('child_process');
+async function killPortProcess(port: number): Promise<void> {
   try {
-    const output = execSync(`netstat -ano | findstr ":${port}" | findstr "LISTENING"`, { encoding: 'utf-8', timeout: 5000 });
-    const lines = output.trim().split('\n');
-    for (const line of lines) {
-      const parts = line.trim().split(/\s+/);
-      const pid = parts[parts.length - 1];
+    const { execSync } = await import('child_process');
+    const output = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, { encoding: 'utf-8', timeout: 5000 });
+    for (const line of output.trim().split('\n')) {
+      const pid = line.trim().split(/\s+/).pop();
       if (pid && pid !== '0' && pid !== String(process.pid)) {
-        console.log(`[Server] 发现端口 ${port} �?PID ${pid} 占用，正在清�?..`);
-        try { execSync(`taskkill /PID ${pid} /F`, { timeout: 5000 }); console.log(`[Server] 已杀�?PID ${pid}`); }
-        catch { /* 进程可能已退�?*/ }
+        try { execSync(`taskkill /F /PID ${pid}`, { timeout: 5000 }); } catch {}
       }
     }
-    return true;
-  } catch { return false; }
-}
-
-function listenWithRetry(app: express.Application, host: string, port: number, maxRetries: number = 3): void {
-  let attempt = 0;
-  function tryListen(): void {
-    attempt++;
-    const server = app.listen(port, host, () => {
-      console.log(`[Server] MCP Bridge 已启�? http://${host}:${port}`);
-      console.log(`[Server] MCP 端点: http://${host}:${port}/mcp`);
-      console.log(`[Server] 健康检�? http://${host}:${port}/health`);
-    });
-    server.on('error', async (err: NodeJS.ErrnoException) => {
-      if (err.code === 'EADDRINUSE' && attempt <= maxRetries) {
-        console.warn(`[Server] 端口 ${port} 被占�?(尝试 ${attempt}/${maxRetries})，正在清�?..`);
-        await killPortProcess(port);
-        setTimeout(tryListen, attempt * 2000);
-      } else {
-        console.error(`[Server] 无法启动服务:`, err.message);
-        process.exit(1);
-      }
-    });
-  }
-  tryListen();
+  } catch {}
 }
 
 async function main(): Promise<void> {
-  process.on('uncaughtException', (err) => { console.error('[Server] 未捕获异�?', err.message); });
-  process.on('unhandledRejection', (reason) => { console.error('[Server] 未处理的 Promise 拒绝:', reason); });
-  process.on('SIGTERM', gracefulShutdown);
-  process.on('SIGINT', gracefulShutdown);
-
   await killPortProcess(PORT);
   await new Promise(resolve => setTimeout(resolve, 1000));
-
-  console.log('[Server] 正在启动浏览�?..');
-  try { await getBrowserManager().getContext(); console.log('[Server] 浏览器已就绪'); }
-  catch (error) { console.error('[Server] 浏览器启动失败，将在首次请求时重�?', error); }
-
+  console.log('[Server] Starting browser...');
+  try { await getBrowserManager().getContext(); console.log('[Server] Browser ready'); }
+  catch (error) { console.error('[Server] Browser start failed, will retry on first request'); }
   const app = createApp();
-  const HOST = process.env['HOST'] ?? '0.0.0.0';
-  listenWithRetry(app, HOST, PORT, 3);
+  listenWithRetry(app, process.env['HOST'] ?? '0.0.0.0', PORT, 3);
 }
 
-main().catch((error) => { console.error('[Server] 启动失败:', error); process.exit(1); });
+main().catch((error) => { console.error('[Server] Startup failed:', error); process.exit(1); });

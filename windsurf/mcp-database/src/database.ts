@@ -1,5 +1,5 @@
 /**
- * 数据库连接管理器 - 支持 PostgreSQL 和 MySQL
+ * 数据库连接管理器 - 支持 PostgreSQL �?MySQL
  */
 
 import pg from 'pg';
@@ -92,7 +92,7 @@ class DatabaseManager {
   }
 
   public async query(sql: string, params?: unknown[]): Promise<QueryResult> {
-    if (!this.isConnected()) throw new Error('未连接数据库，请先调用 connect 工具');
+    if (!this.isConnected()) throw new Error('未连接数据库，请先调�?connect 工具');
     const isSelect = sql.trim().toLowerCase().startsWith('select');
     if (isSelect) {
       const cacheKey = this.getCacheKey(sql, params);
@@ -110,13 +110,13 @@ class DatabaseManager {
       const [rows, fields] = await this.mysqlPool.execute(sql, params);
       const rowArray = Array.isArray(rows) ? rows : [rows];
       result = { rows: rowArray as Record<string, unknown>[], rowCount: rowArray.length, fields: (fields as mysql.FieldPacket[])?.map(f => f.name) };
-    } else { throw new Error('数据库连接异常'); }
+    } else { throw new Error('数据库连接异�?); }
     if (isSelect) { this.queryCache.set(this.getCacheKey(sql, params), { result, timestamp: Date.now() }); }
     return result;
   }
 
   public async execute(sql: string, params?: unknown[]): Promise<{ affectedRows: number }> {
-    if (!this.isConnected()) throw new Error('未连接数据库，请先调用 connect 工具');
+    if (!this.isConnected()) throw new Error('未连接数据库，请先调�?connect 工具');
     if (this.currentType === 'postgresql' && this.pgPool) {
       const result = await this.pgPool.query(sql, params);
       return { affectedRows: result.rowCount ?? 0 };
@@ -124,11 +124,11 @@ class DatabaseManager {
       const [result] = await this.mysqlPool.execute(sql, params);
       return { affectedRows: (result as mysql.ResultSetHeader).affectedRows ?? 0 };
     }
-    throw new Error('数据库连接异常');
+    throw new Error('数据库连接异�?);
   }
 
   public async listTables(schema?: string): Promise<TableInfo[]> {
-    if (!this.isConnected()) throw new Error('未连接数据库，请先调用 connect 工具');
+    if (!this.isConnected()) throw new Error('未连接数据库，请先调�?connect 工具');
     if (this.currentType === 'postgresql' && this.pgPool) {
       const schemaName = schema ?? 'public';
       const result = await this.pgPool.query(`SELECT table_name as name, table_schema as schema, table_type FROM information_schema.tables WHERE table_schema = $1 ORDER BY table_name`, [schemaName]);
@@ -137,11 +137,11 @@ class DatabaseManager {
       const [rows] = await this.mysqlPool.execute(`SELECT table_name as name, table_type FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_name`);
       return (rows as Record<string, unknown>[]).map(row => ({ name: row.name as string, type: row.table_type === 'VIEW' ? 'view' : 'table' }));
     }
-    throw new Error('数据库连接异常');
+    throw new Error('数据库连接异�?);
   }
 
   public async describeTable(table: string, schema?: string): Promise<ColumnInfo[]> {
-    if (!this.isConnected()) throw new Error('未连接数据库，请先调用 connect 工具');
+    if (!this.isConnected()) throw new Error('未连接数据库，请先调�?connect 工具');
     if (this.currentType === 'postgresql' && this.pgPool) {
       const schemaName = schema ?? 'public';
       const result = await this.pgPool.query(`
@@ -163,11 +163,11 @@ class DatabaseManager {
       `, [table]);
       return (rows as Record<string, unknown>[]).map(row => ({ name: row.name as string, type: row.type as string, nullable: Boolean(row.nullable), defaultValue: row.default_value as string | null, isPrimaryKey: Boolean(row.is_primary_key) }));
     }
-    throw new Error('数据库连接异常');
+    throw new Error('数据库连接异�?);
   }
 
   public async listDatabases(): Promise<string[]> {
-    if (!this.isConnected()) throw new Error('未连接数据库，请先调用 connect 工具');
+    if (!this.isConnected()) throw new Error('未连接数据库，请先调�?connect 工具');
     if (this.currentType === 'postgresql' && this.pgPool) {
       const result = await this.pgPool.query(`SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname`);
       return result.rows.map(row => row.datname);
@@ -175,7 +175,116 @@ class DatabaseManager {
       const [rows] = await this.mysqlPool.execute('SHOW DATABASES');
       return (rows as Record<string, unknown>[]).map(row => row.Database as string);
     }
-    throw new Error('数据库连接异常');
+    throw new Error('数据库连接异�?);
+  }
+
+  // === New: EXPLAIN query ===
+  public async explainQuery(sql: string): Promise<QueryResult> {
+    this.ensureConnected();
+    if (this.pgPool) {
+      const result = await this.pgPool.query(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${sql}`);
+      return { rows: result.rows, rowCount: result.rowCount ?? 0, fields: result.fields?.map(f => f.name) };
+    } else if (this.mysqlPool) {
+      const [rows, fields] = await this.mysqlPool.execute(`EXPLAIN ${sql}`);
+      return { rows: rows as Record<string, unknown>[], rowCount: (rows as unknown[]).length, fields: fields?.map(f => f.name) };
+    }
+    throw new Error('数据库连接异�?);
+  }
+
+  // === New: Table indexes ===
+  public async getTableIndexes(table: string, schema?: string): Promise<Record<string, unknown>[]> {
+    this.ensureConnected();
+    if (this.pgPool) {
+      const s = schema ?? 'public';
+      const result = await this.pgPool.query(`
+        SELECT i.relname AS index_name, a.attname AS column_name,
+               ix.indisunique AS is_unique, ix.indisprimary AS is_primary,
+               am.amname AS index_type
+        FROM pg_index ix
+        JOIN pg_class t ON t.oid = ix.indrelid
+        JOIN pg_class i ON i.oid = ix.indexrelid
+        JOIN pg_namespace n ON n.oid = t.relnamespace
+        JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(ix.indkey)
+        JOIN pg_am am ON am.oid = i.relam
+        WHERE t.relname = $1 AND n.nspname = $2
+        ORDER BY i.relname`, [table, s]);
+      return result.rows;
+    } else if (this.mysqlPool) {
+      const [rows] = await this.mysqlPool.execute(`SHOW INDEX FROM \`${table}\``);
+      return rows as Record<string, unknown>[];
+    }
+    throw new Error('数据库连接异�?);
+  }
+
+  // === New: Table relations (foreign keys) ===
+  public async getTableRelations(table: string, schema?: string): Promise<Record<string, unknown>[]> {
+    this.ensureConnected();
+    if (this.pgPool) {
+      const s = schema ?? 'public';
+      const result = await this.pgPool.query(`
+        SELECT tc.constraint_name, kcu.column_name,
+               ccu.table_schema AS foreign_schema, ccu.table_name AS foreign_table, ccu.column_name AS foreign_column
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+        JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+        WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_name = $1 AND tc.table_schema = $2`, [table, s]);
+      return result.rows;
+    } else if (this.mysqlPool) {
+      const db = this.currentConfig?.database ?? '';
+      const [rows] = await this.mysqlPool.execute(`
+        SELECT CONSTRAINT_NAME, COLUMN_NAME, REFERENCED_TABLE_NAME AS foreign_table, REFERENCED_COLUMN_NAME AS foreign_column
+        FROM information_schema.KEY_COLUMN_USAGE
+        WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL`, [db, table]);
+      return rows as Record<string, unknown>[];
+    }
+    throw new Error('数据库连接异�?);
+  }
+
+  // === New: Table size stats ===
+  public async getTableStats(schema?: string): Promise<Record<string, unknown>[]> {
+    this.ensureConnected();
+    if (this.pgPool) {
+      const s = schema ?? 'public';
+      const result = await this.pgPool.query(`
+        SELECT relname AS table_name,
+               n_live_tup AS row_estimate,
+               pg_size_pretty(pg_total_relation_size(relid)) AS total_size,
+               pg_size_pretty(pg_relation_size(relid)) AS data_size,
+               pg_size_pretty(pg_indexes_size(relid)) AS index_size
+        FROM pg_stat_user_tables WHERE schemaname = $1 ORDER BY pg_total_relation_size(relid) DESC`, [s]);
+      return result.rows;
+    } else if (this.mysqlPool) {
+      const db = this.currentConfig?.database ?? '';
+      const [rows] = await this.mysqlPool.execute(`
+        SELECT TABLE_NAME AS table_name, TABLE_ROWS AS row_estimate,
+               CONCAT(ROUND((DATA_LENGTH + INDEX_LENGTH) / 1024 / 1024, 2), ' MB') AS total_size,
+               CONCAT(ROUND(DATA_LENGTH / 1024 / 1024, 2), ' MB') AS data_size,
+               CONCAT(ROUND(INDEX_LENGTH / 1024 / 1024, 2), ' MB') AS index_size
+        FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? ORDER BY (DATA_LENGTH + INDEX_LENGTH) DESC`, [db]);
+      return rows as Record<string, unknown>[];
+    }
+    throw new Error('数据库连接异�?);
+  }
+
+  // === New: Export query to CSV string ===
+  public async exportCsv(sql: string): Promise<string> {
+    this.ensureConnected();
+    const result = await this.query(sql);
+    if (result.rows.length === 0) return '';
+    const headers = Object.keys(result.rows[0]!);
+    const csvRows = [headers.join(',')];
+    for (const row of result.rows) {
+      csvRows.push(headers.map(h => {
+        const val = row[h];
+        const str = val === null || val === undefined ? '' : String(val);
+        return str.includes(',') || str.includes('"') || str.includes('\n') ? `"${str.replace(/"/g, '""')}"` : str;
+      }).join(','));
+    }
+    return csvRows.join('\n');
+  }
+
+  private ensureConnected(): void {
+    if (!this.pgPool && !this.mysqlPool) throw new Error('未连接数据库，请先使�?connect 工具连接');
   }
 }
 

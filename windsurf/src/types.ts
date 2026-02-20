@@ -2,7 +2,7 @@
  * TypeScript 类型定义
  */
 
-/** 控制台日志条目 */
+/** 控制台日志条�?*/
 export interface ConsoleLogEntry {
   type: 'log' | 'info' | 'warn' | 'error' | 'debug';
   text: string;
@@ -72,9 +72,10 @@ export interface ExecuteJsResult {
   result: unknown;
 }
 
-/** 健康检查结果 */
+/** 健康检查结�?*/
 export interface HealthCheckResult {
   status: 'ok' | 'error';
   browserAlive: boolean;
   uptime: number;
+  sessions?: number;
 }

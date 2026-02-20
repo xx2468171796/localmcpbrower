@@ -36,3 +36,25 @@ export const DescribeTableSchema = z.object({
   table: z.string().min(1).describe('表名'),
   schema: z.string().optional().describe('模式名(PostgreSQL)')
 });
+
+export const ExplainQuerySchema = z.object({
+  sql: z.string().min(1).describe('要分析的SQL语句')
+});
+
+export const TableIndexesSchema = z.object({
+  table: z.string().min(1).describe('表名'),
+  schema: z.string().optional().describe('模式名')
+});
+
+export const TableRelationsSchema = z.object({
+  table: z.string().min(1).describe('表名'),
+  schema: z.string().optional().describe('模式名')
+});
+
+export const TableStatsSchema = z.object({
+  schema: z.string().optional().describe('模式名')
+});
+
+export const ExportCsvSchema = z.object({
+  sql: z.string().min(1).describe('SQL查询语句')
+});

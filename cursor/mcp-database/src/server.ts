@@ -11,7 +11,10 @@ import { InMemoryEventStore } from '@modelcontextprotocol/sdk/examples/shared/in
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { getDatabaseManager } from './database.js';
 import * as tools from './tools.js';
-import { ConnectSchema, QuerySchema, ExecuteSchema, ListTablesSchema, DescribeTableSchema, SwitchDbSchema } from './schemas.js';
+import {
+  ConnectSchema, QuerySchema, ExecuteSchema, ListTablesSchema, DescribeTableSchema, SwitchDbSchema,
+  ExplainQuerySchema, TableIndexesSchema, TableRelationsSchema, TableStatsSchema, ExportCsvSchema
+} from './schemas.js';
 import type { DatabaseType } from './types.js';
 
 const PORT = parseInt(process.env['PORT'] ?? '3212', 10);
@@ -39,73 +42,93 @@ async function autoConnect(): Promise<boolean> {
   }
 }
 
+function text(result: unknown) {
+  return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+}
+
 function createMcpServer(): McpServer {
   const server = new McpServer({ name: 'cursor-mcp-database', version: '1.0.0' });
 
-  server.tool('connect', '连接到 PostgreSQL 或 MySQL 数据库', ConnectSchema.shape, async (args) => {
-    const result = await tools.connect(args); return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('disconnect', '断开数据库连接', {}, async () => {
-    const result = await tools.disconnect(); return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('status', '获取当前数据库连接状态', {}, async () => {
-    const result = await tools.status(); return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('query', '执行 SQL 查询语句(SELECT)', QuerySchema.shape, async (args) => {
-    const result = await tools.query(args); return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('execute', '执行 SQL 操作语句(INSERT/UPDATE/DELETE)', ExecuteSchema.shape, async (args) => {
-    const result = await tools.execute(args); return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('list_tables', '列出数据库中所有表', ListTablesSchema.shape, async (args) => {
-    const result = await tools.listTables(args); return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('describe_table', '获取表的列信息', DescribeTableSchema.shape, async (args) => {
-    const result = await tools.describeTable(args); return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('list_databases', '列出所有可用数据库', {}, async () => {
-    const result = await tools.listDatabases(); return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('list_presets', '列出.env中配置的所有预设数据库', {}, async () => {
-    const result = await tools.listPresets(); return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
-  server.tool('switch_db', '切换到预设数据库(通过别名)', SwitchDbSchema.shape, async (args) => {
-    const result = await tools.switchDb(args); return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  });
+  // === Connection ===
+  server.tool('connect', '连接到 PostgreSQL 或 MySQL 数据库', ConnectSchema.shape, async (args) => text(await tools.connect(args)));
+  server.tool('disconnect', '断开数据库连接', {}, async () => text(await tools.disconnect()));
+  server.tool('status', '获取当前数据库连接状态', {}, async () => text(await tools.status()));
+  server.tool('list_presets', '列出.env中配置的所有预设数据库', {}, async () => text(await tools.listPresets()));
+  server.tool('switch_db', '切换到预设数据库(通过别名)', SwitchDbSchema.shape, async (args) => text(await tools.switchDb(args)));
+
+  // === Query ===
+  server.tool('query', '执行SQL查询语句(SELECT)', QuerySchema.shape, async (args) => text(await tools.query(args)));
+  server.tool('execute', '执行SQL操作语句(INSERT/UPDATE/DELETE)', ExecuteSchema.shape, async (args) => text(await tools.execute(args)));
+
+  // === Schema inspection ===
+  server.tool('list_tables', '列出数据库中所有表', ListTablesSchema.shape, async (args) => text(await tools.listTables(args)));
+  server.tool('describe_table', '获取表的列信息', DescribeTableSchema.shape, async (args) => text(await tools.describeTable(args)));
+  server.tool('list_databases', '列出所有可用数据库', {}, async () => text(await tools.listDatabases()));
+
+  // === New: Performance & Analysis ===
+  server.tool('explain_query', 'EXPLAIN分析SQL执行计划(性能调优)', ExplainQuerySchema.shape, async (args) => text(await tools.explainQuery(args)));
+  server.tool('table_indexes', '查看表的索引信息', TableIndexesSchema.shape, async (args) => text(await tools.getTableIndexes(args)));
+  server.tool('table_relations', '查看表的外键关系', TableRelationsSchema.shape, async (args) => text(await tools.getTableRelations(args)));
+  server.tool('table_stats', '查看所有表的大小和行数统计', TableStatsSchema.shape, async (args) => text(await tools.getTableStats(args)));
+  server.tool('export_csv', '将SQL查询结果导出为CSV', ExportCsvSchema.shape, async (args) => text(await tools.exportCsv(args)));
 
   return server;
 }
+
+// Session management
+const SESSION_TTL = 30 * 60 * 1000;
+const MAX_SESSIONS = 20;
+const transports: Map<string, { transport: StreamableHTTPServerTransport; lastAccess: number }> = new Map();
+
+function cleanupSessions(): void {
+  const now = Date.now();
+  for (const [sid, entry] of transports) {
+    if (now - entry.lastAccess > SESSION_TTL) {
+      entry.transport.close?.();
+      transports.delete(sid);
+      console.log(`[Session] Expired: ${sid}`);
+    }
+  }
+}
+setInterval(cleanupSessions, 5 * 60 * 1000);
 
 function createApp(): express.Application {
   const app = express();
   app.use(express.json());
 
   app.get('/health', (_req, res) => {
-    res.json({ status: 'ok', uptime: Math.floor((Date.now() - startTime) / 1000), service: 'cursor-mcp-database' });
+    res.json({ status: 'ok', uptime: Math.floor((Date.now() - startTime) / 1000), service: 'cursor-mcp-database', sessions: transports.size });
   });
-
-  const transports: { [sessionId: string]: StreamableHTTPServerTransport } = {};
 
   app.post('/mcp', async (req, res) => {
     try {
       const sessionId = req.headers['mcp-session-id'] as string | undefined;
       let transport: StreamableHTTPServerTransport;
 
-      if (sessionId && transports[sessionId]) {
-        transport = transports[sessionId];
+      if (sessionId && transports.has(sessionId)) {
+        const entry = transports.get(sessionId)!;
+        entry.lastAccess = Date.now();
+        transport = entry.transport;
       } else if (!sessionId && isInitializeRequest(req.body)) {
+        if (transports.size >= MAX_SESSIONS) {
+          cleanupSessions();
+          if (transports.size >= MAX_SESSIONS) {
+            res.status(503).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Too many sessions' }, id: null });
+            return;
+          }
+        }
         const eventStore = new InMemoryEventStore();
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           eventStore,
-          onsessioninitialized: (newSessionId) => {
-            transports[newSessionId] = transport;
-            console.log(`[MCP] New session: ${newSessionId}`);
+          onsessioninitialized: (sid) => {
+            transports.set(sid, { transport, lastAccess: Date.now() });
+            console.log(`[Session] New: ${sid} (total: ${transports.size})`);
           }
         });
         transport.onclose = () => {
-          const sid = Object.entries(transports).find(([_, t]) => t === transport)?.[0];
-          if (sid) { delete transports[sid]; console.log(`[MCP] Session closed: ${sid}`); }
+          const sid = [...transports.entries()].find(([_, e]) => e.transport === transport)?.[0];
+          if (sid) { transports.delete(sid); console.log(`[Session] Closed: ${sid}`); }
         };
         const mcpServer = createMcpServer();
         await mcpServer.connect(transport);
@@ -122,8 +145,9 @@ function createApp(): express.Application {
 
   app.get('/mcp', async (req, res) => {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
-    if (sessionId && transports[sessionId]) {
-      await transports[sessionId].handleRequest(req, res);
+    if (sessionId && transports.has(sessionId)) {
+      transports.get(sessionId)!.lastAccess = Date.now();
+      await transports.get(sessionId)!.transport.handleRequest(req, res);
     } else {
       res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'No valid session' }, id: null });
     }
@@ -131,8 +155,8 @@ function createApp(): express.Application {
 
   app.delete('/mcp', async (req, res) => {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
-    if (sessionId && transports[sessionId]) {
-      await transports[sessionId].handleRequest(req, res);
+    if (sessionId && transports.has(sessionId)) {
+      await transports.get(sessionId)!.transport.handleRequest(req, res);
     } else {
       res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'No valid session' }, id: null });
     }
@@ -145,8 +169,9 @@ async function main(): Promise<void> {
   const app = createApp();
   app.listen(PORT, '0.0.0.0', async () => {
     console.log('========================================');
-    console.log('  MCP Database Bridge (Cursor) 已启动');
-    console.log(`  端口: ${PORT} | MCP: http://localhost:${PORT}/mcp`);
+    console.log('  MCP Database Bridge (Cursor) v1.0.0');
+    console.log(`  http://0.0.0.0:${PORT}`);
+    console.log(`  MCP: http://0.0.0.0:${PORT}/mcp`);
     console.log('========================================');
     await autoConnect();
   });

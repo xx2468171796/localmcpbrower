@@ -177,6 +177,115 @@ class DatabaseManager {
     }
     throw new Error('数据库连接异常');
   }
+
+  // === New: EXPLAIN query ===
+  public async explainQuery(sql: string): Promise<QueryResult> {
+    this.ensureConnected();
+    if (this.pgPool) {
+      const result = await this.pgPool.query(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${sql}`);
+      return { rows: result.rows, rowCount: result.rowCount ?? 0, fields: result.fields?.map(f => f.name) };
+    } else if (this.mysqlPool) {
+      const [rows, fields] = await this.mysqlPool.execute(`EXPLAIN ${sql}`);
+      return { rows: rows as Record<string, unknown>[], rowCount: (rows as unknown[]).length, fields: fields?.map(f => f.name) };
+    }
+    throw new Error('数据库连接异常');
+  }
+
+  // === New: Table indexes ===
+  public async getTableIndexes(table: string, schema?: string): Promise<Record<string, unknown>[]> {
+    this.ensureConnected();
+    if (this.pgPool) {
+      const s = schema ?? 'public';
+      const result = await this.pgPool.query(`
+        SELECT i.relname AS index_name, a.attname AS column_name,
+               ix.indisunique AS is_unique, ix.indisprimary AS is_primary,
+               am.amname AS index_type
+        FROM pg_index ix
+        JOIN pg_class t ON t.oid = ix.indrelid
+        JOIN pg_class i ON i.oid = ix.indexrelid
+        JOIN pg_namespace n ON n.oid = t.relnamespace
+        JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(ix.indkey)
+        JOIN pg_am am ON am.oid = i.relam
+        WHERE t.relname = $1 AND n.nspname = $2
+        ORDER BY i.relname`, [table, s]);
+      return result.rows;
+    } else if (this.mysqlPool) {
+      const [rows] = await this.mysqlPool.execute(`SHOW INDEX FROM \`${table}\``);
+      return rows as Record<string, unknown>[];
+    }
+    throw new Error('数据库连接异常');
+  }
+
+  // === New: Table relations (foreign keys) ===
+  public async getTableRelations(table: string, schema?: string): Promise<Record<string, unknown>[]> {
+    this.ensureConnected();
+    if (this.pgPool) {
+      const s = schema ?? 'public';
+      const result = await this.pgPool.query(`
+        SELECT tc.constraint_name, kcu.column_name,
+               ccu.table_schema AS foreign_schema, ccu.table_name AS foreign_table, ccu.column_name AS foreign_column
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+        JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+        WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_name = $1 AND tc.table_schema = $2`, [table, s]);
+      return result.rows;
+    } else if (this.mysqlPool) {
+      const db = this.currentConfig?.database ?? '';
+      const [rows] = await this.mysqlPool.execute(`
+        SELECT CONSTRAINT_NAME, COLUMN_NAME, REFERENCED_TABLE_NAME AS foreign_table, REFERENCED_COLUMN_NAME AS foreign_column
+        FROM information_schema.KEY_COLUMN_USAGE
+        WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL`, [db, table]);
+      return rows as Record<string, unknown>[];
+    }
+    throw new Error('数据库连接异常');
+  }
+
+  // === New: Table size stats ===
+  public async getTableStats(schema?: string): Promise<Record<string, unknown>[]> {
+    this.ensureConnected();
+    if (this.pgPool) {
+      const s = schema ?? 'public';
+      const result = await this.pgPool.query(`
+        SELECT relname AS table_name,
+               n_live_tup AS row_estimate,
+               pg_size_pretty(pg_total_relation_size(relid)) AS total_size,
+               pg_size_pretty(pg_relation_size(relid)) AS data_size,
+               pg_size_pretty(pg_indexes_size(relid)) AS index_size
+        FROM pg_stat_user_tables WHERE schemaname = $1 ORDER BY pg_total_relation_size(relid) DESC`, [s]);
+      return result.rows;
+    } else if (this.mysqlPool) {
+      const db = this.currentConfig?.database ?? '';
+      const [rows] = await this.mysqlPool.execute(`
+        SELECT TABLE_NAME AS table_name, TABLE_ROWS AS row_estimate,
+               CONCAT(ROUND((DATA_LENGTH + INDEX_LENGTH) / 1024 / 1024, 2), ' MB') AS total_size,
+               CONCAT(ROUND(DATA_LENGTH / 1024 / 1024, 2), ' MB') AS data_size,
+               CONCAT(ROUND(INDEX_LENGTH / 1024 / 1024, 2), ' MB') AS index_size
+        FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? ORDER BY (DATA_LENGTH + INDEX_LENGTH) DESC`, [db]);
+      return rows as Record<string, unknown>[];
+    }
+    throw new Error('数据库连接异常');
+  }
+
+  // === New: Export query to CSV string ===
+  public async exportCsv(sql: string): Promise<string> {
+    this.ensureConnected();
+    const result = await this.query(sql);
+    if (result.rows.length === 0) return '';
+    const headers = Object.keys(result.rows[0]!);
+    const csvRows = [headers.join(',')];
+    for (const row of result.rows) {
+      csvRows.push(headers.map(h => {
+        const val = row[h];
+        const str = val === null || val === undefined ? '' : String(val);
+        return str.includes(',') || str.includes('"') || str.includes('\n') ? `"${str.replace(/"/g, '""')}"` : str;
+      }).join(','));
+    }
+    return csvRows.join('\n');
+  }
+
+  private ensureConnected(): void {
+    if (!this.pgPool && !this.mysqlPool) throw new Error('未连接数据库，请先使用 connect 工具连接');
+  }
 }
 
 export function getDatabaseManager(): DatabaseManager {

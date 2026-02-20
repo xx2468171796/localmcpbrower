@@ -172,6 +172,11 @@ class BrowserManager {
     }
   }
 
+  public setActivePage(page: Page): void {
+    this.page = page;
+    this.setupPageListeners(page);
+  }
+
   public async close(): Promise<void> {
     if (this.context) {
       await this.context.close();

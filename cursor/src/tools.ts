@@ -79,7 +79,7 @@ export async function type(input: unknown): Promise<ToolResult<TypeResult>> {
   }
 }
 
-export async function takeScreenshot(input: unknown): Promise<ToolResult<ScreenshotResult>> {
+export async function takeScreenshot(input: unknown): Promise<ToolResult<ScreenshotResult & { base64?: string }>> {
   try {
     const parsed = ScreenshotSchema.safeParse(input);
     if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
@@ -88,8 +88,9 @@ export async function takeScreenshot(input: unknown): Promise<ToolResult<Screens
     const screenshotDir = ensureScreenshotDir();
     const fileName = name ?? `screenshot-${Date.now()}`;
     const filePath = path.join(screenshotDir, `${fileName}.png`);
-    await page.screenshot({ path: filePath, fullPage, timeout: 30000, animations: 'disabled', scale: 'css' });
-    return { success: true, data: { path: filePath, fullPage } };
+    const buffer = await page.screenshot({ path: filePath, fullPage, timeout: 30000, animations: 'disabled', scale: 'css' });
+    const base64 = buffer.toString('base64');
+    return { success: true, data: { path: filePath, fullPage, base64 } };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
@@ -341,6 +342,140 @@ export async function generatePageReport(input: unknown): Promise<ToolResult<unk
       report.images = await page.evaluate(`(() => { const images = Array.from(document.querySelectorAll('img')); return { total: images.length, withAlt: images.filter(img => img.alt && img.alt.trim() !== '').length, withoutAlt: images.filter(img => !img.alt || img.alt.trim() === '').length }; })()`);
     }
     return { success: true, data: report };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+// ==================== New Tools ====================
+
+// Keyboard press
+export async function keyboardPress(input: unknown): Promise<ToolResult<{ key: string; pressed: boolean }>> {
+  try {
+    const { key } = input as { key: string };
+    if (!key) return { success: false, error: 'key is required' };
+    const page = await getBrowserManager().getPage();
+    await page.keyboard.press(key);
+    return { success: true, data: { key, pressed: true } };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+// Drag and drop
+export async function dragAndDrop(input: unknown): Promise<ToolResult<{ dragged: boolean }>> {
+  try {
+    const { source, target } = input as { source: string; target: string };
+    if (!source || !target) return { success: false, error: 'source and target selectors are required' };
+    const page = await getBrowserManager().getPage();
+    await page.dragAndDrop(source, target, { timeout: 5000 });
+    return { success: true, data: { dragged: true } };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+// File upload
+export async function fileUpload(input: unknown): Promise<ToolResult<{ uploaded: boolean; filePath: string }>> {
+  try {
+    const { selector, filePath } = input as { selector: string; filePath: string };
+    if (!selector || !filePath) return { success: false, error: 'selector and filePath are required' };
+    const page = await getBrowserManager().getPage();
+    const fileInput = page.locator(selector);
+    await fileInput.setInputFiles(filePath);
+    return { success: true, data: { uploaded: true, filePath } };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+// Multi-tab: list tabs
+export async function listTabs(): Promise<ToolResult<{ tabs: { index: number; url: string; title: string }[] }>> {
+  try {
+    const context = await getBrowserManager().getContext();
+    const pages = context.pages();
+    const tabs = await Promise.all(pages.map(async (p, i) => ({
+      index: i,
+      url: p.url(),
+      title: await p.title().catch(() => '')
+    })));
+    return { success: true, data: { tabs } };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+// Multi-tab: new tab
+export async function newTab(input: unknown): Promise<ToolResult<{ index: number; url: string }>> {
+  try {
+    const { url } = (input as { url?: string }) ?? {};
+    const context = await getBrowserManager().getContext();
+    const page = await context.newPage();
+    if (url) await page.goto(url, { waitUntil: 'commit', timeout: 30000 });
+    const pages = context.pages();
+    return { success: true, data: { index: pages.indexOf(page), url: page.url() } };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+// Multi-tab: switch tab
+export async function switchTab(input: unknown): Promise<ToolResult<{ index: number; url: string; title: string }>> {
+  try {
+    const { index } = input as { index: number };
+    if (index === undefined) return { success: false, error: 'index is required' };
+    const context = await getBrowserManager().getContext();
+    const pages = context.pages();
+    if (index < 0 || index >= pages.length) return { success: false, error: `Tab index ${index} out of range (0-${pages.length - 1})` };
+    const page = pages[index]!;
+    await page.bringToFront();
+    getBrowserManager().setActivePage(page);
+    return { success: true, data: { index, url: page.url(), title: await page.title() } };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+// Multi-tab: close tab
+export async function closeTab(input: unknown): Promise<ToolResult<{ closed: boolean; remaining: number }>> {
+  try {
+    const { index } = input as { index: number };
+    if (index === undefined) return { success: false, error: 'index is required' };
+    const context = await getBrowserManager().getContext();
+    const pages = context.pages();
+    if (index < 0 || index >= pages.length) return { success: false, error: `Tab index ${index} out of range` };
+    if (pages.length <= 1) return { success: false, error: 'Cannot close the last tab' };
+    await pages[index]!.close();
+    const remaining = context.pages();
+    const nextPage = remaining[Math.min(index, remaining.length - 1)];
+    if (nextPage) getBrowserManager().setActivePage(nextPage);
+    return { success: true, data: { closed: true, remaining: remaining.length } };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+// Network intercept
+export async function interceptRequests(input: unknown): Promise<ToolResult<{ intercepting: boolean; urlPattern: string; action: string }>> {
+  try {
+    const { urlPattern, action } = input as { urlPattern: string; action: string };
+    if (!urlPattern || !action) return { success: false, error: 'urlPattern and action are required' };
+    const page = await getBrowserManager().getPage();
+    const regex = new RegExp(urlPattern);
+
+    if (action === 'block') {
+      await page.route(regex, route => route.abort());
+    } else if (action === 'log') {
+      await page.route(regex, route => {
+        console.log(`[Intercept] ${route.request().method()} ${route.request().url()}`);
+        route.continue();
+      });
+    } else if (action === 'modify') {
+      await page.route(regex, route => route.continue());
+    } else {
+      return { success: false, error: `Unknown action: ${action}. Use block/log/modify` };
+    }
+    return { success: true, data: { intercepting: true, urlPattern, action } };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
   }

@@ -102,6 +102,34 @@ export const SetViewportSchema = z.object({
   height: z.number().min(240).max(4320)
 });
 
+// New tool schemas
+export const KeyboardPressSchema = z.object({
+  key: z.string().min(1, 'key is required')
+});
+
+export const DragAndDropSchema = z.object({
+  source: z.string().min(1, 'source selector is required'),
+  target: z.string().min(1, 'target selector is required')
+});
+
+export const FileUploadSchema = z.object({
+  selector: z.string().min(1, 'selector is required'),
+  filePath: z.string().min(1, 'filePath is required')
+});
+
+export const NewTabSchema = z.object({
+  url: z.string().optional()
+});
+
+export const TabIndexSchema = z.object({
+  index: z.number().int().min(0)
+});
+
+export const InterceptRequestsSchema = z.object({
+  urlPattern: z.string().min(1, 'urlPattern is required'),
+  action: z.enum(['block', 'log', 'modify'])
+});
+
 export type NavigateInput = z.infer<typeof NavigateSchema>;
 export type ClickInput = z.infer<typeof ClickSchema>;
 export type TypeInput = z.infer<typeof TypeSchema>;

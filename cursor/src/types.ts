@@ -77,4 +77,5 @@ export interface HealthCheckResult {
   status: 'ok' | 'error';
   browserAlive: boolean;
   uptime: number;
+  sessions?: number;
 }

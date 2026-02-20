@@ -3,7 +3,7 @@
  */
 
 import { getDatabaseManager } from './database.js';
-import { ConnectSchema, QuerySchema, ExecuteSchema, ListTablesSchema, DescribeTableSchema, SwitchDbSchema } from './schemas.js';
+import { ConnectSchema, QuerySchema, ExecuteSchema, ListTablesSchema, DescribeTableSchema, SwitchDbSchema, ExplainQuerySchema, TableIndexesSchema, TableRelationsSchema, TableStatsSchema, ExportCsvSchema } from './schemas.js';
 import type { ToolResult, QueryResult, TableInfo, ColumnInfo, ConnectionStatus, DatabaseType } from './types.js';
 
 function getPresetConfig(alias: string): { type: DatabaseType; host: string; port: number; database: string; user: string; password: string; ssl: boolean } | null {
@@ -98,4 +98,52 @@ export async function describeTable(input: unknown): Promise<ToolResult<{ column
 export async function listDatabases(): Promise<ToolResult<{ databases: string[] }>> {
   try { return { success: true, data: { databases: await getDatabaseManager().listDatabases() } }; }
   catch (error) { return { success: false, error: error instanceof Error ? error.message : String(error) }; }
+}
+
+// === New tools ===
+
+export async function explainQuery(input: unknown): Promise<ToolResult<{ plan: unknown }>> {
+  try {
+    const parsed = ExplainQuerySchema.safeParse(input);
+    if (!parsed.success) return { success: false, error: parsed.error.message };
+    const result = await getDatabaseManager().explainQuery(parsed.data.sql);
+    return { success: true, data: { plan: result.rows } };
+  } catch (error) { return { success: false, error: error instanceof Error ? error.message : String(error) }; }
+}
+
+export async function getTableIndexes(input: unknown): Promise<ToolResult<{ indexes: Record<string, unknown>[] }>> {
+  try {
+    const parsed = TableIndexesSchema.safeParse(input);
+    if (!parsed.success) return { success: false, error: parsed.error.message };
+    const indexes = await getDatabaseManager().getTableIndexes(parsed.data.table, parsed.data.schema);
+    return { success: true, data: { indexes } };
+  } catch (error) { return { success: false, error: error instanceof Error ? error.message : String(error) }; }
+}
+
+export async function getTableRelations(input: unknown): Promise<ToolResult<{ relations: Record<string, unknown>[] }>> {
+  try {
+    const parsed = TableRelationsSchema.safeParse(input);
+    if (!parsed.success) return { success: false, error: parsed.error.message };
+    const relations = await getDatabaseManager().getTableRelations(parsed.data.table, parsed.data.schema);
+    return { success: true, data: { relations } };
+  } catch (error) { return { success: false, error: error instanceof Error ? error.message : String(error) }; }
+}
+
+export async function getTableStats(input: unknown): Promise<ToolResult<{ stats: Record<string, unknown>[] }>> {
+  try {
+    const parsed = TableStatsSchema.safeParse(input);
+    if (!parsed.success) return { success: false, error: parsed.error.message };
+    const stats = await getDatabaseManager().getTableStats(parsed.data.schema);
+    return { success: true, data: { stats } };
+  } catch (error) { return { success: false, error: error instanceof Error ? error.message : String(error) }; }
+}
+
+export async function exportCsv(input: unknown): Promise<ToolResult<{ csv: string; rowCount: number }>> {
+  try {
+    const parsed = ExportCsvSchema.safeParse(input);
+    if (!parsed.success) return { success: false, error: parsed.error.message };
+    const csv = await getDatabaseManager().exportCsv(parsed.data.sql);
+    const rowCount = csv ? csv.split('\n').length - 1 : 0;
+    return { success: true, data: { csv, rowCount } };
+  } catch (error) { return { success: false, error: error instanceof Error ? error.message : String(error) }; }
 }
