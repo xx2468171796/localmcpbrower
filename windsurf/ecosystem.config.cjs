@@ -11,7 +11,7 @@ module.exports = {
     exp_backoff_restart_delay: 1000,
     env: {
       NODE_ENV: 'production',
-      PORT: 3211,
+      PORT: 3213,
       HEADLESS: 'false',
       DEVTOOLS: 'false'
     }
