@@ -248,7 +248,7 @@ echo ========================================
 echo   Cursor MCP Full Install
 echo ========================================
 echo.
-echo [1/6] Checking PM2...
+echo [1/7] Checking PM2...
 where pm2 >nul 2>&1
 if errorlevel 1 (
     echo        Installing PM2...
@@ -256,23 +256,40 @@ if errorlevel 1 (
 )
 echo        PM2 OK
 echo.
-echo [2/6] Installing Browser dependencies...
+echo [2/7] Installing Browser dependencies...
 cd /d "%~dp0"
 call npm install
 echo.
-echo [3/6] Installing Playwright Chromium...
+echo [3/7] Installing Playwright Chromium...
 call npx playwright install chromium
 echo.
-echo [4/6] Building Browser MCP...
+echo [4/7] Building Browser MCP...
 call npm run build
 echo.
-echo [5/6] Installing Database dependencies...
+echo [5/7] Installing Database dependencies...
 cd /d "%~dp0mcp-database"
 call npm install
 echo.
-echo [6/6] Building Database MCP...
+echo [6/7] Building Database MCP...
 call npm run build
 cd /d "%~dp0"
+echo.
+echo [7/7] Writing Cursor MCP config...
+set "MCP_DIR=%USERPROFILE%\.cursor"
+if not exist "%MCP_DIR%" mkdir "%MCP_DIR%"
+(
+echo {
+echo   "mcpServers": {
+echo     "stable-browser": {
+echo       "url": "http://localhost:3211/mcp"
+echo     },
+echo     "database": {
+echo       "url": "http://localhost:3212/mcp"
+echo     }
+echo   }
+echo }
+) > "%MCP_DIR%\mcp.json"
+echo        Written to: %MCP_DIR%\mcp.json
 echo.
 echo ========================================
 echo   Install complete! Use [1] to start.
