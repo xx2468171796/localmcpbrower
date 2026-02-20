@@ -4,8 +4,11 @@
 
 import 'dotenv/config';
 import express from 'express';
+import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { InMemoryEventStore } from '@modelcontextprotocol/sdk/examples/shared/inMemoryEventStore.js';
+import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { getDatabaseManager } from './database.js';
 import * as tools from './tools.js';
 import { ConnectSchema, QuerySchema, ExecuteSchema, ListTablesSchema, DescribeTableSchema, SwitchDbSchema } from './schemas.js';
@@ -75,18 +78,66 @@ function createMcpServer(): McpServer {
 
 function createApp(): express.Application {
   const app = express();
+  app.use(express.json());
+
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok', uptime: Math.floor((Date.now() - startTime) / 1000), service: 'cursor-mcp-database' });
   });
-  const mcpTransport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-  const mcpServer = createMcpServer();
+
+  const transports: { [sessionId: string]: StreamableHTTPServerTransport } = {};
+
   app.post('/mcp', async (req, res) => {
-    try { await mcpTransport.handleRequest(req, res, req.body); }
-    catch (error) { console.error('[MCP] 请求处理错误:', error); if (!res.headersSent) res.status(500).json({ error: 'Internal server error' }); }
+    try {
+      const sessionId = req.headers['mcp-session-id'] as string | undefined;
+      let transport: StreamableHTTPServerTransport;
+
+      if (sessionId && transports[sessionId]) {
+        transport = transports[sessionId];
+      } else if (!sessionId && isInitializeRequest(req.body)) {
+        const eventStore = new InMemoryEventStore();
+        transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          eventStore,
+          onsessioninitialized: (newSessionId) => {
+            transports[newSessionId] = transport;
+            console.log(`[MCP] New session: ${newSessionId}`);
+          }
+        });
+        transport.onclose = () => {
+          const sid = Object.entries(transports).find(([_, t]) => t === transport)?.[0];
+          if (sid) { delete transports[sid]; console.log(`[MCP] Session closed: ${sid}`); }
+        };
+        const mcpServer = createMcpServer();
+        await mcpServer.connect(transport);
+      } else {
+        res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Bad Request' }, id: null });
+        return;
+      }
+      await transport.handleRequest(req, res, req.body);
+    } catch (error) {
+      console.error('[MCP] Error:', error);
+      if (!res.headersSent) res.status(500).json({ error: 'Internal server error' });
+    }
   });
-  app.get('/mcp', (_req, res) => { res.status(405).json({ error: 'Method not allowed. Use POST.' }); });
-  app.delete('/mcp', (_req, res) => { res.status(405).json({ error: 'Method not allowed.' }); });
-  mcpServer.connect(mcpTransport).catch(console.error);
+
+  app.get('/mcp', async (req, res) => {
+    const sessionId = req.headers['mcp-session-id'] as string | undefined;
+    if (sessionId && transports[sessionId]) {
+      await transports[sessionId].handleRequest(req, res);
+    } else {
+      res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'No valid session' }, id: null });
+    }
+  });
+
+  app.delete('/mcp', async (req, res) => {
+    const sessionId = req.headers['mcp-session-id'] as string | undefined;
+    if (sessionId && transports[sessionId]) {
+      await transports[sessionId].handleRequest(req, res);
+    } else {
+      res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'No valid session' }, id: null });
+    }
+  });
+
   return app;
 }
 

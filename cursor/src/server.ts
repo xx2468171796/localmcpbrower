@@ -4,8 +4,11 @@
  */
 
 import express, { type Request, type Response, type NextFunction } from 'express';
+import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { InMemoryEventStore } from '@modelcontextprotocol/sdk/examples/shared/inMemoryEventStore.js';
+import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { getBrowserManager } from './browser.js';
 import * as tools from './tools.js';
 import type { HealthCheckResult } from './types.js';
@@ -137,19 +140,52 @@ function createApp(): express.Application {
     res.json(result);
   });
 
-  const mcpTransport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-  const mcpServer = createMcpServer();
+  // Session-based transport management
+  const transports: { [sessionId: string]: StreamableHTTPServerTransport } = {};
   let requestCount = 0;
 
   app.get('/connections', async (_req: Request, res: Response) => {
-    res.json({ mode: 'stateless', requestCount, uptime: Math.floor((Date.now() - startTime) / 1000) + 's' });
+    res.json({ mode: 'session', sessions: Object.keys(transports).length, requestCount, uptime: Math.floor((Date.now() - startTime) / 1000) + 's' });
   });
 
   app.post('/mcp', async (req: Request, res: Response) => {
     requestCount++;
     console.log(`[MCP] POST请求 #${requestCount}`);
     try {
-      await mcpTransport.handleRequest(req, res, req.body);
+      const sessionId = req.headers['mcp-session-id'] as string | undefined;
+      let transport: StreamableHTTPServerTransport;
+
+      if (sessionId && transports[sessionId]) {
+        // Reuse existing transport
+        transport = transports[sessionId];
+      } else if (!sessionId && isInitializeRequest(req.body)) {
+        // New initialization request - create new transport + session
+        const eventStore = new InMemoryEventStore();
+        transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          eventStore,
+          onsessioninitialized: (newSessionId) => {
+            transports[newSessionId] = transport;
+            console.log(`[MCP] New session: ${newSessionId}`);
+          }
+        });
+
+        transport.onclose = () => {
+          const sid = Object.entries(transports).find(([_, t]) => t === transport)?.[0];
+          if (sid) {
+            delete transports[sid];
+            console.log(`[MCP] Session closed: ${sid}`);
+          }
+        };
+
+        const mcpServer = createMcpServer();
+        await mcpServer.connect(transport);
+      } else {
+        res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Bad Request: No valid session ID or not an initialize request' }, id: null });
+        return;
+      }
+
+      await transport.handleRequest(req, res, req.body);
     } catch (error) {
       console.error('[MCP] 请求处理错误:', error);
       if (!res.headersSent) {
@@ -158,14 +194,25 @@ function createApp(): express.Application {
     }
   });
 
-  app.get('/mcp', async (_req: Request, res: Response) => {
-    res.status(405).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed. Use POST.' }, id: null });
-  });
-  app.delete('/mcp', async (_req: Request, res: Response) => {
-    res.status(405).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed. Use POST.' }, id: null });
+  app.get('/mcp', async (req: Request, res: Response) => {
+    const sessionId = req.headers['mcp-session-id'] as string | undefined;
+    if (sessionId && transports[sessionId]) {
+      const transport = transports[sessionId];
+      await transport.handleRequest(req, res);
+    } else {
+      res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Bad Request: No valid session' }, id: null });
+    }
   });
 
-  mcpServer.connect(mcpTransport).catch(err => { console.error('[MCP] 连接失败:', err); });
+  app.delete('/mcp', async (req: Request, res: Response) => {
+    const sessionId = req.headers['mcp-session-id'] as string | undefined;
+    if (sessionId && transports[sessionId]) {
+      const transport = transports[sessionId];
+      await transport.handleRequest(req, res);
+    } else {
+      res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Bad Request: No valid session' }, id: null });
+    }
+  });
 
   return app;
 }

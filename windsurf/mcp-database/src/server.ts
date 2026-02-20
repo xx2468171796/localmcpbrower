@@ -4,8 +4,11 @@
 
 import 'dotenv/config';
 import express from 'express';
+import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { InMemoryEventStore } from '@modelcontextprotocol/sdk/examples/shared/inMemoryEventStore.js';
+import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { getDatabaseManager } from './database.js';
 import * as tools from './tools.js';
 import { ConnectSchema, QuerySchema, ExecuteSchema, ListTablesSchema, DescribeTableSchema, SwitchDbSchema } from './schemas.js';
@@ -23,7 +26,7 @@ async function autoConnect(): Promise<boolean> {
   const dbPassword = process.env['DB_PASSWORD'];
   const dbSsl = process.env['DB_SSL'] === 'true';
   if (!dbType || !dbHost || !dbPort || !dbName || !dbUser) {
-    console.log('[提示] 未配置数据库信息，请编辑 .env 文件或使用 connect 工具手动连接');
+    console.log('[提示] 未配置数据库信息，请编辑 .env 文件或使�?connect 工具手动连接');
     return false;
   }
   try {
@@ -39,13 +42,13 @@ async function autoConnect(): Promise<boolean> {
 function createMcpServer(): McpServer {
   const server = new McpServer({ name: 'windsurf-mcp-database', version: '1.0.0' });
 
-  server.tool('connect', '连接到 PostgreSQL 或 MySQL 数据库', ConnectSchema.shape, async (args) => {
+  server.tool('connect', '连接�?PostgreSQL �?MySQL 数据�?, ConnectSchema.shape, async (args) => {
     const result = await tools.connect(args); return { content: [{ type: 'text', text: JSON.stringify(result) }] };
   });
-  server.tool('disconnect', '断开数据库连接', {}, async () => {
+  server.tool('disconnect', '断开数据库连�?, {}, async () => {
     const result = await tools.disconnect(); return { content: [{ type: 'text', text: JSON.stringify(result) }] };
   });
-  server.tool('status', '获取当前数据库连接状态', {}, async () => {
+  server.tool('status', '获取当前数据库连接状�?, {}, async () => {
     const result = await tools.status(); return { content: [{ type: 'text', text: JSON.stringify(result) }] };
   });
   server.tool('query', '执行 SQL 查询语句(SELECT)', QuerySchema.shape, async (args) => {
@@ -57,7 +60,7 @@ function createMcpServer(): McpServer {
   server.tool('list_tables', '列出数据库中所有表', ListTablesSchema.shape, async (args) => {
     const result = await tools.listTables(args); return { content: [{ type: 'text', text: JSON.stringify(result) }] };
   });
-  server.tool('describe_table', '获取表的列信息', DescribeTableSchema.shape, async (args) => {
+  server.tool('describe_table', '获取表的列信�?, DescribeTableSchema.shape, async (args) => {
     const result = await tools.describeTable(args); return { content: [{ type: 'text', text: JSON.stringify(result) }] };
   });
   server.tool('list_databases', '列出所有可用数据库', {}, async () => {
@@ -75,18 +78,66 @@ function createMcpServer(): McpServer {
 
 function createApp(): express.Application {
   const app = express();
+  app.use(express.json());
+
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok', uptime: Math.floor((Date.now() - startTime) / 1000), service: 'windsurf-mcp-database' });
   });
-  const mcpTransport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-  const mcpServer = createMcpServer();
+
+  const transports: { [sessionId: string]: StreamableHTTPServerTransport } = {};
+
   app.post('/mcp', async (req, res) => {
-    try { await mcpTransport.handleRequest(req, res, req.body); }
-    catch (error) { console.error('[MCP] 请求处理错误:', error); if (!res.headersSent) res.status(500).json({ error: 'Internal server error' }); }
+    try {
+      const sessionId = req.headers['mcp-session-id'] as string | undefined;
+      let transport: StreamableHTTPServerTransport;
+
+      if (sessionId && transports[sessionId]) {
+        transport = transports[sessionId];
+      } else if (!sessionId && isInitializeRequest(req.body)) {
+        const eventStore = new InMemoryEventStore();
+        transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          eventStore,
+          onsessioninitialized: (newSessionId) => {
+            transports[newSessionId] = transport;
+            console.log(`[MCP] New session: ${newSessionId}`);
+          }
+        });
+        transport.onclose = () => {
+          const sid = Object.entries(transports).find(([_, t]) => t === transport)?.[0];
+          if (sid) { delete transports[sid]; console.log(`[MCP] Session closed: ${sid}`); }
+        };
+        const mcpServer = createMcpServer();
+        await mcpServer.connect(transport);
+      } else {
+        res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Bad Request' }, id: null });
+        return;
+      }
+      await transport.handleRequest(req, res, req.body);
+    } catch (error) {
+      console.error('[MCP] Error:', error);
+      if (!res.headersSent) res.status(500).json({ error: 'Internal server error' });
+    }
   });
-  app.get('/mcp', (_req, res) => { res.status(405).json({ error: 'Method not allowed. Use POST.' }); });
-  app.delete('/mcp', (_req, res) => { res.status(405).json({ error: 'Method not allowed.' }); });
-  mcpServer.connect(mcpTransport).catch(console.error);
+
+  app.get('/mcp', async (req, res) => {
+    const sessionId = req.headers['mcp-session-id'] as string | undefined;
+    if (sessionId && transports[sessionId]) {
+      await transports[sessionId].handleRequest(req, res);
+    } else {
+      res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'No valid session' }, id: null });
+    }
+  });
+
+  app.delete('/mcp', async (req, res) => {
+    const sessionId = req.headers['mcp-session-id'] as string | undefined;
+    if (sessionId && transports[sessionId]) {
+      await transports[sessionId].handleRequest(req, res);
+    } else {
+      res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'No valid session' }, id: null });
+    }
+  });
+
   return app;
 }
 
@@ -94,7 +145,7 @@ async function main(): Promise<void> {
   const app = createApp();
   app.listen(PORT, '0.0.0.0', async () => {
     console.log('========================================');
-    console.log('  MCP Database Bridge (Windsurf) 已启动');
+    console.log('  MCP Database Bridge (Windsurf) 已启�?);
     console.log(`  端口: ${PORT} | MCP: http://localhost:${PORT}/mcp`);
     console.log('========================================');
     await autoConnect();

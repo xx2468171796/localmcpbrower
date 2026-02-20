@@ -1,11 +1,14 @@
 /**
  * Express + Streamable HTTP + MCP 服务入口
- * Windsurf 版本
+ * Cursor 版本
  */
 
 import express, { type Request, type Response, type NextFunction } from 'express';
+import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { InMemoryEventStore } from '@modelcontextprotocol/sdk/examples/shared/inMemoryEventStore.js';
+import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { getBrowserManager } from './browser.js';
 import * as tools from './tools.js';
 import type { HealthCheckResult } from './types.js';
@@ -32,7 +35,7 @@ function createMcpServer(): McpServer {
     const result = await tools.click(args);
     return { content: [{ type: 'text', text: JSON.stringify(result) }] };
   });
-  server.tool('type', '在输入框中输入文本', TypeSchema.shape, async (args) => {
+  server.tool('type', '在输入框中输入文�?, TypeSchema.shape, async (args) => {
     const result = await tools.type(args);
     return { content: [{ type: 'text', text: JSON.stringify(result) }] };
   });
@@ -44,11 +47,11 @@ function createMcpServer(): McpServer {
     const result = await tools.getConsoleLogs();
     return { content: [{ type: 'text', text: JSON.stringify(result) }] };
   });
-  server.tool('get_network', '获取网络请求状态', {}, async () => {
+  server.tool('get_network', '获取网络请求状�?, {}, async () => {
     const result = await tools.getNetwork();
     return { content: [{ type: 'text', text: JSON.stringify(result) }] };
   });
-  server.tool('execute_js', '执行自定义 JavaScript', ExecuteJsSchema.shape, async (args) => {
+  server.tool('execute_js', '执行自定�?JavaScript', ExecuteJsSchema.shape, async (args) => {
     const result = await tools.executeJs(args);
     return { content: [{ type: 'text', text: JSON.stringify(result) }] };
   });
@@ -60,7 +63,7 @@ function createMcpServer(): McpServer {
     const result = await tools.goBack();
     return { content: [{ type: 'text', text: JSON.stringify(result) }] };
   });
-  server.tool('go_forward', '浏览器前进', {}, async () => {
+  server.tool('go_forward', '浏览器前�?, {}, async () => {
     const result = await tools.goForward();
     return { content: [{ type: 'text', text: JSON.stringify(result) }] };
   });
@@ -76,7 +79,7 @@ function createMcpServer(): McpServer {
     const result = await tools.getElementText(args);
     return { content: [{ type: 'text', text: JSON.stringify(result) }] };
   });
-  server.tool('get_element_attribute', '获取元素属性', GetElementAttributeSchema.shape, async (args) => {
+  server.tool('get_element_attribute', '获取元素属�?, GetElementAttributeSchema.shape, async (args) => {
     const result = await tools.getElementAttribute(args);
     return { content: [{ type: 'text', text: JSON.stringify(result) }] };
   });
@@ -108,7 +111,7 @@ function createMcpServer(): McpServer {
     const result = await tools.generatePageReport(args);
     return { content: [{ type: 'text', text: JSON.stringify(result) }] };
   });
-  server.tool('set_viewport', '设置浏览器窗口大小', SetViewportSchema.shape, async (args) => {
+  server.tool('set_viewport', '设置浏览器窗口大�?, SetViewportSchema.shape, async (args) => {
     const result = await tools.setViewport(args);
     return { content: [{ type: 'text', text: JSON.stringify(result) }] };
   });
@@ -137,19 +140,52 @@ function createApp(): express.Application {
     res.json(result);
   });
 
-  const mcpTransport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-  const mcpServer = createMcpServer();
+  // Session-based transport management
+  const transports: { [sessionId: string]: StreamableHTTPServerTransport } = {};
   let requestCount = 0;
 
   app.get('/connections', async (_req: Request, res: Response) => {
-    res.json({ mode: 'stateless', requestCount, uptime: Math.floor((Date.now() - startTime) / 1000) + 's' });
+    res.json({ mode: 'session', sessions: Object.keys(transports).length, requestCount, uptime: Math.floor((Date.now() - startTime) / 1000) + 's' });
   });
 
   app.post('/mcp', async (req: Request, res: Response) => {
     requestCount++;
     console.log(`[MCP] POST请求 #${requestCount}`);
     try {
-      await mcpTransport.handleRequest(req, res, req.body);
+      const sessionId = req.headers['mcp-session-id'] as string | undefined;
+      let transport: StreamableHTTPServerTransport;
+
+      if (sessionId && transports[sessionId]) {
+        // Reuse existing transport
+        transport = transports[sessionId];
+      } else if (!sessionId && isInitializeRequest(req.body)) {
+        // New initialization request - create new transport + session
+        const eventStore = new InMemoryEventStore();
+        transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          eventStore,
+          onsessioninitialized: (newSessionId) => {
+            transports[newSessionId] = transport;
+            console.log(`[MCP] New session: ${newSessionId}`);
+          }
+        });
+
+        transport.onclose = () => {
+          const sid = Object.entries(transports).find(([_, t]) => t === transport)?.[0];
+          if (sid) {
+            delete transports[sid];
+            console.log(`[MCP] Session closed: ${sid}`);
+          }
+        };
+
+        const mcpServer = createMcpServer();
+        await mcpServer.connect(transport);
+      } else {
+        res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Bad Request: No valid session ID or not an initialize request' }, id: null });
+        return;
+      }
+
+      await transport.handleRequest(req, res, req.body);
     } catch (error) {
       console.error('[MCP] 请求处理错误:', error);
       if (!res.headersSent) {
@@ -158,14 +194,25 @@ function createApp(): express.Application {
     }
   });
 
-  app.get('/mcp', async (_req: Request, res: Response) => {
-    res.status(405).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed. Use POST.' }, id: null });
-  });
-  app.delete('/mcp', async (_req: Request, res: Response) => {
-    res.status(405).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed. Use POST.' }, id: null });
+  app.get('/mcp', async (req: Request, res: Response) => {
+    const sessionId = req.headers['mcp-session-id'] as string | undefined;
+    if (sessionId && transports[sessionId]) {
+      const transport = transports[sessionId];
+      await transport.handleRequest(req, res);
+    } else {
+      res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Bad Request: No valid session' }, id: null });
+    }
   });
 
-  mcpServer.connect(mcpTransport).catch(err => { console.error('[MCP] 连接失败:', err); });
+  app.delete('/mcp', async (req: Request, res: Response) => {
+    const sessionId = req.headers['mcp-session-id'] as string | undefined;
+    if (sessionId && transports[sessionId]) {
+      const transport = transports[sessionId];
+      await transport.handleRequest(req, res);
+    } else {
+      res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Bad Request: No valid session' }, id: null });
+    }
+  });
 
   return app;
 }
@@ -173,7 +220,7 @@ function createApp(): express.Application {
 async function gracefulShutdown(): Promise<void> {
   console.log('[Server] 正在关闭...');
   try { await getBrowserManager().close(); console.log('[Server] 浏览器已关闭'); }
-  catch (error) { console.error('[Server] 关闭浏览器失败:', error); }
+  catch (error) { console.error('[Server] 关闭浏览器失�?', error); }
   process.exit(0);
 }
 
@@ -186,9 +233,9 @@ async function killPortProcess(port: number): Promise<boolean> {
       const parts = line.trim().split(/\s+/);
       const pid = parts[parts.length - 1];
       if (pid && pid !== '0' && pid !== String(process.pid)) {
-        console.log(`[Server] 发现端口 ${port} 被 PID ${pid} 占用，正在清理...`);
-        try { execSync(`taskkill /PID ${pid} /F`, { timeout: 5000 }); console.log(`[Server] 已杀掉 PID ${pid}`); }
-        catch { /* 进程可能已退出 */ }
+        console.log(`[Server] 发现端口 ${port} �?PID ${pid} 占用，正在清�?..`);
+        try { execSync(`taskkill /PID ${pid} /F`, { timeout: 5000 }); console.log(`[Server] 已杀�?PID ${pid}`); }
+        catch { /* 进程可能已退�?*/ }
       }
     }
     return true;
@@ -200,13 +247,13 @@ function listenWithRetry(app: express.Application, host: string, port: number, m
   function tryListen(): void {
     attempt++;
     const server = app.listen(port, host, () => {
-      console.log(`[Server] MCP Bridge 已启动: http://${host}:${port}`);
+      console.log(`[Server] MCP Bridge 已启�? http://${host}:${port}`);
       console.log(`[Server] MCP 端点: http://${host}:${port}/mcp`);
-      console.log(`[Server] 健康检查: http://${host}:${port}/health`);
+      console.log(`[Server] 健康检�? http://${host}:${port}/health`);
     });
     server.on('error', async (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE' && attempt <= maxRetries) {
-        console.warn(`[Server] 端口 ${port} 被占用 (尝试 ${attempt}/${maxRetries})，正在清理...`);
+        console.warn(`[Server] 端口 ${port} 被占�?(尝试 ${attempt}/${maxRetries})，正在清�?..`);
         await killPortProcess(port);
         setTimeout(tryListen, attempt * 2000);
       } else {
@@ -219,7 +266,7 @@ function listenWithRetry(app: express.Application, host: string, port: number, m
 }
 
 async function main(): Promise<void> {
-  process.on('uncaughtException', (err) => { console.error('[Server] 未捕获异常:', err.message); });
+  process.on('uncaughtException', (err) => { console.error('[Server] 未捕获异�?', err.message); });
   process.on('unhandledRejection', (reason) => { console.error('[Server] 未处理的 Promise 拒绝:', reason); });
   process.on('SIGTERM', gracefulShutdown);
   process.on('SIGINT', gracefulShutdown);
@@ -227,9 +274,9 @@ async function main(): Promise<void> {
   await killPortProcess(PORT);
   await new Promise(resolve => setTimeout(resolve, 1000));
 
-  console.log('[Server] 正在启动浏览器...');
+  console.log('[Server] 正在启动浏览�?..');
   try { await getBrowserManager().getContext(); console.log('[Server] 浏览器已就绪'); }
-  catch (error) { console.error('[Server] 浏览器启动失败，将在首次请求时重试:', error); }
+  catch (error) { console.error('[Server] 浏览器启动失败，将在首次请求时重�?', error); }
 
   const app = createApp();
   const HOST = process.env['HOST'] ?? '0.0.0.0';
