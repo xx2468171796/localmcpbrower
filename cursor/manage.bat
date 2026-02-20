@@ -16,33 +16,52 @@ echo  ====================================================
 echo    Cursor MCP Service Manager [Browser %BROWSER_PORT% + Database %DB_PORT%]
 echo  ====================================================
 echo.
-echo    1. Start All     (PM2 daemon, auto-restart on kill)
-echo    2. Stop All      (Full stop, no auto-restart)
-echo    3. Restart All
-echo    4. Status + Health Check
-echo    5. View Logs     (Browser)
-echo    6. View Logs     (Database)
-echo    7. Edit Database Config
-echo    8. Show IDE Config
-echo    9. Full Install  (deps + Playwright + build)
-echo    0. Exit
+echo    [1] Start All     (PM2 daemon, auto-restart on kill)
+echo    [2] Stop All      (Full stop, no auto-restart)
+echo    [3] Restart All
+echo    [4] Status + Health Check
+echo    [5] View Logs     (Browser)
+echo    [6] View Logs     (Database)
+echo    [7] Edit Database Config
+echo    [8] Show IDE Config
+echo    [9] Full Install  (deps + Playwright + build)
+echo    [0] Exit
 echo.
-set /p choice=Select option (0-9): 
+choice /c 1234567890 /n /m "Select option: "
+set choice=%errorlevel%
 
-if "%choice%"=="1" goto start_all
-if "%choice%"=="2" goto stop_all
-if "%choice%"=="3" goto restart_all
-if "%choice%"=="4" goto status_all
-if "%choice%"=="5" goto logs_browser
-if "%choice%"=="6" goto logs_database
-if "%choice%"=="7" goto edit_db_config
-if "%choice%"=="8" goto show_mcp_config
-if "%choice%"=="9" goto install_all
-if "%choice%"=="0" exit /b 0
+if %choice%==1 goto start_all
+if %choice%==2 goto stop_all
+if %choice%==3 goto restart_all
+if %choice%==4 goto status_all
+if %choice%==5 goto logs_browser
+if %choice%==6 goto logs_database
+if %choice%==7 goto edit_db_config
+if %choice%==8 goto show_mcp_config
+if %choice%==9 goto install_all
+if %choice%==10 exit /b 0
 
-echo Invalid selection!
-timeout /t 2 >nul
 goto menu
+
+:show_status
+echo.
+echo ============================================
+echo   Current Status
+echo ============================================
+echo.
+echo ---- PM2 Process Status ----
+pm2 status
+echo.
+echo ---- Browser MCP (port %BROWSER_PORT%) ----
+node -e "fetch('http://localhost:%BROWSER_PORT%/health').then(r=>r.json()).then(d=>console.log(JSON.stringify(d,null,2))).catch(e=>console.log('Not responding:',e.message))" 2>nul
+echo.
+echo ---- Database MCP (port %DB_PORT%) ----
+node -e "fetch('http://localhost:%DB_PORT%/health').then(r=>r.json()).then(d=>console.log(JSON.stringify(d,null,2))).catch(e=>console.log('Not responding:',e.message))" 2>nul
+echo.
+echo ============================================
+echo   Press any key to return to menu...
+echo ============================================
+exit /b 0
 
 :check_pm2
 where pm2 >nul 2>&1
@@ -92,19 +111,6 @@ if not exist "%~dp0mcp-database\dist\server.js" (
 )
 exit /b 0
 
-:show_status
-echo.
-echo ---- PM2 Process Status ----
-pm2 status
-echo.
-echo ---- Browser MCP (port %BROWSER_PORT%) ----
-node -e "fetch('http://localhost:%BROWSER_PORT%/health').then(r=>r.json()).then(d=>console.log(JSON.stringify(d,null,2))).catch(e=>console.log('Not responding:',e.message))" 2>nul
-echo.
-echo ---- Database MCP (port %DB_PORT%) ----
-node -e "fetch('http://localhost:%DB_PORT%/health').then(r=>r.json()).then(d=>console.log(JSON.stringify(d,null,2))).catch(e=>console.log('Not responding:',e.message))" 2>nul
-echo.
-exit /b 0
-
 :start_all
 cls
 echo.
@@ -147,7 +153,7 @@ pm2 stop %DB_NAME% >nul 2>&1
 pm2 delete %DB_NAME% >nul 2>&1
 echo [STOPPED] Database MCP stopped.
 echo.
-echo [INFO] Services will NOT auto-restart. Use [1.Start All] to start again.
+echo [INFO] Services will NOT auto-restart.
 call :show_status
 pause
 goto menu
@@ -213,6 +219,7 @@ pause
 goto menu
 
 :edit_db_config
+cls
 cd /d "%~dp0mcp-database"
 if not exist .env (
     if exist .env.example (
@@ -224,6 +231,7 @@ if not exist .env (
         goto menu
     )
 )
+echo [INFO] Opening .env in notepad...
 start notepad .env
 cd /d "%~dp0"
 call :show_status
@@ -284,7 +292,7 @@ cd /d "%~dp0"
 echo.
 if %ERRORLEVEL% EQU 0 (
     echo ================================================
-    echo   Install complete! Select [1.Start All] to run.
+    echo   Install complete! Select [1] Start All to run.
     echo ================================================
 ) else (
     echo [ERROR] Something went wrong. Check logs above.
