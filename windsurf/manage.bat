@@ -15,7 +15,7 @@ echo     Database MCP: 3212
 echo.
 echo ========================================
 echo   1. Start All
-echo   2. Stop All
+echo   2. Kill All
 echo   3. Restart All
 echo   4. Status
 echo   5. Logs - Browser
@@ -88,11 +88,12 @@ goto menu
 :stop_all
 cls
 echo ========================================
-echo   Stopping All Windsurf MCP Services...
+echo   Killing All Windsurf MCP Services...
 echo ========================================
 echo.
-call pm2 stop windsurf-mcp-bridge windsurf-mcp-database 2>nul
-call pm2 delete windsurf-mcp-bridge windsurf-mcp-database 2>nul
+call pm2 kill 2>nul
+echo.
+echo [OK] All PM2 processes killed.
 echo.
 echo ========================================
 echo   Status:
