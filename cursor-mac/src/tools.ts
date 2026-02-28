@@ -11,7 +11,9 @@ import {
   GetElementTextSchema, GetElementAttributeSchema, HoverSchema,
   SelectOptionSchema, FillFormSchema, GetPageContentSchema,
   PdfExportSchema, GetCookiesSchema, SetCookiesSchema,
-  PageReportSchema, SetViewportSchema
+  PageReportSchema, SetViewportSchema,
+  ExtractLinksSchema, ExtractDataSchema, BatchFetchSchema,
+  CrawlPagesSchema, WaitAndExtractSchema, SetBlockRulesSchema
 } from './schemas.js';
 import type {
   ToolResult, NavigateResult, ClickResult, TypeResult,
@@ -527,6 +529,222 @@ export async function interceptRequests(input: unknown): Promise<ToolResult<{ in
   }
 }
 
+// ============================================================
+// 爬虫工具
+// ============================================================
+
+/** 广告域名黑名单 */
+const AD_DOMAINS = ['doubleclick.net','googlesyndication.com','adservice.google','amazon-adsystem.com','facebook.com/tr','analytics.google','googletagmanager.com','hotjar.com','clarity.ms'];
+
+/** 全局请求拦截状态 */
+let blockRulesActive = false;
+
+/** 设置请求拦截规则（屏蔽图片/广告，加速爬取） */
+export async function setBlockRules(input: unknown): Promise<ToolResult<{ active: boolean; rules: object }>> {
+  try {
+    const parsed = SetBlockRulesSchema.safeParse(input);
+    if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
+    const { blockImages, blockMedia, blockFonts, blockAds, customPatterns } = parsed.data;
+    const page = await getBrowserManager().getPage();
+
+    await page.route('**/*', (route) => {
+      const url = route.request().url();
+      const resourceType = route.request().resourceType();
+
+      if (blockImages && ['image', 'imageset'].includes(resourceType)) { route.abort(); return; }
+      if (blockMedia && ['media', 'websocket'].includes(resourceType)) { route.abort(); return; }
+      if (blockFonts && resourceType === 'font') { route.abort(); return; }
+      if (blockAds && AD_DOMAINS.some(d => url.includes(d))) { route.abort(); return; }
+      if (customPatterns.some(p => url.includes(p))) { route.abort(); return; }
+      route.continue();
+    });
+
+    blockRulesActive = true;
+    return { success: true, data: { active: true, rules: { blockImages, blockMedia, blockFonts, blockAds, customPatterns } } };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** 提取页面所有链接 */
+export async function extractLinks(input: unknown): Promise<ToolResult<{ links: Array<{ text: string; href: string; title?: string }> }>> {
+  try {
+    const parsed = ExtractLinksSchema.safeParse(input);
+    if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
+    const { selector, filter, limit } = parsed.data;
+    const page = await getBrowserManager().getPage();
+
+    const scope = selector ?? 'body';
+    const filterStr = filter ?? '';
+    const links = await page.evaluate(`(function() {
+      var container = document.querySelector('${scope.replace(/'/g, "\\'")}') || document.documentElement;
+      var anchors = Array.from(container.querySelectorAll('a[href]'));
+      var result = [];
+      var filter = '${filterStr.replace(/'/g, "\\'")}';
+      var limit = ${limit};
+      for (var i = 0; i < anchors.length && result.length < limit; i++) {
+        var a = anchors[i];
+        var href = a.href;
+        if (!href || href.startsWith('javascript:') || href === '#') continue;
+        if (filter && !href.includes(filter)) continue;
+        result.push({ text: (a.textContent || '').trim(), href: href, title: a.title || undefined });
+      }
+      return result;
+    })()`);
+
+    return { success: true, data: { links: links as Array<{ text: string; href: string; title?: string }> } };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** 提取结构化数据（列表/表格） */
+export async function extractData(input: unknown): Promise<ToolResult<{ items: Array<Record<string, string>>; total: number }>> {
+  try {
+    const parsed = ExtractDataSchema.safeParse(input);
+    if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
+    const { itemSelector, fields, limit } = parsed.data;
+    const page = await getBrowserManager().getPage();
+
+    const fieldsJson = JSON.stringify(fields);
+    const items = await page.evaluate(`(function() {
+      var fields = ${fieldsJson};
+      var containers = Array.from(document.querySelectorAll(${JSON.stringify(itemSelector)})).slice(0, ${limit});
+      return containers.map(function(container) {
+        var item = {};
+        fields.forEach(function(field) {
+          var el = container.querySelector(field.selector);
+          if (!el) { item[field.name] = ''; return; }
+          if (field.type === 'html') { item[field.name] = el.innerHTML.trim(); }
+          else if (field.type === 'attr' && field.attribute) { item[field.name] = el.getAttribute(field.attribute) || ''; }
+          else { item[field.name] = (el.textContent || '').trim(); }
+        });
+        return item;
+      });
+    })()`);
+
+    const result = items as Array<Record<string, string>>;
+    return { success: true, data: { items: result, total: result.length } };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** 等待动态内容加载后提取 */
+export async function waitAndExtract(input: unknown): Promise<ToolResult<{ items: string[]; total: number }>> {
+  try {
+    const parsed = WaitAndExtractSchema.safeParse(input);
+    if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
+    const { waitSelector, extractSelector, attribute, timeout } = parsed.data;
+    const page = await getBrowserManager().getPage();
+
+    await page.waitForSelector(waitSelector, { timeout, state: 'visible' });
+
+    const attrStr = attribute ?? '';
+    const items = await page.evaluate(`(function() {
+      var attr = '${attrStr.replace(/'/g, "\\'")}';
+      return Array.from(document.querySelectorAll(${JSON.stringify(extractSelector)})).map(function(el) {
+        return attr ? (el.getAttribute(attr) || '') : (el.textContent || '').trim();
+      }).filter(Boolean);
+    })()`);
+
+    const result = items as string[];
+    return { success: true, data: { items: result, total: result.length } };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** 批量抓取多个 URL */
+export async function batchFetch(input: unknown): Promise<ToolResult<{ results: Array<{ url: string; title?: string; content?: string; success: boolean; error?: string }> }>> {
+  try {
+    const parsed = BatchFetchSchema.safeParse(input);
+    if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
+    const { urls, waitFor, extractSelector, delay } = parsed.data;
+    const page = await getBrowserManager().getPage();
+    const results: Array<{ url: string; title?: string; content?: string; success: boolean; error?: string }> = [];
+
+    for (const url of urls) {
+      try {
+        await page.goto(url, { waitUntil: 'commit', timeout: 15000 });
+        if (waitFor) {
+          await page.waitForSelector(waitFor, { timeout: 8000, state: 'visible' }).catch(() => {});
+        }
+        const title = await page.title().catch(() => '');
+        let content: string | undefined;
+        if (extractSelector) {
+          content = await page.evaluate(`(function() {
+            var el = document.querySelector(${JSON.stringify(extractSelector)});
+            return el ? (el.textContent || '').trim() : '';
+          })()`).then(v => v as string).catch(() => undefined);
+        }
+        results.push({ url, title, content, success: true });
+      } catch (err) {
+        results.push({ url, success: false, error: err instanceof Error ? err.message : String(err) });
+      }
+      if (delay > 0 && urls.indexOf(url) < urls.length - 1) {
+        await new Promise(r => setTimeout(r, delay));
+      }
+    }
+
+    return { success: true, data: { results } };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** 分页爬取 */
+export async function crawlPages(input: unknown): Promise<ToolResult<{ items: Array<Record<string, string>>; pages: number; total: number }>> {
+  try {
+    const parsed = CrawlPagesSchema.safeParse(input);
+    if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
+    const { startUrl, nextPageSelector, itemSelector, fields, maxPages, delay } = parsed.data;
+    const page = await getBrowserManager().getPage();
+    const allItems: Array<Record<string, string>> = [];
+    let pageCount = 0;
+
+    await page.goto(startUrl, { waitUntil: 'commit', timeout: 15000 });
+
+    while (pageCount < maxPages) {
+      pageCount++;
+      // 提取当前页数据
+      const fieldsJson = JSON.stringify(fields);
+      const items = await page.evaluate(`(function() {
+        var fields = ${fieldsJson};
+        return Array.from(document.querySelectorAll(${JSON.stringify(itemSelector)})).map(function(container) {
+          var item = {};
+          fields.forEach(function(field) {
+            var el = container.querySelector(field.selector);
+            if (!el) { item[field.name] = ''; return; }
+            if (field.type === 'html') { item[field.name] = el.innerHTML.trim(); }
+            else if (field.type === 'attr' && field.attribute) { item[field.name] = el.getAttribute(field.attribute) || ''; }
+            else { item[field.name] = (el.textContent || '').trim(); }
+          });
+          return item;
+        });
+      })()`);
+
+      allItems.push(...(items as Array<Record<string, string>>));
+
+      // 找下一页
+      const hasNext = await page.$(nextPageSelector).then(el => !!el).catch(() => false);
+      if (!hasNext || pageCount >= maxPages) break;
+
+      try {
+        await page.click(nextPageSelector, { force: true, noWaitAfter: true, timeout: 5000 });
+        await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => {});
+        if (delay > 0) await new Promise(r => setTimeout(r, delay));
+      } catch {
+        break;
+      }
+    }
+
+    return { success: true, data: { items: allItems, pages: pageCount, total: allItems.length } };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 export const toolRegistry = {
   navigate: { name: 'navigate', description: '跳转至指定网址', inputSchema: { type: 'object', properties: { url: { type: 'string', description: '要跳转的 URL' } }, required: ['url'] }, handler: navigate },
   click: { name: 'click', description: '点击页面元素', inputSchema: { type: 'object', properties: { selector: { type: 'string', description: 'CSS 选择器' } }, required: ['selector'] }, handler: click },
@@ -534,7 +752,14 @@ export const toolRegistry = {
   take_screenshot: { name: 'take_screenshot', description: '截取当前页面截图', inputSchema: { type: 'object', properties: { name: { type: 'string', description: '截图文件名' }, fullPage: { type: 'boolean', description: '是否全屏截图' } } }, handler: takeScreenshot },
   get_console_logs: { name: 'get_console_logs', description: '获取页面 console 输出', inputSchema: { type: 'object', properties: {} }, handler: getConsoleLogs },
   get_network: { name: 'get_network', description: '获取网络请求状态', inputSchema: { type: 'object', properties: {} }, handler: getNetwork },
-  execute_js: { name: 'execute_js', description: '执行自定义 JavaScript', inputSchema: { type: 'object', properties: { script: { type: 'string', description: 'JavaScript 代码' } }, required: ['script'] }, handler: executeJs }
+  execute_js: { name: 'execute_js', description: '执行自定义 JavaScript', inputSchema: { type: 'object', properties: { script: { type: 'string', description: 'JavaScript 代码' } }, required: ['script'] }, handler: executeJs },
+  // ---- 爬虫工具 ----
+  set_block_rules: { name: 'set_block_rules', description: '【爬虫加速】设置请求拦截规则，屏蔽图片/广告/字体，大幅提升爬取速度', inputSchema: { type: 'object', properties: { blockImages: { type: 'boolean', default: true }, blockMedia: { type: 'boolean', default: true }, blockFonts: { type: 'boolean', default: false }, blockAds: { type: 'boolean', default: true }, customPatterns: { type: 'array', items: { type: 'string' }, default: [] } } }, handler: setBlockRules },
+  extract_links: { name: 'extract_links', description: '【爬虫】提取页面所有链接，支持范围限定和 URL 过滤', inputSchema: { type: 'object', properties: { selector: { type: 'string' }, filter: { type: 'string' }, limit: { type: 'number', default: 100 } } }, handler: extractLinks },
+  extract_data: { name: 'extract_data', description: '【爬虫】按 CSS 选择器批量提取结构化数据（列表/表格），支持多字段映射', inputSchema: { type: 'object', properties: { itemSelector: { type: 'string' }, fields: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, selector: { type: 'string' }, attribute: { type: 'string' }, type: { type: 'string', enum: ['text','html','attr'], default: 'text' } }, required: ['name','selector'] } }, limit: { type: 'number', default: 200 } }, required: ['itemSelector','fields'] }, handler: extractData },
+  wait_and_extract: { name: 'wait_and_extract', description: '【爬虫】等待动态内容加载完成后提取，适合 SPA/懒加载页面', inputSchema: { type: 'object', properties: { waitSelector: { type: 'string' }, extractSelector: { type: 'string' }, attribute: { type: 'string' }, timeout: { type: 'number', default: 10000 } }, required: ['waitSelector','extractSelector'] }, handler: waitAndExtract },
+  batch_fetch: { name: 'batch_fetch', description: '【爬虫】批量抓取多个 URL（最多20个），支持内容提取和请求间隔', inputSchema: { type: 'object', properties: { urls: { type: 'array', items: { type: 'string' } }, waitFor: { type: 'string' }, extractSelector: { type: 'string' }, delay: { type: 'number', default: 500 } }, required: ['urls'] }, handler: batchFetch },
+  crawl_pages: { name: 'crawl_pages', description: '【爬虫】自动分页爬取，自动点击下一页并汇总所有数据', inputSchema: { type: 'object', properties: { startUrl: { type: 'string' }, nextPageSelector: { type: 'string' }, itemSelector: { type: 'string' }, fields: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, selector: { type: 'string' }, attribute: { type: 'string' }, type: { type: 'string', enum: ['text','html','attr'], default: 'text' } }, required: ['name','selector'] } }, maxPages: { type: 'number', default: 5 }, delay: { type: 'number', default: 800 } }, required: ['startUrl','nextPageSelector','itemSelector','fields'] }, handler: crawlPages }
 } as const;
 
 export type ToolName = keyof typeof toolRegistry;

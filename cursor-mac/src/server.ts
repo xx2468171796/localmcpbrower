@@ -20,7 +20,9 @@ import {
   PdfExportSchema, GetCookiesSchema, SetCookiesSchema,
   PageReportSchema, SetViewportSchema,
   KeyboardPressSchema, DragAndDropSchema, FileUploadSchema,
-  NewTabSchema, TabIndexSchema, InterceptRequestsSchema
+  NewTabSchema, TabIndexSchema, InterceptRequestsSchema,
+  ExtractLinksSchema, ExtractDataSchema, BatchFetchSchema,
+  CrawlPagesSchema, WaitAndExtractSchema, SetBlockRulesSchema
 } from './schemas.js';
 
 const PORT = parseInt(process.env['PORT'] ?? '3211', 10);
@@ -103,6 +105,14 @@ function createMcpServer(): McpServer {
 
   // === Network intercept ===
   server.tool('intercept_requests', '拦截/修改网络请求', InterceptRequestsSchema.shape, async (args) => text(await tools.interceptRequests(args)));
+
+  // === 爬虫工具 ===
+  server.tool('set_block_rules', '【爬虫加速】屏蔽图片/广告/字体请求，提升爬取速度3-5倍，爬取前先调用', SetBlockRulesSchema.shape, async (args) => text(await tools.setBlockRules(args)));
+  server.tool('extract_links', '【爬虫】提取页面所有链接，支持范围限定和URL过滤', ExtractLinksSchema.shape, async (args) => text(await tools.extractLinks(args)));
+  server.tool('extract_data', '【爬虫】按CSS选择器批量提取结构化数据（列表/表格），支持多字段映射', ExtractDataSchema.shape, async (args) => text(await tools.extractData(args)));
+  server.tool('wait_and_extract', '【爬虫】等待动态内容加载完成后提取，适合SPA/懒加载页面', WaitAndExtractSchema.shape, async (args) => text(await tools.waitAndExtract(args)));
+  server.tool('batch_fetch', '【爬虫】批量抓取多个URL（最多20个），支持内容提取和请求间隔', BatchFetchSchema.shape, async (args) => text(await tools.batchFetch(args)));
+  server.tool('crawl_pages', '【爬虫】自动分页爬取，自动点击下一页并汇总所有数据', CrawlPagesSchema.shape, async (args) => text(await tools.crawlPages(args)));
 
   return server;
 }

@@ -50,36 +50,43 @@ class BrowserManager {
     this.ensureUserDataDir();
 
     const launchArgs = [
+      // 反自动化检测
       '--disable-blink-features=AutomationControlled',
+      // 沙箱 & 安全（macOS 不需要 setuid-sandbox）
       '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
       '--no-first-run',
-      '--disable-extensions',
+      '--no-default-browser-check',
+      // 内存 & 进程优化
+      '--disable-dev-shm-usage',
+      '--disable-breakpad',
+      '--disable-hang-monitor',
+      '--disable-ipc-flooding-protection',
+      '--js-flags=--max-old-space-size=512',
+      // 禁用不必要的后台服务（加速启动）
       '--disable-background-networking',
       '--disable-background-timer-throttling',
       '--disable-backgrounding-occluded-windows',
-      '--disable-breakpad',
+      '--disable-renderer-backgrounding',
       '--disable-component-extensions-with-background-pages',
       '--disable-component-update',
       '--disable-default-apps',
-      '--disable-hang-monitor',
-      '--disable-ipc-flooding-protection',
-      '--disable-popup-blocking',
-      '--disable-prompt-on-repost',
-      '--disable-renderer-backgrounding',
+      '--disable-extensions',
       '--disable-sync',
+      '--disable-translate',
+      '--disable-features=TranslateUI,BlinkGenPropertyTrees',
+      // 网络优化
       '--enable-features=NetworkService,NetworkServiceInProcess',
+      '--aggressive-cache-discard',
+      // 渲染优化（macOS Metal）
       '--force-color-profile=srgb',
+      '--enable-gpu-rasterization',
+      '--enable-zero-copy',
+      // 其他
       '--metrics-recording-only',
       '--password-store=basic',
       '--use-mock-keychain',
-      '--js-flags=--max-old-space-size=2048',
-      '--enable-gpu-rasterization',
-      '--enable-zero-copy',
-      '--enable-features=VaapiVideoDecoder',
-      '--ignore-gpu-blocklist',
-      '--disable-gpu-driver-bug-workarounds',
+      '--disable-popup-blocking',
+      '--disable-prompt-on-repost',
       `--window-size=${this.config.viewportWidth},${this.config.viewportHeight}`
     ];
 
@@ -95,7 +102,18 @@ class BrowserManager {
         slowMo: this.config.slowMo,
         viewport: null,
         args: launchArgs,
-        ignoreDefaultArgs: ['--enable-automation']
+        ignoreDefaultArgs: ['--enable-automation'],
+        // 性能优化选项
+        bypassCSP: true,                    // 绕过 CSP，加速页面加载
+        ignoreHTTPSErrors: true,            // 忽略 HTTPS 错误，避免卡住
+        javaScriptEnabled: true,
+        acceptDownloads: true,
+        // 伪装真实浏览器 UA
+        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        extraHTTPHeaders: {
+          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+          'Accept-Encoding': 'gzip, deflate, br'
+        }
       }
     );
 

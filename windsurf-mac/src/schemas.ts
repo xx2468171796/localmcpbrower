@@ -148,3 +148,73 @@ export type GetCookiesInput = z.infer<typeof GetCookiesSchema>;
 export type SetCookiesInput = z.infer<typeof SetCookiesSchema>;
 export type PageReportInput = z.infer<typeof PageReportSchema>;
 export type SetViewportInput = z.infer<typeof SetViewportSchema>;
+
+// ============================================================
+// 爬虫工具 Schema
+// ============================================================
+
+/** 提取页面所有链接 */
+export const ExtractLinksSchema = z.object({
+  selector: z.string().optional().describe('限定范围的 CSS 选择器，默认提取全页面链接'),
+  filter: z.string().optional().describe('URL 过滤关键词，只返回包含该词的链接'),
+  limit: z.number().int().positive().default(100).describe('最多返回链接数')
+});
+
+/** 提取结构化数据（列表/表格） */
+export const ExtractDataSchema = z.object({
+  itemSelector: z.string().min(1).describe('每条数据的容器选择器，如 .product-item, tr'),
+  fields: z.array(z.object({
+    name: z.string().min(1).describe('字段名'),
+    selector: z.string().min(1).describe('相对于 itemSelector 的子选择器'),
+    attribute: z.string().optional().describe('提取属性值，不填则提取文本'),
+    type: z.enum(['text', 'html', 'attr']).default('text')
+  })).describe('要提取的字段列表'),
+  limit: z.number().int().positive().default(200).describe('最多提取条数')
+});
+
+/** 批量抓取多个 URL */
+export const BatchFetchSchema = z.object({
+  urls: z.array(z.string().url()).min(1).max(20).describe('要抓取的 URL 列表，最多 20 个'),
+  waitFor: z.string().optional().describe('每个页面等待出现的选择器'),
+  extractSelector: z.string().optional().describe('要提取内容的选择器，不填则返回 title+url'),
+  delay: z.number().int().min(0).max(5000).default(500).describe('每次请求间隔毫秒，防止被封')
+});
+
+/** 分页爬取 */
+export const CrawlPagesSchema = z.object({
+  startUrl: z.string().url().describe('起始 URL'),
+  nextPageSelector: z.string().describe('下一页按钮/链接的选择器'),
+  itemSelector: z.string().describe('每条数据的容器选择器'),
+  fields: z.array(z.object({
+    name: z.string().min(1),
+    selector: z.string().min(1),
+    attribute: z.string().optional(),
+    type: z.enum(['text', 'html', 'attr']).default('text')
+  })).describe('要提取的字段'),
+  maxPages: z.number().int().positive().max(50).default(5).describe('最多爬取页数'),
+  delay: z.number().int().min(0).max(5000).default(800).describe('翻页间隔毫秒')
+});
+
+/** 等待并提取（适合动态加载内容） */
+export const WaitAndExtractSchema = z.object({
+  waitSelector: z.string().min(1).describe('等待出现的选择器（动态内容加载完成标志）'),
+  extractSelector: z.string().min(1).describe('要提取内容的选择器'),
+  attribute: z.string().optional().describe('提取属性，不填则提取文本'),
+  timeout: z.number().int().positive().default(10000).describe('等待超时毫秒')
+});
+
+/** 设置请求拦截（屏蔽图片/广告加速加载） */
+export const SetBlockRulesSchema = z.object({
+  blockImages: z.boolean().default(true).describe('屏蔽图片请求（加速加载）'),
+  blockMedia: z.boolean().default(true).describe('屏蔽视频/音频请求'),
+  blockFonts: z.boolean().default(false).describe('屏蔽字体请求'),
+  blockAds: z.boolean().default(true).describe('屏蔽广告域名'),
+  customPatterns: z.array(z.string()).default([]).describe('自定义屏蔽 URL 模式')
+});
+
+export type ExtractLinksInput = z.infer<typeof ExtractLinksSchema>;
+export type ExtractDataInput = z.infer<typeof ExtractDataSchema>;
+export type BatchFetchInput = z.infer<typeof BatchFetchSchema>;
+export type CrawlPagesInput = z.infer<typeof CrawlPagesSchema>;
+export type WaitAndExtractInput = z.infer<typeof WaitAndExtractSchema>;
+export type SetBlockRulesInput = z.infer<typeof SetBlockRulesSchema>;
