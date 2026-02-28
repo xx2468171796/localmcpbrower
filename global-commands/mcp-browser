@@ -1,0 +1,169 @@
+#!/bin/bash
+# ============================================================
+# mcp-browser - 本地 MCP 浏览器服务管理命令
+# ============================================================
+#
+# 描述: 管理本地 Playwright 浏览器 MCP 服务（启动/停止/重启/状态/日志）
+#       提供 22 个浏览器自动化工具（导航、点击、截图、多标签页等）
+#
+# 服务信息:
+#   - Cursor 版: 端口 3211, MCP 地址 http://localhost:3211/mcp
+#   - Windsurf 版: 端口 3213, MCP 地址 http://localhost:3213/mcp
+#
+# 用法:
+#   mcp-browser start [cursor|windsurf]   # 启动浏览器 MCP 服务
+#   mcp-browser stop [cursor|windsurf]    # 停止浏览器 MCP 服务
+#   mcp-browser restart [cursor|windsurf] # 重启浏览器 MCP 服务
+#   mcp-browser status [cursor|windsurf]  # 查看服务状态
+#   mcp-browser logs [cursor|windsurf]    # 查看最近日志
+#   mcp-browser health [cursor|windsurf]  # 健康检查
+#
+# 示例:
+#   mcp-browser start cursor    # 启动 Cursor 版浏览器 MCP
+#   mcp-browser status           # 查看所有浏览器 MCP 状态
+#   mcp-browser health windsurf  # 检查 Windsurf 版健康状态
+#
+# 依赖: Node.js >= 18, PM2, Playwright
+# 安装目录: ~/code/crmall/localmcpbrower/
+# ============================================================
+
+MCP_BASE="$HOME/code/crmall/localmcpbrower"
+CURSOR_DIR="$MCP_BASE/cursor-mac"
+WINDSURF_DIR="$MCP_BASE/windsurf-mac"
+
+CURSOR_NAME="cursor-mcp-bridge"
+WINDSURF_NAME="windsurf-mcp-bridge"
+CURSOR_PORT=3211
+WINDSURF_PORT=3213
+
+show_help() {
+    echo "mcp-browser - 本地 MCP 浏览器服务管理"
+    echo ""
+    echo "用法: mcp-browser <command> [cursor|windsurf]"
+    echo ""
+    echo "命令:"
+    echo "  start   [cursor|windsurf]  启动服务 (默认: 全部)"
+    echo "  stop    [cursor|windsurf]  停止服务"
+    echo "  restart [cursor|windsurf]  重启服务"
+    echo "  status  [cursor|windsurf]  查看 PM2 状态"
+    echo "  logs    [cursor|windsurf]  查看最近 50 行日志"
+    echo "  health  [cursor|windsurf]  HTTP 健康检查"
+    echo "  info                       显示服务配置信息"
+    echo "  help                       显示此帮助"
+    echo ""
+    echo "MCP 端点:"
+    echo "  Cursor:   http://localhost:$CURSOR_PORT/mcp"
+    echo "  Windsurf: http://localhost:$WINDSURF_PORT/mcp"
+}
+
+do_start() {
+    local target="$1"
+    if [ -z "$target" ] || [ "$target" = "cursor" ]; then
+        echo "[Browser MCP] Starting Cursor (port $CURSOR_PORT)..."
+        cd "$CURSOR_DIR" && pm2 delete "$CURSOR_NAME" 2>/dev/null; pm2 start ecosystem.config.cjs
+    fi
+    if [ -z "$target" ] || [ "$target" = "windsurf" ]; then
+        echo "[Browser MCP] Starting Windsurf (port $WINDSURF_PORT)..."
+        cd "$WINDSURF_DIR" && pm2 delete "$WINDSURF_NAME" 2>/dev/null; pm2 start ecosystem.config.cjs
+    fi
+}
+
+do_stop() {
+    local target="$1"
+    if [ -z "$target" ] || [ "$target" = "cursor" ]; then
+        pm2 stop "$CURSOR_NAME" 2>/dev/null; pm2 delete "$CURSOR_NAME" 2>/dev/null
+        echo "[OK] $CURSOR_NAME stopped."
+    fi
+    if [ -z "$target" ] || [ "$target" = "windsurf" ]; then
+        pm2 stop "$WINDSURF_NAME" 2>/dev/null; pm2 delete "$WINDSURF_NAME" 2>/dev/null
+        echo "[OK] $WINDSURF_NAME stopped."
+    fi
+}
+
+do_restart() {
+    local target="$1"
+    if [ -z "$target" ] || [ "$target" = "cursor" ]; then
+        echo "[Browser MCP] Restarting Cursor..."
+        cd "$CURSOR_DIR" && pm2 restart ecosystem.config.cjs 2>/dev/null || pm2 start ecosystem.config.cjs
+    fi
+    if [ -z "$target" ] || [ "$target" = "windsurf" ]; then
+        echo "[Browser MCP] Restarting Windsurf..."
+        cd "$WINDSURF_DIR" && pm2 restart ecosystem.config.cjs 2>/dev/null || pm2 start ecosystem.config.cjs
+    fi
+}
+
+do_status() {
+    local target="$1"
+    if [ -z "$target" ]; then
+        pm2 status
+    elif [ "$target" = "cursor" ]; then
+        pm2 describe "$CURSOR_NAME" 2>/dev/null || echo "$CURSOR_NAME not running"
+    elif [ "$target" = "windsurf" ]; then
+        pm2 describe "$WINDSURF_NAME" 2>/dev/null || echo "$WINDSURF_NAME not running"
+    fi
+}
+
+do_logs() {
+    local target="$1"
+    if [ -z "$target" ] || [ "$target" = "cursor" ]; then
+        echo "=== $CURSOR_NAME logs ==="
+        pm2 logs "$CURSOR_NAME" --lines 50 --nostream 2>/dev/null
+    fi
+    if [ -z "$target" ] || [ "$target" = "windsurf" ]; then
+        echo "=== $WINDSURF_NAME logs ==="
+        pm2 logs "$WINDSURF_NAME" --lines 50 --nostream 2>/dev/null
+    fi
+}
+
+do_health() {
+    local target="$1"
+    if [ -z "$target" ] || [ "$target" = "cursor" ]; then
+        echo -n "[Cursor  :$CURSOR_PORT] "
+        curl -s "http://localhost:$CURSOR_PORT/health" 2>/dev/null || echo "NOT RESPONDING"
+        echo ""
+    fi
+    if [ -z "$target" ] || [ "$target" = "windsurf" ]; then
+        echo -n "[Windsurf:$WINDSURF_PORT] "
+        curl -s "http://localhost:$WINDSURF_PORT/health" 2>/dev/null || echo "NOT RESPONDING"
+        echo ""
+    fi
+}
+
+do_info() {
+    echo "=== MCP Browser Service Info ==="
+    echo ""
+    echo "Cursor 版:"
+    echo "  目录: $CURSOR_DIR"
+    echo "  端口: $CURSOR_PORT"
+    echo "  MCP:  http://localhost:$CURSOR_PORT/mcp"
+    echo "  PM2:  $CURSOR_NAME"
+    echo "  配置: ~/.cursor/mcp.json"
+    echo ""
+    echo "Windsurf 版:"
+    echo "  目录: $WINDSURF_DIR"
+    echo "  端口: $WINDSURF_PORT"
+    echo "  MCP:  http://localhost:$WINDSURF_PORT/mcp"
+    echo "  PM2:  $WINDSURF_NAME"
+    echo "  配置: ~/.codeium/windsurf/mcp_config.json"
+    echo ""
+    echo "可用工具 (22个):"
+    echo "  navigate, click, type, take_screenshot, hover, scroll,"
+    echo "  select_option, fill_form, keyboard_press, drag_and_drop,"
+    echo "  file_upload, execute_js, wait_for_selector, get_element_text,"
+    echo "  get_element_attribute, get_page_content, get_console_logs,"
+    echo "  get_network, get_cookies, set_cookies, pdf_export,"
+    echo "  generate_page_report, set_viewport, go_back, go_forward,"
+    echo "  list_tabs, new_tab, switch_tab, close_tab, intercept_requests"
+}
+
+case "${1:-help}" in
+    start)   do_start "$2" ;;
+    stop)    do_stop "$2" ;;
+    restart) do_restart "$2" ;;
+    status)  do_status "$2" ;;
+    logs)    do_logs "$2" ;;
+    health)  do_health "$2" ;;
+    info)    do_info ;;
+    help|--help|-h) show_help ;;
+    *) echo "Unknown command: $1"; show_help; exit 1 ;;
+esac
