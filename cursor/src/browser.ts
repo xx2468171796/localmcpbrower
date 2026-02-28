@@ -1,5 +1,5 @@
 /**
- * BrowserManager - Playwright 浏览器单例管理器
+ * BrowserManager - Playwright 浏览器单例管理器 (Windows 版)
  */
 
 import { chromium, type BrowserContext, type Page } from 'playwright';
@@ -8,10 +8,12 @@ import * as fs from 'fs';
 import type { ConsoleLogEntry, NetworkRequestEntry, BrowserConfig } from './types.js';
 
 const DEFAULT_CONFIG: BrowserConfig = {
-  headless: process.env['HEADLESS'] === 'true',
+  // headless 默认开启，大幅提升性能；设 HEADLESS=false 可调试
+  headless: process.env['HEADLESS'] !== 'false',
   userDataDir: process.env['USER_DATA_DIR'] ?? 'storage/user_data',
-  viewportWidth: parseInt(process.env['VIEWPORT_WIDTH'] ?? '1920', 10),
-  viewportHeight: parseInt(process.env['VIEWPORT_HEIGHT'] ?? '1080', 10),
+  // 视口缩小，减少内存占用
+  viewportWidth: parseInt(process.env['VIEWPORT_WIDTH'] ?? '1280', 10),
+  viewportHeight: parseInt(process.env['VIEWPORT_HEIGHT'] ?? '800', 10),
   devtools: process.env['DEVTOOLS'] === 'true',
   slowMo: parseInt(process.env['SLOW_MO'] ?? '0', 10)
 };
@@ -50,36 +52,47 @@ class BrowserManager {
     this.ensureUserDataDir();
 
     const launchArgs = [
+      // 反自动化检测
       '--disable-blink-features=AutomationControlled',
+      // 沙箱（Windows 需要保留 setuid-sandbox 相关）
       '--no-sandbox',
       '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
       '--no-first-run',
-      '--disable-extensions',
+      '--no-default-browser-check',
+      // 内存 & 进程优化
+      '--disable-dev-shm-usage',
+      '--disable-breakpad',
+      '--disable-hang-monitor',
+      '--disable-ipc-flooding-protection',
+      '--js-flags=--max-old-space-size=512',
+      // 禁用不必要的后台服务（加速启动）
       '--disable-background-networking',
       '--disable-background-timer-throttling',
       '--disable-backgrounding-occluded-windows',
-      '--disable-breakpad',
+      '--disable-renderer-backgrounding',
       '--disable-component-extensions-with-background-pages',
       '--disable-component-update',
       '--disable-default-apps',
-      '--disable-hang-monitor',
-      '--disable-ipc-flooding-protection',
+      '--disable-extensions',
+      '--disable-sync',
+      '--disable-translate',
       '--disable-popup-blocking',
       '--disable-prompt-on-repost',
-      '--disable-renderer-backgrounding',
-      '--disable-sync',
+      '--disable-features=TranslateUI,BlinkGenPropertyTrees',
+      // 网络优化
       '--enable-features=NetworkService,NetworkServiceInProcess',
-      '--force-color-profile=srgb',
-      '--metrics-recording-only',
-      '--password-store=basic',
-      '--use-mock-keychain',
-      '--js-flags=--max-old-space-size=2048',
+      '--aggressive-cache-discard',
+      // 渲染优化（Windows GPU 加速）
       '--enable-gpu-rasterization',
       '--enable-zero-copy',
       '--enable-features=VaapiVideoDecoder',
       '--ignore-gpu-blocklist',
       '--disable-gpu-driver-bug-workarounds',
+      // 其他
+      '--force-color-profile=srgb',
+      '--metrics-recording-only',
+      '--password-store=basic',
+      '--use-mock-keychain',
       `--window-size=${this.config.viewportWidth},${this.config.viewportHeight}`
     ];
 
@@ -95,7 +108,16 @@ class BrowserManager {
         slowMo: this.config.slowMo,
         viewport: null,
         args: launchArgs,
-        ignoreDefaultArgs: ['--enable-automation']
+        ignoreDefaultArgs: ['--enable-automation'],
+        bypassCSP: true,
+        ignoreHTTPSErrors: true,
+        javaScriptEnabled: true,
+        acceptDownloads: true,
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        extraHTTPHeaders: {
+          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+          'Accept-Encoding': 'gzip, deflate, br'
+        }
       }
     );
 
