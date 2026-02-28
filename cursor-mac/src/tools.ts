@@ -57,8 +57,23 @@ export async function click(input: unknown): Promise<ToolResult<ClickResult>> {
     if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
     const { selector } = parsed.data;
     const page = await getBrowserManager().getPage();
-    await page.waitForSelector(selector, { timeout: 3000, state: 'visible' });
-    await page.click(selector, { timeout: 3000 });
+    try {
+      // 优先尝试正常点击（等待可见）
+      await page.waitForSelector(selector, { timeout: 3000, state: 'visible' });
+      await page.click(selector, { timeout: 5000, noWaitAfter: true });
+    } catch {
+      // 元素隐藏或导航超时时，尝试 force 点击
+      try {
+        await page.click(selector, { force: true, timeout: 5000, noWaitAfter: true });
+      } catch {
+        // 最终 fallback: 通过 JS 直接点击
+        await page.evaluate(`(function() {
+          var el = document.querySelector('${selector.replace(/'/g, "\\'")}');
+          if (el) el.click();
+          else throw new Error('元素未找到: ${selector.replace(/'/g, "\\'")}');
+        })()`);
+      }
+    }
     return { success: true, data: { selector, clicked: true } };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
@@ -71,8 +86,27 @@ export async function type(input: unknown): Promise<ToolResult<TypeResult>> {
     if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
     const { selector, text } = parsed.data;
     const page = await getBrowserManager().getPage();
-    await page.waitForSelector(selector, { timeout: 3000, state: 'visible' });
-    await page.fill(selector, text, { timeout: 3000 });
+    try {
+      // 优先尝试正常填充（等待可见）
+      await page.waitForSelector(selector, { timeout: 3000, state: 'visible' });
+      await page.fill(selector, text, { timeout: 5000 });
+    } catch {
+      // 元素隐藏时，尝试 force 填充
+      try {
+        await page.fill(selector, text, { force: true, timeout: 5000 });
+      } catch {
+        // 最终 fallback: 通过 JS 直接设置值
+        const escapedSelector = selector.replace(/'/g, "\\'");
+        const escapedText = text.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        await page.evaluate(`(function() {
+          var el = document.querySelector('${escapedSelector}');
+          if (!el) throw new Error('元素未找到: ${escapedSelector}');
+          el.value = '${escapedText}';
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        })()`);
+      }
+    }
     return { success: true, data: { selector, typed: true } };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
@@ -88,7 +122,19 @@ export async function takeScreenshot(input: unknown): Promise<ToolResult<Screens
     const screenshotDir = ensureScreenshotDir();
     const fileName = name ?? `screenshot-${Date.now()}`;
     const filePath = path.join(screenshotDir, `${fileName}.png`);
-    const buffer = await page.screenshot({ path: filePath, fullPage, timeout: 30000, animations: 'disabled', scale: 'css' });
+
+    // 先等待页面稳定（最多 2 秒），忽略超时
+    await page.evaluate('document.fonts && document.fonts.ready').catch(() => {});
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    let buffer: Buffer;
+    try {
+      // 第一次尝试：正常截图，10 秒超时
+      buffer = await page.screenshot({ path: filePath, fullPage, timeout: 10000, animations: 'disabled', scale: 'css' });
+    } catch {
+      // 第二次尝试：不等待字体，缩小视口截图
+      buffer = await page.screenshot({ path: filePath, fullPage: false, timeout: 10000, animations: 'disabled', scale: 'css' });
+    }
     const base64 = buffer.toString('base64');
     return { success: true, data: { path: filePath, fullPage, base64 } };
   } catch (error) {
