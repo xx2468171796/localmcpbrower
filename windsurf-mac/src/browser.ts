@@ -8,10 +8,11 @@ import * as fs from 'fs';
 import type { ConsoleLogEntry, NetworkRequestEntry, BrowserConfig } from './types.js';
 
 const DEFAULT_CONFIG: BrowserConfig = {
-  headless: process.env['HEADLESS'] === 'true',
+  // headless 默认开启，大幅提升性能；设 HEADLESS=false 可调试
+  headless: process.env['HEADLESS'] !== 'false',
   userDataDir: process.env['USER_DATA_DIR'] ?? 'storage/user_data',
-  viewportWidth: parseInt(process.env['VIEWPORT_WIDTH'] ?? '1920', 10),
-  viewportHeight: parseInt(process.env['VIEWPORT_HEIGHT'] ?? '1080', 10),
+  viewportWidth: parseInt(process.env['VIEWPORT_WIDTH'] ?? '1280', 10),
+  viewportHeight: parseInt(process.env['VIEWPORT_HEIGHT'] ?? '800', 10),
   devtools: process.env['DEVTOOLS'] === 'true',
   slowMo: parseInt(process.env['SLOW_MO'] ?? '0', 10)
 };
