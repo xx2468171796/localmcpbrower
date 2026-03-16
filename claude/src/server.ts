@@ -344,10 +344,22 @@ function listenWithRetry(app: express.Application, host: string, port: number, r
 async function killPortProcess(port: number): Promise<void> {
   try {
     const { execSync } = await import('child_process');
-    const output = execSync(`lsof -ti tcp:${port}`, { encoding: 'utf-8', timeout: 5000 });
-    for (const pid of output.trim().split('\n')) {
-      if (pid && pid !== String(process.pid)) {
-        try { execSync(`kill -9 ${pid}`, { timeout: 5000 }); } catch {}
+    if (process.platform === 'win32') {
+      const output = execSync(`netstat -ano | findstr :${port}`, { encoding: 'utf-8', timeout: 5000 });
+      const pids = new Set<string>();
+      for (const line of output.trim().split('\n')) {
+        const m = line.trim().match(/\s+(\d+)$/);
+        if (m && m[1] && m[1] !== String(process.pid)) pids.add(m[1]);
+      }
+      for (const pid of pids) {
+        try { execSync(`taskkill /F /PID ${pid}`, { timeout: 5000 }); } catch {}
+      }
+    } else {
+      const output = execSync(`lsof -ti tcp:${port}`, { encoding: 'utf-8', timeout: 5000 });
+      for (const pid of output.trim().split('\n')) {
+        if (pid && pid !== String(process.pid)) {
+          try { execSync(`kill -9 ${pid}`, { timeout: 5000 }); } catch {}
+        }
       }
     }
   } catch {}
