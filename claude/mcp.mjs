@@ -43,7 +43,10 @@ function fail(msg) { console.error(`[✗] ${msg}`); process.exit(1); }
 
 function run(cmd, args, cwd) {
   log(`  $ ${cmd} ${args.join(' ')}${cwd ? `   (cwd: ${cwd})` : ''}`);
-  const res = spawnSync(cmd, args, { cwd: cwd || ROOT, stdio: 'inherit', shell: IS_WIN });
+  // Windows + shell:true 时，cmd.exe 会按空格拆分命令；为含空格的路径加引号
+  // (修复 Node.js 安装在 "C:\Program Files\nodejs" 时 install 失败的问题)
+  const q = (s) => (IS_WIN && typeof s === 'string' && /\s/.test(s) && !s.startsWith('"')) ? `"${s}"` : s;
+  const res = spawnSync(IS_WIN ? q(cmd) : cmd, IS_WIN ? args.map(q) : args, { cwd: cwd || ROOT, stdio: 'inherit', shell: IS_WIN });
   if (res.status !== 0) {
     fail(`命令失败: ${cmd} ${args.join(' ')} (退出码 ${res.status})`);
   }
@@ -63,9 +66,16 @@ function cmdInstall() {
   run(NPM, ['install'], ROOT);
 
   step('[2/5] 安装 Playwright Chromium');
-  // rebrowser-playwright 自带 CLI 有 bug，调用其内置 playwright-core CLI 安装
+  // rebrowser-playwright 自带 CLI 有 bug，改用 playwright-core 的 CLI 安装。
+  // npm 会把 playwright-core 提升到顶层 node_modules，直接 resolve 该模块更可靠
+  // (旧写法假设 cli.js 嵌套在 rebrowser-playwright/node_modules 下，提升后会 MODULE_NOT_FOUND)
   const require = createRequire(join(ROOT, 'package.json'));
-  const pwCli = join(dirname(require.resolve('rebrowser-playwright/package.json')), 'node_modules', 'playwright-core', 'cli.js');
+  let pwCli;
+  try {
+    pwCli = require.resolve('playwright-core/cli.js');
+  } catch {
+    pwCli = join(dirname(require.resolve('rebrowser-playwright/package.json')), 'node_modules', 'playwright-core', 'cli.js');
+  }
   // Linux 需 --with-deps 自动安装 Chromium 运行所需系统库 (libnss3 等)，否则浏览器无法启动
   const pwArgs = process.platform === 'linux'
     ? ['install', '--with-deps', 'chromium']
