@@ -29,4 +29,8 @@ node mcp.mjs config
 node mcp.mjs start
 ```
 
-完整安装、配置与用法见 [`claude/README.md`](./claude/README.md)。
+## 文档
+
+- [`DEPLOY.md`](./DEPLOY.md) —— **新机器 / 多机部署指南**（macOS / Linux / Windows 一步步走）
+- [`claude/README.md`](./claude/README.md) —— 完整安装、配置与用法
+- [`USAGE.md`](./USAGE.md) —— 工具调用规则（给 AI 看的手册）
