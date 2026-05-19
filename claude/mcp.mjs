@@ -66,7 +66,11 @@ function cmdInstall() {
   // rebrowser-playwright 自带 CLI 有 bug，调用其内置 playwright-core CLI 安装
   const require = createRequire(join(ROOT, 'package.json'));
   const pwCli = join(dirname(require.resolve('rebrowser-playwright/package.json')), 'node_modules', 'playwright-core', 'cli.js');
-  run(process.execPath, [pwCli, 'install', 'chromium'], ROOT);
+  // Linux 需 --with-deps 自动安装 Chromium 运行所需系统库 (libnss3 等)，否则浏览器无法启动
+  const pwArgs = process.platform === 'linux'
+    ? ['install', '--with-deps', 'chromium']
+    : ['install', 'chromium'];
+  run(process.execPath, [pwCli, ...pwArgs], ROOT);
 
   step('[3/5] 构建浏览器 MCP');
   run(NPM, ['run', 'build'], ROOT);
