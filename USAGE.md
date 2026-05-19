@@ -6,18 +6,32 @@
 
 ## 一、服务管理（先启动再用）
 
+### 推荐：stdio 原生模式
+
+stdio 模式由 Claude Code 直接拉起进程，**无需启动服务、无需端口**。
+只要 `.mcp.json` 或 `claude mcp add` 已配置好，工具即可直接调用，无需 `mcp.mjs start`。
+
 ```bash
-mcp start cursor        # 启动 Cursor 版（Browser:3211 + Database:3212）
-mcp start windsurf      # 启动 Windsurf 版（Browser:3213 + Database:3214）
-mcp health cursor       # 检查服务是否正常
-mcp status              # 查看所有进程状态
+# 首次安装 / 重新构建（跨平台）
+node mcp.mjs install
+
+# 获取 stdio 配置命令（推荐路径）
+node mcp.mjs config
 ```
 
-**MCP 端点：**
-- Cursor Browser:   `http://localhost:3211/mcp`
-- Cursor Database:  `http://localhost:3212/mcp`
-- Windsurf Browser: `http://localhost:3213/mcp`
-- Windsurf Database:`http://localhost:3214/mcp`
+### HTTP / PM2 模式（服务器或多客户端共享）
+
+```bash
+node mcp.mjs start          # 启动全部（browser + db）
+node mcp.mjs status         # 查看 PM2 进程状态
+node mcp.mjs stop           # 停止
+```
+
+**MCP 端点（仅 HTTP 模式）：**
+- 有头浏览器 `http://localhost:3213/mcp`
+- 无头浏览器 `http://localhost:3215/mcp`
+- 数据库 `http://localhost:3214/mcp`
+- stdio 模式不占用端口
 
 ---
 
@@ -56,6 +70,19 @@ set_block_rules({ blockImages: true, blockMedia: true, blockFonts: true, blockAd
 click 和 type 已内置三级 fallback（正常→force→JS），无需手动重试。
 如果仍然失败，改用 execute_js 直接操作 DOM：
 execute_js({ script: "document.querySelector('#btn').click()" })
+```
+
+### 规则 7：用 snapshot + ref 操作元素（省 token）
+
+```
+不确定选择器时，先调用 snapshot 获取页面无障碍大纲，
+每个可交互元素带 ref 编号（如 e5），再用 ref 操作，无需写 CSS：
+snapshot()                          # 获取大纲，读取目标 ref
+click({ ref: "e5" })                # 用 ref 点击（selector 与 ref 二选一）
+type({ ref: "e3", text: "关键词" })  # 用 ref 输入
+
+正文采集首选 extract_article（自动剥离导航/广告，返回干净 Markdown），
+比 get_page_content + 手动清洗更省 token。
 ```
 
 ### 规则 5：截图使用场景
@@ -112,27 +139,40 @@ list_tabs()                        # 查看所有标签
 
 ## 四、数据库 MCP 调用规则
 
-### 配置数据库（AI 直接执行）
+### 配置数据库
+
+数据库连接信息通过 `claude/mcp-database/.env` 配置，复制示例并编辑：
 
 ```bash
+cp claude/mcp-database/.env.example claude/mcp-database/.env
+```
+
+```env
 # PostgreSQL
-mcp-database set cursor --type postgresql --host 127.0.0.1 --port 5432 --name mydb --user postgres --password 123456
-
-# MySQL
-mcp-database set cursor --type mysql --host 127.0.0.1 --port 3306 --name shop --user root --password root123
-
-# 配置完重启生效
-mcp-database restart cursor
+DB_TYPE=postgresql
+DB_HOST=127.0.0.1
+DB_PORT=5432
+DB_NAME=mydb
+DB_USER=postgres
+DB_PASSWORD=123456
+DB_SSL=false
 ```
 
 ### 添加多个数据库预设
 
-```bash
-mcp-database add-preset cursor DEV --type postgresql --host 127.0.0.1 --port 5432 --name dev_db --user dev --password dev123
-mcp-database add-preset cursor PROD --type postgresql --host prod.server.com --port 5432 --name prod_db --user admin --password xxx --ssl true
-mcp-database use-preset cursor DEV    # 切换默认连接
-mcp-database restart cursor           # 重启生效
+在同一个 `.env` 文件中按 `DB_<别名>_*` 格式追加预设，运行时用 `switch_db` 工具切换：
+
+```env
+DB_PROD_TYPE=postgresql
+DB_PROD_HOST=prod.server.com
+DB_PROD_PORT=5432
+DB_PROD_NAME=prod_db
+DB_PROD_USER=admin
+DB_PROD_PASSWORD=xxx
+DB_PROD_SSL=true
 ```
+
+> stdio 模式修改 `.env` 后重新触发 MCP 即生效；HTTP / PM2 模式需 `node mcp.mjs restart db`。
 
 ### 数据库工具（15个）
 
@@ -156,7 +196,7 @@ mcp-database restart cursor           # 重启生效
 
 ---
 
-## 五、完整工具清单（浏览器 MCP，35个）
+## 五、完整工具清单（浏览器 MCP，38个）
 
 ### 基础操作（14个）
 | 工具 | 参数 | 说明 |
@@ -176,7 +216,7 @@ mcp-database restart cursor           # 重启生效
 | `go_forward` | - | 前进 |
 | `set_viewport` | width, height | 设置视口 |
 
-### 数据提取（10个）
+### 数据提取（12个）
 | 工具 | 参数 | 说明 |
 |------|------|------|
 | `get_page_content` | selector? | 获取 HTML |
@@ -189,6 +229,8 @@ mcp-database restart cursor           # 重启生效
 | `execute_js` | script | 执行 JS |
 | `generate_page_report` | - | 页面结构报告 |
 | `intercept_requests` | urlPattern, action | 拦截请求 |
+| `snapshot` | interactiveOnly?, maxChars? | 无障碍树快照，返回元素 ref，省 token；先 snapshot 再用 ref 操作 |
+| `extract_article` | url? | 提取主正文为 Markdown，剥离导航/广告 |
 
 ### 截图导出（2个）
 | 工具 | 参数 | 说明 |

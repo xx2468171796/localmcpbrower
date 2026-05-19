@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "browser": {
+      "command": "node",
+      "args": ["/ABSOLUTE/PATH/TO/claude/dist/server.js", "--stdio"]
+    },
+    "database": {
+      "command": "node",
+      "args": ["/ABSOLUTE/PATH/TO/claude/mcp-database/dist/server.js", "--stdio"],
+      "env": {
+        "MCP_TRANSPORT": "stdio"
+      }
+    }
+  }
+}

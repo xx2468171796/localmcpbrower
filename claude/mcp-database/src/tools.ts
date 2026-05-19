@@ -1,5 +1,5 @@
 /**
- * MCP 数据库工具定义
+ * MCP 数据库工具定义 - Claude Code 版本
  */
 
 import { getDatabaseManager } from './database.js';

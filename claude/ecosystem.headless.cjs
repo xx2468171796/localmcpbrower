@@ -1,6 +1,6 @@
 /**
  * 无头浏览器 MCP - PM2 配置
- * 适用于 macOS 调试（HEADLESS=true）和 Debian 13 服务器
+ * 适用于 macOS / Windows 调试（HEADLESS=true）和 Linux 服务器 / SSH 环境
  * 端口 3215，服务名 claudemcp-headless
  */
 module.exports = {
@@ -22,7 +22,7 @@ module.exports = {
     log_date_format: 'YYYY-MM-DD HH:mm:ss',
     env: {
       NODE_ENV: 'production',
-      PORT: '3211',
+      PORT: '3215',
       HOST: '0.0.0.0',
       HEADLESS: 'true',
       DEVTOOLS: 'false',
