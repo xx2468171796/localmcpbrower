@@ -18,6 +18,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 
 const IS_WIN = process.platform === 'win32';
 const ROOT = dirname(fileURLToPath(import.meta.url));      // claude/
@@ -62,7 +63,10 @@ function cmdInstall() {
   run(NPM, ['install'], ROOT);
 
   step('[2/5] 安装 Playwright Chromium');
-  run(NPX, ['playwright', 'install', 'chromium'], ROOT);
+  // rebrowser-playwright 自带 CLI 有 bug，调用其内置 playwright-core CLI 安装
+  const require = createRequire(join(ROOT, 'package.json'));
+  const pwCli = join(dirname(require.resolve('rebrowser-playwright/package.json')), 'node_modules', 'playwright-core', 'cli.js');
+  run(process.execPath, [pwCli, 'install', 'chromium'], ROOT);
 
   step('[3/5] 构建浏览器 MCP');
   run(NPM, ['run', 'build'], ROOT);

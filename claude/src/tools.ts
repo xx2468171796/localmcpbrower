@@ -13,8 +13,12 @@ import {
   PdfExportSchema, GetCookiesSchema, SetCookiesSchema,
   PageReportSchema, SetViewportSchema,
   ExtractLinksSchema, ExtractDataSchema, BatchFetchSchema,
-  CrawlPagesSchema, WaitAndExtractSchema, SetBlockRulesSchema
+  CrawlPagesSchema, WaitAndExtractSchema, SetBlockRulesSchema,
+  SnapshotSchema, ExtractArticleSchema
 } from './schemas.js';
+import { Readability } from '@mozilla/readability';
+import { JSDOM } from 'jsdom';
+import TurndownService from 'turndown';
 import type {
   ToolResult, NavigateResult, ClickResult, TypeResult,
   ScreenshotResult, ExecuteJsResult, ConsoleLogEntry, NetworkRequestEntry
@@ -53,11 +57,20 @@ export async function setViewport(input: unknown): Promise<ToolResult<{ width: n
   }
 }
 
+/** 把 ref 编号解析为 CSS 选择器；selector / ref 二选一 */
+function resolveTarget(selector?: string, ref?: string): { ok: true; selector: string } | { ok: false; error: string } {
+  if (ref) return { ok: true, selector: `[data-mcp-ref="${ref}"]` };
+  if (selector) return { ok: true, selector };
+  return { ok: false, error: 'selector 与 ref 必须提供其一' };
+}
+
 export async function click(input: unknown): Promise<ToolResult<ClickResult>> {
   try {
     const parsed = ClickSchema.safeParse(input);
     if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
-    const { selector } = parsed.data;
+    const target = resolveTarget(parsed.data.selector, parsed.data.ref);
+    if (!target.ok) return { success: false, error: target.error };
+    const selector = target.selector;
     const page = await getBrowserManager().getPage();
     try {
       // 优先尝试正常点击（等待可见）
@@ -86,7 +99,10 @@ export async function type(input: unknown): Promise<ToolResult<TypeResult>> {
   try {
     const parsed = TypeSchema.safeParse(input);
     if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
-    const { selector, text } = parsed.data;
+    const target = resolveTarget(parsed.data.selector, parsed.data.ref);
+    if (!target.ok) return { success: false, error: target.error };
+    const selector = target.selector;
+    const { text } = parsed.data;
     const page = await getBrowserManager().getPage();
     try {
       // 优先尝试正常填充（等待可见）
@@ -215,7 +231,9 @@ export async function hover(input: unknown): Promise<ToolResult<{ hovered: boole
   try {
     const parsed = HoverSchema.safeParse(input);
     if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
-    const { selector } = parsed.data;
+    const target = resolveTarget(parsed.data.selector, parsed.data.ref);
+    if (!target.ok) return { success: false, error: target.error };
+    const selector = target.selector;
     const page = await getBrowserManager().getPage();
     await page.hover(selector, { timeout: 5000 });
     return { success: true, data: { hovered: true } };
@@ -748,6 +766,166 @@ export async function crawlPages(input: unknown): Promise<ToolResult<{ items: Ar
     }
 
     return { success: true, data: { items: allItems, pages: pageCount, total: allItems.length } };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** ARIA 快照：返回页面无障碍树式大纲，并为可交互元素打上 data-mcp-ref */
+export async function snapshot(input: unknown): Promise<ToolResult<{ snapshot: string; refCount: number; truncated: boolean }>> {
+  try {
+    const parsed = SnapshotSchema.safeParse(input);
+    if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
+    const { interactiveOnly, maxChars } = parsed.data;
+    const page = await getBrowserManager().getPage();
+    const cap = maxChars ?? 12000;
+
+    const result = await page.evaluate(`(function() {
+      var interactiveOnly = ${interactiveOnly};
+      var cap = ${cap};
+      var INTERACTIVE_ROLES = ['button','link','checkbox','menuitem','tab','switch'];
+      var lines = [];
+      var refCount = 0;
+      var truncated = false;
+      var totalLen = 0;
+
+      function isVisible(el) {
+        if (!(el instanceof Element)) return false;
+        var style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity) === 0) return false;
+        var rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      }
+      function isInteractive(el) {
+        var tag = el.tagName.toLowerCase();
+        if (['a','button','input','select','textarea'].indexOf(tag) !== -1) return true;
+        var role = el.getAttribute('role');
+        if (role && INTERACTIVE_ROLES.indexOf(role) !== -1) return true;
+        if (el.hasAttribute('onclick')) return true;
+        return false;
+      }
+      function roleOf(el) {
+        var role = el.getAttribute('role');
+        if (role) return role;
+        var tag = el.tagName.toLowerCase();
+        if (tag === 'a') return 'link';
+        if (tag === 'button') return 'button';
+        if (tag === 'select') return 'combobox';
+        if (tag === 'textarea') return 'textbox';
+        if (tag === 'input') {
+          var t = (el.getAttribute('type') || 'text').toLowerCase();
+          if (t === 'checkbox') return 'checkbox';
+          if (t === 'radio') return 'radio';
+          if (t === 'submit' || t === 'button') return 'button';
+          return 'textbox';
+        }
+        if (/^h[1-6]$/.test(tag)) return 'heading';
+        return '';
+      }
+      function nameOf(el) {
+        var n = el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('title') || el.getAttribute('alt') || '';
+        if (!n) {
+          if (el.tagName.toLowerCase() === 'input' && el.value) n = el.value;
+          else n = (el.textContent || '').replace(/\\s+/g, ' ').trim();
+        }
+        if (n.length > 80) n = n.slice(0, 80) + '…';
+        return n.replace(/"/g, "'");
+      }
+      function emit(depth, txt) {
+        if (totalLen >= cap) { truncated = true; return; }
+        var line = new Array(depth + 1).join('  ') + txt;
+        lines.push(line);
+        totalLen += line.length + 1;
+      }
+      function walk(node, depth) {
+        if (truncated || depth > 25) return;
+        for (var i = 0; i < node.children.length; i++) {
+          if (truncated) return;
+          var el = node.children[i];
+          var tag = el.tagName.toLowerCase();
+          if (['script','style','noscript','svg','head','meta','link'].indexOf(tag) !== -1) continue;
+          if (!isVisible(el)) continue;
+          var meaningful = isInteractive(el) || /^h[1-6]$/.test(tag) || el.hasAttribute('role');
+          var role = roleOf(el);
+          if (meaningful && role) {
+            var refStr = '';
+            if (isInteractive(el)) {
+              refCount++;
+              var ref = 'e' + refCount;
+              el.setAttribute('data-mcp-ref', ref);
+              refStr = ' [ref=' + ref + ']';
+            }
+            if (!interactiveOnly || isInteractive(el)) {
+              emit(depth, role + ' "' + nameOf(el) + '"' + refStr);
+            }
+            walk(el, depth + 1);
+          } else if (!interactiveOnly) {
+            // 叶子可见文本节点
+            var ownText = '';
+            for (var j = 0; j < el.childNodes.length; j++) {
+              var cn = el.childNodes[j];
+              if (cn.nodeType === 3) ownText += cn.textContent;
+            }
+            ownText = ownText.replace(/\\s+/g, ' ').trim();
+            if (ownText && el.children.length === 0) {
+              if (ownText.length > 120) ownText = ownText.slice(0, 120) + '…';
+              emit(depth, 'text "' + ownText.replace(/"/g, "'") + '"');
+            } else {
+              walk(el, depth);
+            }
+          } else {
+            walk(el, depth);
+          }
+        }
+      }
+      // 清除上一次快照的 ref 标记
+      var prev = document.querySelectorAll('[data-mcp-ref]');
+      for (var k = 0; k < prev.length; k++) prev[k].removeAttribute('data-mcp-ref');
+      walk(document.body, 0);
+      return { snapshot: lines.join('\\n'), refCount: refCount, truncated: truncated };
+    })()`);
+
+    const r = result as { snapshot: string; refCount: number; truncated: boolean };
+    const snap = r.truncated ? r.snapshot + '\n\n[... 已截断，可调大 maxChars 或设置 interactiveOnly:true]' : r.snapshot;
+    return { success: true, data: { snapshot: snap, refCount: r.refCount, truncated: r.truncated } };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** 提取页面主正文为干净的 Markdown（剥离导航/广告/样板） */
+export async function extractArticle(input: unknown): Promise<ToolResult<{
+  title: string; byline: string | null; excerpt: string | null;
+  length: number; markdown: string; textPreview: string;
+}>> {
+  try {
+    const parsed = ExtractArticleSchema.safeParse(input);
+    if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
+    const { url } = parsed.data;
+    const page = await getBrowserManager().getPage();
+    if (url) await page.goto(url, { waitUntil: 'commit', timeout: 30000 });
+
+    const html = await page.content();
+    const pageUrl = page.url();
+    const dom = new JSDOM(html, { url: pageUrl });
+    const article = new Readability(dom.window.document).parse();
+    if (!article || !article.content) {
+      return { success: false, error: '该页面不是文章，或无法提取主正文（Readability 返回空）' };
+    }
+    const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
+    const markdown = turndown.turndown(article.content);
+    const text = (article.textContent ?? '').replace(/\s+/g, ' ').trim();
+    return {
+      success: true,
+      data: {
+        title: article.title ?? '',
+        byline: article.byline ?? null,
+        excerpt: article.excerpt ?? null,
+        length: article.length ?? markdown.length,
+        markdown,
+        textPreview: text.slice(0, 300),
+      },
+    };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
   }

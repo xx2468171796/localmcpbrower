@@ -9,11 +9,13 @@ export const NavigateSchema = z.object({
 });
 
 export const ClickSchema = z.object({
-  selector: z.string().min(1, 'selector 不能为空').describe('要点击元素的 CSS 选择器')
+  selector: z.string().min(1, 'selector 不能为空').optional().describe('要点击元素的 CSS 选择器，与 ref 二选一（必须提供其一）'),
+  ref: z.string().min(1).optional().describe('snapshot 工具返回的元素 ref 编号（如 e5），与 selector 二选一')
 });
 
 export const TypeSchema = z.object({
-  selector: z.string().min(1, 'selector 不能为空').describe('目标输入框的 CSS 选择器'),
+  selector: z.string().min(1, 'selector 不能为空').optional().describe('目标输入框的 CSS 选择器，与 ref 二选一（必须提供其一）'),
+  ref: z.string().min(1).optional().describe('snapshot 工具返回的元素 ref 编号（如 e5），与 selector 二选一'),
   text: z.string().describe('要输入的文本内容')
 });
 
@@ -48,7 +50,17 @@ export const GetElementAttributeSchema = z.object({
 });
 
 export const HoverSchema = z.object({
-  selector: z.string().min(1, 'selector 不能为空').describe('要悬停的元素 CSS 选择器')
+  selector: z.string().min(1, 'selector 不能为空').optional().describe('要悬停的元素 CSS 选择器，与 ref 二选一（必须提供其一）'),
+  ref: z.string().min(1).optional().describe('snapshot 工具返回的元素 ref 编号（如 e5），与 selector 二选一')
+});
+
+export const SnapshotSchema = z.object({
+  interactiveOnly: z.boolean().default(false).describe('仅输出可交互元素（链接/按钮/输入框等），默认 false 包含标题与可见文本'),
+  maxChars: z.number().int().positive().optional().describe('输出字符上限，超出会被截断并标注，默认约 12000')
+});
+
+export const ExtractArticleSchema = z.object({
+  url: z.string().url().optional().describe('可选，提供则先跳转到该网址再提取，不填则提取当前页面')
 });
 
 export const SelectOptionSchema = z.object({
@@ -148,6 +160,8 @@ export type GetCookiesInput = z.infer<typeof GetCookiesSchema>;
 export type SetCookiesInput = z.infer<typeof SetCookiesSchema>;
 export type PageReportInput = z.infer<typeof PageReportSchema>;
 export type SetViewportInput = z.infer<typeof SetViewportSchema>;
+export type SnapshotInput = z.infer<typeof SnapshotSchema>;
+export type ExtractArticleInput = z.infer<typeof ExtractArticleSchema>;
 
 // ============================================================
 // 爬虫工具 Schema

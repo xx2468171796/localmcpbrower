@@ -39,7 +39,8 @@ echo "[OK] Browser MCP dependencies installed"
 echo ""
 
 echo "[4/6] Installing Playwright Chromium..."
-npx playwright install chromium
+# rebrowser-playwright 自带 CLI 有 bug，调用其内置 playwright-core CLI 安装
+node -e "const p=require('path'),cp=require('child_process');const dir=p.dirname(require.resolve('rebrowser-playwright/package.json'));const cli=p.join(dir,'node_modules','playwright-core','cli.js');cp.execFileSync(process.execPath,[cli,'install','chromium'],{stdio:'inherit'})"
 echo "[OK] Chromium installed"
 echo ""
 

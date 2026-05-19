@@ -83,6 +83,19 @@ click 和 type 已内置三级 fallback（正常→force→JS），无需手动�
 execute_js({ script: "document.querySelector('#btn').click()" })
 ```
 
+### 规则 7：用 snapshot + ref 操作元素（省 token）
+
+```
+不确定选择器时，先调用 snapshot 获取页面无障碍大纲，
+每个可交互元素带 ref 编号（如 e5），再用 ref 操作，无需写 CSS：
+snapshot()                          # 获取大纲，读取目标 ref
+click({ ref: "e5" })                # 用 ref 点击（selector 与 ref 二选一）
+type({ ref: "e3", text: "关键词" })  # 用 ref 输入
+
+正文采集首选 extract_article（自动剥离导航/广告，返回干净 Markdown），
+比 get_page_content + 手动清洗更省 token。
+```
+
 ### 规则 5：截图使用场景
 
 ```
@@ -181,7 +194,7 @@ mcp-database restart cursor           # 重启生效
 
 ---
 
-## 五、完整工具清单（浏览器 MCP，35个）
+## 五、完整工具清单（浏览器 MCP，38个）
 
 ### 基础操作（14个）
 | 工具 | 参数 | 说明 |
@@ -201,7 +214,7 @@ mcp-database restart cursor           # 重启生效
 | `go_forward` | - | 前进 |
 | `set_viewport` | width, height | 设置视口 |
 
-### 数据提取（10个）
+### 数据提取（12个）
 | 工具 | 参数 | 说明 |
 |------|------|------|
 | `get_page_content` | selector? | 获取 HTML |
@@ -214,6 +227,8 @@ mcp-database restart cursor           # 重启生效
 | `execute_js` | script | 执行 JS |
 | `generate_page_report` | - | 页面结构报告 |
 | `intercept_requests` | urlPattern, action | 拦截请求 |
+| `snapshot` | interactiveOnly?, maxChars? | 无障碍树快照，返回元素 ref，省 token；先 snapshot 再用 ref 操作 |
+| `extract_article` | url? | 提取主正文为 Markdown，剥离导航/广告 |
 
 ### 截图导出（2个）
 | 工具 | 参数 | 说明 |

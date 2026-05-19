@@ -76,12 +76,13 @@ npm install
 log "浏览器 MCP 依赖安装完成"
 
 # ── 安装 Playwright Chromium ──
+# rebrowser-playwright 的 CLI 自身有 bug，需调用其内置的 playwright-core CLI
 step "安装 Playwright Chromium"
+PW_INSTALL_ARGS="install chromium"
 if [[ "$PLATFORM" == "linux" ]]; then
-  npx playwright install --with-deps chromium
-else
-  npx playwright install chromium
+  PW_INSTALL_ARGS="install --with-deps chromium"
 fi
+node -e "const p=require('path'),cp=require('child_process');const dir=p.dirname(require.resolve('rebrowser-playwright/package.json'));const cli=p.join(dir,'node_modules','playwright-core','cli.js');cp.execFileSync(process.execPath,[cli,...'$PW_INSTALL_ARGS'.split(' ')],{stdio:'inherit'})"
 log "Playwright Chromium 安装完成"
 
 # ── 构建浏览器 MCP ──

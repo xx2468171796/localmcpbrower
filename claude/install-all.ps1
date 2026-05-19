@@ -45,8 +45,9 @@ Write-Host '[OK] 浏览器 MCP 依赖安装完成'
 Write-Host ''
 
 # ── Playwright Chromium ──
+# rebrowser-playwright 自带 CLI 有 bug，调用其内置 playwright-core CLI 安装
 Write-Host '[4/6] 安装 Playwright Chromium...'
-npx playwright install chromium
+node -e "const p=require('path'),cp=require('child_process');const dir=p.dirname(require.resolve('rebrowser-playwright/package.json'));const cli=p.join(dir,'node_modules','playwright-core','cli.js');cp.execFileSync(process.execPath,[cli,'install','chromium'],{stdio:'inherit'})"
 Write-Host '[OK] Chromium 安装完成'
 Write-Host ''
 

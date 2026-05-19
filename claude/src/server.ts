@@ -12,6 +12,7 @@ if (STDIO) {
 }
 
 import express, { type Request, type Response, type NextFunction } from 'express';
+import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -31,7 +32,8 @@ import {
   KeyboardPressSchema, DragAndDropSchema, FileUploadSchema,
   NewTabSchema, TabIndexSchema, InterceptRequestsSchema,
   ExtractLinksSchema, ExtractDataSchema, BatchFetchSchema,
-  CrawlPagesSchema, WaitAndExtractSchema, SetBlockRulesSchema
+  CrawlPagesSchema, WaitAndExtractSchema, SetBlockRulesSchema,
+  SnapshotSchema, ExtractArticleSchema
 } from './schemas.js';
 
 const PORT = parseInt(process.env['PORT'] ?? '3211', 10);
@@ -102,6 +104,8 @@ const directToolHandlers: Record<string, (args: unknown) => Promise<unknown>> = 
   wait_and_extract: async (a) => text(await tools.waitAndExtract(a)),
   batch_fetch: async (a) => text(await tools.batchFetch(a)),
   crawl_pages: async (a) => text(await tools.crawlPages(a)),
+  snapshot: async (a) => text(await tools.snapshot(a)),
+  extract_article: async (a) => text(await tools.extractArticle(a)),
 };
 
 /** Handle tools/call directly without MCP session */
@@ -125,6 +129,21 @@ async function handleDirectToolCall(body: { id: unknown; params?: { name?: strin
 function text(result: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
 }
+
+// 同时返回文本与 structuredContent（用于设置了 outputSchema 的工具）
+function structured(result: unknown) {
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+    structuredContent: result as Record<string, unknown>,
+  };
+}
+
+// 复用的工具结果信封 outputSchema —— 对应 ToolResult<T> 形状
+const ResultEnvelope = {
+  success: z.boolean(),
+  data: z.unknown().optional(),
+  error: z.string().optional(),
+};
 
 function createMcpServer(): McpServer {
   const server = new McpServer({ name: 'claudemcp-browser', version: SERVER_VERSION });
@@ -240,14 +259,16 @@ function createMcpServer(): McpServer {
   server.registerTool('get_console_logs', {
     title: '控制台日志',
     description: '获取页面累计的 console 输出（log/warn/error 等），用于调试前端报错。',
+    outputSchema: ResultEnvelope,
     annotations: { title: '控制台日志', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async () => text(await tools.getConsoleLogs()));
+  }, async () => structured(await tools.getConsoleLogs()));
 
   server.registerTool('get_network', {
     title: '网络请求记录',
     description: '获取页面累计的网络请求记录（URL、方法、状态码），用于排查接口或资源加载问题。',
+    outputSchema: ResultEnvelope,
     annotations: { title: '网络请求记录', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async () => text(await tools.getNetwork()));
+  }, async () => structured(await tools.getNetwork()));
 
   server.registerTool('execute_js', {
     title: '执行 JS',
@@ -268,29 +289,33 @@ function createMcpServer(): McpServer {
     title: '获取元素文本',
     description: '获取单个元素的文本内容。提取列表/表格等多条数据时请改用 extract_data，避免多次调用。',
     inputSchema: GetElementTextSchema.shape,
+    outputSchema: ResultEnvelope,
     annotations: { title: '获取元素文本', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.getElementText(args)));
+  }, async (args) => structured(await tools.getElementText(args)));
 
   server.registerTool('get_element_attribute', {
     title: '获取元素属性',
     description: '获取单个元素的指定属性值，如 href、src、data-* 等。',
     inputSchema: GetElementAttributeSchema.shape,
+    outputSchema: ResultEnvelope,
     annotations: { title: '获取元素属性', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.getElementAttribute(args)));
+  }, async (args) => structured(await tools.getElementAttribute(args)));
 
   server.registerTool('get_page_content', {
     title: '获取页面内容',
     description: '获取页面 HTML 或纯文本内容，可用 selector 限定范围。读取简单页面内容的首选，比 take_screenshot 更快更省。',
     inputSchema: GetPageContentSchema.shape,
+    outputSchema: ResultEnvelope,
     annotations: { title: '获取页面内容', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.getPageContent(args)));
+  }, async (args) => structured(await tools.getPageContent(args)));
 
   server.registerTool('get_cookies', {
     title: '获取 Cookie',
     description: '获取当前页面的 Cookie，可按名称过滤。用于检查登录态或调试会话。',
     inputSchema: GetCookiesSchema.shape,
+    outputSchema: ResultEnvelope,
     annotations: { title: '获取 Cookie', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.getCookies(args)));
+  }, async (args) => structured(await tools.getCookies(args)));
 
   server.registerTool('set_cookies', {
     title: '设置 Cookie',
@@ -311,8 +336,9 @@ function createMcpServer(): McpServer {
     title: '页面分析报告',
     description: '生成页面结构分析报告（链接/表单/图片清单），用于快速了解页面整体结构、规划爬虫选择器。',
     inputSchema: PageReportSchema.shape,
+    outputSchema: ResultEnvelope,
     annotations: { title: '页面分析报告', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.generatePageReport(args)));
+  }, async (args) => structured(await tools.generatePageReport(args)));
 
   // === Multi-tab ===
   server.registerTool('list_tabs', {
@@ -362,36 +388,58 @@ function createMcpServer(): McpServer {
     title: '提取链接',
     description: '提取页面所有链接，支持范围限定和 URL 关键词过滤。比手写 execute_js querySelectorAll 更可靠。批量抓取详情页前先用它收集链接。',
     inputSchema: ExtractLinksSchema.shape,
+    outputSchema: ResultEnvelope,
     annotations: { title: '提取链接', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.extractLinks(args)));
+  }, async (args) => structured(await tools.extractLinks(args)));
 
   server.registerTool('extract_data', {
     title: '提取结构化数据',
     description: '按 CSS 选择器批量提取结构化数据（列表/表格），支持多字段映射。提取多条数据的首选，胜过多次 get_element_text。动态/Ajax 页面请改用 wait_and_extract，否则可能拿到空数据。',
     inputSchema: ExtractDataSchema.shape,
+    outputSchema: ResultEnvelope,
     annotations: { title: '提取结构化数据', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.extractData(args)));
+  }, async (args) => structured(await tools.extractData(args)));
 
   server.registerTool('wait_and_extract', {
     title: '等待并提取',
     description: '等待动态内容加载完成后再提取，适合 SPA/懒加载/Ajax 页面。waitSelector 设为数据容器，避免直接 extract_data 拿到空数据。',
     inputSchema: WaitAndExtractSchema.shape,
+    outputSchema: ResultEnvelope,
     annotations: { title: '等待并提取', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.waitAndExtract(args)));
+  }, async (args) => structured(await tools.waitAndExtract(args)));
 
   server.registerTool('batch_fetch', {
     title: '批量抓取 URL',
     description: '批量抓取多个不同 URL（最多 20 个），支持内容提取和请求间隔。胜过循环 navigate + get_page_content。建议 delay 设 500-1000ms 防封号。',
     inputSchema: BatchFetchSchema.shape,
+    outputSchema: ResultEnvelope,
     annotations: { title: '批量抓取 URL', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.batchFetch(args)));
+  }, async (args) => structured(await tools.batchFetch(args)));
 
   server.registerTool('crawl_pages', {
     title: '自动翻页爬取',
     description: '自动分页爬取：自动点击下一页并汇总所有数据，内置翻页等待。胜过手动循环 click + extract_data。建议 delay 设 800-1500ms 防封号。',
     inputSchema: CrawlPagesSchema.shape,
+    outputSchema: ResultEnvelope,
     annotations: { title: '自动翻页爬取', readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.crawlPages(args)));
+  }, async (args) => structured(await tools.crawlPages(args)));
+
+  // === ARIA 快照 & 正文提取 ===
+  server.registerTool('snapshot', {
+    title: '页面无障碍快照',
+    description: '返回当前页面的无障碍树（accessibility tree）大纲，每个可交互元素带有 ref 编号（如 e5）。相比 take_screenshot 截图，token 消耗极低，是了解页面结构、定位元素的首选。标准工作流：先 snapshot 获取大纲 → 读取目标元素的 ref → 用 click/type/hover 传 ref 参数操作（无需写 CSS 选择器）。',
+    inputSchema: SnapshotSchema.shape,
+    outputSchema: ResultEnvelope,
+    annotations: { title: '页面无障碍快照', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
+  }, async (args) => structured(await tools.snapshot(args)));
+
+  server.registerTool('extract_article', {
+    title: '提取正文',
+    description: '提取当前页面的主正文内容并转为干净的 Markdown，自动剥离导航栏/广告/页脚等样板。适合新闻、博客、文档类页面的内容采集，比 get_page_content 更精炼省 token。若页面不是文章则返回失败。',
+    inputSchema: ExtractArticleSchema.shape,
+    outputSchema: ResultEnvelope,
+    annotations: { title: '提取正文', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } satisfies ToolAnnotations,
+  }, async (args) => structured(await tools.extractArticle(args)));
 
   return server;
 }

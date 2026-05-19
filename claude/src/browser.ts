@@ -4,7 +4,7 @@
  * Claude Code 版本
  */
 
-import { chromium, type BrowserContext, type Page } from 'playwright';
+import { chromium, type BrowserContext, type Page } from 'rebrowser-playwright';
 import * as path from 'path';
 import * as fs from 'fs';
 import type { ConsoleLogEntry, NetworkRequestEntry, BrowserConfig } from './types.js';
@@ -132,6 +132,37 @@ class BrowserManager {
         }
       }
     );
+
+    // 反爬虫指纹伪装：在每个页面执行前注入，掩盖常见的自动化检测向量
+    await this.context.addInitScript(() => {
+      // 1. navigator.webdriver -> undefined
+      try { delete (Navigator.prototype as { webdriver?: unknown }).webdriver; } catch { /* noop */ }
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      // 2. navigator.languages
+      Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] });
+      // 3. navigator.plugins 非空伪装
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => {
+          const arr = [
+            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+            { name: 'Native Client', filename: 'internal-nacl-plugin' },
+          ];
+          (arr as unknown as { item: (i: number) => unknown }).item = (i: number) => arr[i];
+          return arr;
+        },
+      });
+      // 4. window.chrome
+      if (!(window as { chrome?: unknown }).chrome) {
+        (window as { chrome?: unknown }).chrome = { runtime: {} };
+      }
+      // 5. permissions.query 修补（notifications 返回正常状态）
+      const origQuery = navigator.permissions.query.bind(navigator.permissions);
+      navigator.permissions.query = (params: PermissionDescriptor) =>
+        params && params.name === 'notifications'
+          ? Promise.resolve({ state: Notification.permission } as PermissionStatus)
+          : origQuery(params);
+    });
 
     const pages = this.context.pages();
     this.page = pages[0] ?? await this.context.newPage();
