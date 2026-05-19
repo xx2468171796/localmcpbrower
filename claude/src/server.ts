@@ -57,74 +57,6 @@ function cleanupSessions(): void {
 }
 setInterval(cleanupSessions, 5 * 60 * 1000);
 
-// Direct tool handler map for sessionless requests (HTTP compatibility)
-const directToolHandlers: Record<string, (args: unknown) => Promise<unknown>> = {
-  navigate: async (a) => text(await tools.navigate(a)),
-  set_viewport: async (a) => text(await tools.setViewport(a)),
-  go_back: async () => text(await tools.goBack()),
-  go_forward: async () => text(await tools.goForward()),
-  click: async (a) => text(await tools.click(a)),
-  type: async (a) => text(await tools.type(a)),
-  hover: async (a) => text(await tools.hover(a)),
-  scroll: async (a) => text(await tools.scroll(a)),
-  select_option: async (a) => text(await tools.selectOption(a)),
-  fill_form: async (a) => text(await tools.fillForm(a)),
-  keyboard_press: async (a) => text(await tools.keyboardPress(a)),
-  drag_and_drop: async (a) => text(await tools.dragAndDrop(a)),
-  file_upload: async (a) => text(await tools.fileUpload(a)),
-  take_screenshot: async (a) => {
-    const result = await tools.takeScreenshot(a);
-    if (result.success && result.data.base64) {
-      return { content: [
-        { type: 'image' as const, data: result.data.base64, mimeType: 'image/png' as const },
-        { type: 'text' as const, text: JSON.stringify({ success: true, data: { path: result.data.path, fullPage: result.data.fullPage } }) }
-      ] };
-    }
-    return text(result);
-  },
-  get_console_logs: async () => text(await tools.getConsoleLogs()),
-  get_network: async () => text(await tools.getNetwork()),
-  execute_js: async (a) => text(await tools.executeJs(a)),
-  wait_for_selector: async (a) => text(await tools.waitForSelector(a)),
-  get_element_text: async (a) => text(await tools.getElementText(a)),
-  get_element_attribute: async (a) => text(await tools.getElementAttribute(a)),
-  get_page_content: async (a) => text(await tools.getPageContent(a)),
-  get_cookies: async (a) => text(await tools.getCookies(a)),
-  set_cookies: async (a) => text(await tools.setCookies(a)),
-  pdf_export: async (a) => text(await tools.pdfExport(a)),
-  generate_page_report: async (a) => text(await tools.generatePageReport(a)),
-  list_tabs: async () => text(await tools.listTabs()),
-  new_tab: async (a) => text(await tools.newTab(a)),
-  switch_tab: async (a) => text(await tools.switchTab(a)),
-  close_tab: async (a) => text(await tools.closeTab(a)),
-  intercept_requests: async (a) => text(await tools.interceptRequests(a)),
-  set_block_rules: async (a) => text(await tools.setBlockRules(a)),
-  extract_links: async (a) => text(await tools.extractLinks(a)),
-  extract_data: async (a) => text(await tools.extractData(a)),
-  wait_and_extract: async (a) => text(await tools.waitAndExtract(a)),
-  batch_fetch: async (a) => text(await tools.batchFetch(a)),
-  crawl_pages: async (a) => text(await tools.crawlPages(a)),
-  snapshot: async (a) => text(await tools.snapshot(a)),
-  extract_article: async (a) => text(await tools.extractArticle(a)),
-};
-
-/** Handle tools/call directly without MCP session */
-async function handleDirectToolCall(body: { id: unknown; params?: { name?: string; arguments?: unknown } }, res: Response): Promise<boolean> {
-  const toolName = body.params?.name;
-  const toolArgs = body.params?.arguments ?? {};
-  if (!toolName || !directToolHandlers[toolName]) {
-    res.json({ jsonrpc: '2.0', error: { code: -32601, message: `Unknown tool: ${toolName}` }, id: body.id });
-    return true;
-  }
-  try {
-    const result = await directToolHandlers[toolName]!(toolArgs);
-    res.json({ jsonrpc: '2.0', result, id: body.id });
-  } catch (error) {
-    res.json({ jsonrpc: '2.0', error: { code: -32603, message: error instanceof Error ? error.message : String(error) }, id: body.id });
-  }
-  return true;
-}
-
 // Helper to wrap tool results
 function text(result: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
@@ -528,21 +460,9 @@ function createApp(): express.Application {
         const mcpServer = createMcpServer();
         await mcpServer.connect(transport);
       } else {
-        // No valid session + not initialize → handle directly
-        const method = req.body?.method;
-        if (method === 'tools/call') {
-          console.log(`[MCP] Direct tool call: ${req.body?.params?.name}`);
-          await handleDirectToolCall(req.body, res);
-          return;
-        } else if (method === 'tools/list') {
-          console.log('[MCP] Direct tools/list');
-          const toolsList = Object.keys(directToolHandlers).map(name => ({ name }));
-          res.json({ jsonrpc: '2.0', result: { tools: toolsList }, id: req.body?.id });
-          return;
-        } else {
-          res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: `No session for method: ${method}` }, id: req.body?.id });
-          return;
-        }
+        // No valid session + not initialize → reject
+        res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'No valid session — initialize first' }, id: req.body?.id ?? null });
+        return;
       }
       await transport.handleRequest(req, res, req.body);
     } catch (error) {

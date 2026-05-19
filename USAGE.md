@@ -6,10 +6,10 @@
 
 ## 一、服务管理（先启动再用）
 
-### Claude 版（v2.0.0，推荐）—— stdio 原生模式
+### 推荐：stdio 原生模式
 
 stdio 模式由 Claude Code 直接拉起进程，**无需启动服务、无需端口**。
-只要 `.mcp.json` 或 `claude mcp add` 已配置好，工具即可直接调用，无需 `mcp start`。
+只要 `.mcp.json` 或 `claude mcp add` 已配置好，工具即可直接调用，无需 `mcp.mjs start`。
 
 ```bash
 # 首次安装 / 重新构建（跨平台）
@@ -19,7 +19,7 @@ node mcp.mjs install
 node mcp.mjs config
 ```
 
-### Claude 版 —— HTTP / PM2 模式（服务器或多客户端共享）
+### HTTP / PM2 模式（服务器或多客户端共享）
 
 ```bash
 node mcp.mjs start          # 启动全部（browser + db）
@@ -27,22 +27,11 @@ node mcp.mjs status         # 查看 PM2 进程状态
 node mcp.mjs stop           # 停止
 ```
 
-### 其他版本（Cursor / Windsurf）
-
-```bash
-mcp start cursor        # 启动 Cursor 版（Browser:3211 + Database:3212）
-mcp start windsurf      # 启动 Windsurf 版（Browser:3213 + Database:3214）
-mcp health cursor       # 检查服务是否正常
-mcp status              # 查看所有进程状态
-```
-
-**MCP 端点：**
-- Cursor Browser:   `http://localhost:3211/mcp`
-- Cursor Database:  `http://localhost:3212/mcp`
-- Windsurf Browser: `http://localhost:3213/mcp`
-- Windsurf Database:`http://localhost:3214/mcp`
-- Claude（HTTP 模式）有头浏览器 `:3213` / 无头浏览器 `:3215` / 数据库 `:3214`
-  —— stdio 模式不占用端口
+**MCP 端点（仅 HTTP 模式）：**
+- 有头浏览器 `http://localhost:3213/mcp`
+- 无头浏览器 `http://localhost:3215/mcp`
+- 数据库 `http://localhost:3214/mcp`
+- stdio 模式不占用端口
 
 ---
 
@@ -150,27 +139,40 @@ list_tabs()                        # 查看所有标签
 
 ## 四、数据库 MCP 调用规则
 
-### 配置数据库（AI 直接执行）
+### 配置数据库
+
+数据库连接信息通过 `claude/mcp-database/.env` 配置，复制示例并编辑：
 
 ```bash
+cp claude/mcp-database/.env.example claude/mcp-database/.env
+```
+
+```env
 # PostgreSQL
-mcp-database set cursor --type postgresql --host 127.0.0.1 --port 5432 --name mydb --user postgres --password 123456
-
-# MySQL
-mcp-database set cursor --type mysql --host 127.0.0.1 --port 3306 --name shop --user root --password root123
-
-# 配置完重启生效
-mcp-database restart cursor
+DB_TYPE=postgresql
+DB_HOST=127.0.0.1
+DB_PORT=5432
+DB_NAME=mydb
+DB_USER=postgres
+DB_PASSWORD=123456
+DB_SSL=false
 ```
 
 ### 添加多个数据库预设
 
-```bash
-mcp-database add-preset cursor DEV --type postgresql --host 127.0.0.1 --port 5432 --name dev_db --user dev --password dev123
-mcp-database add-preset cursor PROD --type postgresql --host prod.server.com --port 5432 --name prod_db --user admin --password xxx --ssl true
-mcp-database use-preset cursor DEV    # 切换默认连接
-mcp-database restart cursor           # 重启生效
+在同一个 `.env` 文件中按 `DB_<别名>_*` 格式追加预设，运行时用 `switch_db` 工具切换：
+
+```env
+DB_PROD_TYPE=postgresql
+DB_PROD_HOST=prod.server.com
+DB_PROD_PORT=5432
+DB_PROD_NAME=prod_db
+DB_PROD_USER=admin
+DB_PROD_PASSWORD=xxx
+DB_PROD_SSL=true
 ```
+
+> stdio 模式修改 `.env` 后重新触发 MCP 即生效；HTTP / PM2 模式需 `node mcp.mjs restart db`。
 
 ### 数据库工具（15个）
 

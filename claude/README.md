@@ -39,16 +39,12 @@ node mcp.mjs install
 
 该命令会为浏览器目录和数据库目录依次执行：`npm install` → `npx playwright install chromium` → `npm run build`。
 
-### 平台原生脚本（可选）
+### bash 安装脚本（可选，macOS / Linux）
 
-如不想用 Node CLI，也可使用各平台原生安装脚本：
+如不想用 Node CLI，macOS / Linux 上也可使用 bash 安装脚本：
 
 ```bash
-# macOS / Linux
-bash install-all.sh
-
-# Windows (PowerShell)
-.\install-all.ps1
+bash install.sh
 ```
 
 ---
@@ -124,19 +120,9 @@ node mcp.mjs restart        # 重启
 node mcp.mjs status         # 查看 PM2 状态
 ```
 
-平台原生方式：
+Windows (CMD) 可用批处理入口，内部委托给 `mcp.mjs`：
 
-```bash
-# macOS / Linux —— 交互式菜单或命令行
-bash manage.sh
-bash manage.sh start
-
-# Windows (PowerShell)
-.\manage.ps1            # 交互式菜单
-.\manage.ps1 start
-.\manage.ps1 status
-
-# Windows (CMD) —— start.bat / stop.bat 委托给 mcp.mjs
+```bat
 start.bat
 stop.bat
 ```
@@ -226,14 +212,12 @@ DB_PROD_PASSWORD=secret
 | 文件 | 平台 | 说明 |
 |------|------|------|
 | `mcp.mjs` | 全平台 | **跨平台主入口**：安装 / 启停 / 配置 |
-| `install-all.sh` / `install.sh` | macOS / Linux | 一键安装（bash 原生回退） |
-| `manage.sh` | macOS / Linux | 交互式服务管理 |
-| `mcp-all-manage.sh` | macOS / Linux | 总管理脚本（浏览器 + 数据库） |
+| `install.sh` | macOS / Linux | bash 安装脚本（`node mcp.mjs install` 的替代） |
 | `check-mcp-health.sh` | macOS / Linux | HTTP 模式健康检查 |
-| `diagnose.sh` | macOS / Linux | 安装 / 运行环境诊断 |
-| `install-all.ps1` | Windows | 一键安装（PowerShell 原生） |
-| `manage.ps1` | Windows | 服务管理（PowerShell 原生） |
 | `start.bat` / `stop.bat` | Windows | CMD 入口，委托给 `mcp.mjs` |
+| `ecosystem.config.cjs` | 全平台 | 有头浏览器 PM2 配置（HTTP 模式 3213） |
+| `ecosystem.headless.cjs` | 全平台 | 无头浏览器 PM2 配置（HTTP 模式 3215） |
+| `mcp-database/ecosystem.config.cjs` | 全平台 | 数据库 PM2 配置（HTTP 模式 3214） |
 | `.mcp.json.example` | — | 项目级 stdio 配置模板 |
 
 ---
@@ -255,9 +239,6 @@ SQL 查询、表结构查看、索引分析、外键关系、数据导出（CSV�
 ## 九、故障排查
 
 ```bash
-# 环境诊断 (macOS / Linux)
-bash diagnose.sh
-
 # HTTP 模式健康检查
 bash check-mcp-health.sh        # macOS / Linux
 node mcp.mjs status             # 全平台
