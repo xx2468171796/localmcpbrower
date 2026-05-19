@@ -72,6 +72,60 @@ claude mcp list
 
 ---
 
+## 接入其他 MCP 客户端（Codex CLI / Cursor 等）
+
+本服务用的是 **MCP 标准 stdio 传输**，不是 Claude 专属 —— 任何支持 MCP 的客户端都能连**同一个** `dist/server.js`。依赖、构建产物、Chromium **完全复用**，无需为每个客户端重装；多个客户端可同时各自连接。区别只在各家配置文件格式不同。
+
+### Codex CLI（OpenAI）
+
+配置文件 `~/.codex/config.toml`（**TOML** 格式）。
+
+命令行方式：
+
+```bash
+codex mcp add browser -- node <绝对路径>/claude/dist/server.js --stdio
+codex mcp add database --env MCP_TRANSPORT=stdio -- node <绝对路径>/claude/mcp-database/dist/server.js --stdio
+```
+
+或直接编辑 `~/.codex/config.toml`：
+
+```toml
+[mcp_servers.browser]
+command = "node"
+args = ["<绝对路径>/claude/dist/server.js", "--stdio"]
+
+[mcp_servers.database]
+command = "node"
+args = ["<绝对路径>/claude/mcp-database/dist/server.js", "--stdio"]
+env = { MCP_TRANSPORT = "stdio" }
+```
+
+### Cursor / Windsurf / Cline 等
+
+使用 JSON 配置（如 Cursor 的 `.cursor/mcp.json`），格式与本仓库 [`claude/.mcp.json.example`](./claude/.mcp.json.example) 一致：
+
+```json
+{
+  "mcpServers": {
+    "browser":  { "command": "node", "args": ["<绝对路径>/claude/dist/server.js", "--stdio"] },
+    "database": { "command": "node", "args": ["<绝对路径>/claude/mcp-database/dist/server.js", "--stdio"], "env": { "MCP_TRANSPORT": "stdio" } }
+  }
+}
+```
+
+### 各客户端对照
+
+| 客户端 | 配置文件 | 格式 | 添加命令 |
+|--------|----------|------|----------|
+| Claude Code | `~/.claude.json` / 项目 `.mcp.json` | JSON | `claude mcp add` |
+| Codex CLI | `~/.codex/config.toml` | TOML | `codex mcp add` |
+| Cursor | `.cursor/mcp.json` | JSON | 手动编辑 |
+| Windsurf / Cline 等 | 各自的 MCP 配置文件 | JSON | 手动编辑 |
+
+> `<绝对路径>` 用 `node mcp.mjs config` 可一键获取本机路径。Windows 上 JSON 里的反斜杠需转义为 `\\`。
+
+---
+
 ## 运维特性（stdio 模式 —— 无需操心）
 
 stdio 模式下服务进程由 **Claude Code 自己管理**，因此天然满足"不掉线、自动开启"：
