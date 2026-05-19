@@ -1,17 +1,18 @@
 #!/bin/bash
-# MCP Bridge Manager [Browser + Database] (macOS)
+# Claude Code MCP - 总管理脚本 [浏览器 + 数据库] (macOS / Linux)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 show_menu() {
     clear
     echo "========================================"
-    echo "  MCP Bridge Manager [Browser + Database]"
+    echo "  Claude Code MCP Manager [Browser + DB]"
     echo "========================================"
     echo ""
     echo "  Ports:"
-    echo "    Browser MCP: 3213"
-    echo "    Database MCP: 3214"
+    echo "    Browser MCP (有头):  3213"
+    echo "    Browser MCP (无头):  3215"
+    echo "    Database MCP:        3214"
     echo ""
     echo "========================================"
     echo "  1. Start All"
@@ -91,8 +92,12 @@ status_all() {
     echo "[PM2 Processes]"
     pm2 list 2>/dev/null
     echo ""
-    echo "[Browser MCP - Port 3213]"
+    echo "[Browser MCP (有头) - Port 3213]"
     curl -s http://localhost:3213/health 2>/dev/null || echo "(not responding)"
+    echo ""
+    echo ""
+    echo "[Browser MCP (无头) - Port 3215]"
+    curl -s http://localhost:3215/health 2>/dev/null || echo "(not responding)"
     echo ""
     echo ""
     echo "[Database MCP - Port 3214]"
@@ -131,23 +136,20 @@ edit_db_config() {
 show_mcp_config() {
     clear
     echo "========================================"
-    echo "  MCP Config [Windsurf/Cursor]"
+    echo "  Claude Code MCP 配置"
     echo "========================================"
     echo ""
-    echo "Config file location:"
-    echo "  Windsurf: ~/.codeium/windsurf/mcp_config.json"
-    echo "  Cursor:   ~/.cursor/mcp.json"
+    echo "方式 A: stdio 原生模式 (推荐，无需 PM2 / 端口):"
+    echo "  claude mcp add browser  -- node \"$SCRIPT_DIR/dist/server.js\" --stdio"
+    echo "  claude mcp add database -e MCP_TRANSPORT=stdio -- node \"$SCRIPT_DIR/mcp-database/dist/server.js\" --stdio"
+    echo "  或使用项目根目录 .mcp.json (见 .mcp.json.example)"
+    echo "  也可运行:  node mcp.mjs config"
     echo ""
-    echo "Config content:"
-    echo ""
+    echo "方式 B: HTTP / PM2 模式 (~/.config/claude-code/mcp.json):"
     echo '{'
     echo '  "mcpServers": {'
-    echo '    "stable-browser": {'
-    echo '      "serverUrl": "http://localhost:3213/mcp"'
-    echo '    },'
-    echo '    "database": {'
-    echo '      "serverUrl": "http://localhost:3214/mcp"'
-    echo '    }'
+    echo '    "browser":  { "type": "http", "url": "http://localhost:3213/mcp" },'
+    echo '    "database": { "type": "http", "url": "http://localhost:3214/mcp" }'
     echo '  }'
     echo '}'
     echo ""

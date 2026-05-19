@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================
-# MCP Bridge - 跨平台安装脚本
-# 支持 macOS / Debian 13 / Ubuntu
+# Claude Code MCP - 安装脚本 (macOS / Linux)
+# 跨平台主入口为 node mcp.mjs install (含 Windows)；本脚本为类 Unix 原生回退
 # 安装内容: 有头浏览器MCP(3213) + 无头浏览器MCP(3215) + 数据库MCP(3214)
 # ============================================================
 set -e
@@ -36,8 +36,8 @@ if ! command -v node &>/dev/null; then
   fi
 fi
 NODE_VER=$(node -v | sed 's/v//' | cut -d. -f1)
-if [[ $NODE_VER -lt 18 ]]; then
-  err "Node.js 版本过低 ($(node -v))，需要 >= 18"
+if [[ $NODE_VER -lt 20 ]]; then
+  err "Node.js 版本过低 ($(node -v))，需要 >= 20"
 fi
 log "Node.js $(node -v)"
 
@@ -173,10 +173,14 @@ echo ""
 if [[ "$PLATFORM" == "macos" ]]; then
   echo -e "${GREEN}  有头浏览器 MCP:  port 3213 (本地 Mac 开发)${NC}"
 fi
-echo -e "${GREEN}  无头浏览器 MCP:  port 3215 (Debian/无头)${NC}"
+echo -e "${GREEN}  无头浏览器 MCP:  port 3215 (服务器 / SSH 环境)${NC}"
 echo -e "${GREEN}  数据库 MCP:      port 3214${NC}"
 echo ""
-echo -e "${GREEN}  启动所有服务:  ./manage.sh start${NC}"
-echo -e "${GREEN}  查看状态:      ./manage.sh status${NC}"
-echo -e "${GREEN}  管理菜单:      ./manage.sh${NC}"
+echo -e "${GREEN}  推荐 (stdio 原生模式，无需 PM2 / 端口):${NC}"
+echo -e "${GREEN}    node mcp.mjs config        # 获取 claude mcp add 配置命令${NC}"
+echo ""
+echo -e "${GREEN}  HTTP / PM2 模式:${NC}"
+echo -e "${GREEN}    ./manage.sh start          # 启动所有服务${NC}"
+echo -e "${GREEN}    ./manage.sh status         # 查看状态${NC}"
+echo -e "${GREEN}    ./manage.sh                # 交互式管理菜单${NC}"
 echo -e "${GREEN}============================================================${NC}"

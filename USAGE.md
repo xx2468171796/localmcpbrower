@@ -6,6 +6,29 @@
 
 ## 一、服务管理（先启动再用）
 
+### Claude 版（v2.0.0，推荐）—— stdio 原生模式
+
+stdio 模式由 Claude Code 直接拉起进程，**无需启动服务、无需端口**。
+只要 `.mcp.json` 或 `claude mcp add` 已配置好，工具即可直接调用，无需 `mcp start`。
+
+```bash
+# 首次安装 / 重新构建（跨平台）
+node mcp.mjs install
+
+# 获取 stdio 配置命令（推荐路径）
+node mcp.mjs config
+```
+
+### Claude 版 —— HTTP / PM2 模式（服务器或多客户端共享）
+
+```bash
+node mcp.mjs start          # 启动全部（browser + db）
+node mcp.mjs status         # 查看 PM2 进程状态
+node mcp.mjs stop           # 停止
+```
+
+### 其他版本（Cursor / Windsurf）
+
 ```bash
 mcp start cursor        # 启动 Cursor 版（Browser:3211 + Database:3212）
 mcp start windsurf      # 启动 Windsurf 版（Browser:3213 + Database:3214）
@@ -18,6 +41,8 @@ mcp status              # 查看所有进程状态
 - Cursor Database:  `http://localhost:3212/mcp`
 - Windsurf Browser: `http://localhost:3213/mcp`
 - Windsurf Database:`http://localhost:3214/mcp`
+- Claude（HTTP 模式）有头浏览器 `:3213` / 无头浏览器 `:3215` / 数据库 `:3214`
+  —— stdio 模式不占用端口
 
 ---
 

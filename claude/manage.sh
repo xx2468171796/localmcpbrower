@@ -1,8 +1,8 @@
 #!/bin/bash
 # ============================================================
-# MCP Bridge 统一管理器
+# Claude Code MCP 统一管理器 (bash, macOS / Linux)
 # 有头浏览器(3213) + 无头浏览器(3215) + 数据库(3214)
-# 支持 macOS / Debian 13
+# 跨平台主入口为 mcp.mjs (含 Windows)；本脚本为类 Unix 原生回退
 # ============================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -33,7 +33,7 @@ db_health() {
 show_menu() {
   clear
   echo -e "${CYAN}============================================================${NC}"
-  echo -e "${CYAN}${BOLD}  MCP Bridge 管理器${NC}${CYAN} ($(uname -s))${NC}"
+  echo -e "${CYAN}${BOLD}  Claude Code MCP 管理器${NC}${CYAN} ($(uname -s))${NC}"
   echo -e "${CYAN}============================================================${NC}"
   echo ""
   echo -e "  服务状态:"
@@ -46,7 +46,7 @@ show_menu() {
   echo -e "${CYAN}──────────────────────────────────────────────────────────${NC}"
   if [[ "$IS_LINUX" == "false" ]]; then
     echo "  1. 启动全部 (有头 + 无头 + 数据库)"
-    echo "  2. 仅启动无头浏览器 + 数据库 (Debian 模式)"
+    echo "  2. 仅启动无头浏览器 + 数据库 (服务器模式)"
   else
     echo "  1. 启动全部 (无头浏览器 + 数据库)"
     echo "  2. 仅启动无头浏览器"
@@ -195,6 +195,15 @@ show_claude_config() {
   clear
   echo -e "${CYAN}── Claude Code MCP 配置${NC}"
   echo ""
+  echo -e "${YELLOW}  方式 A: stdio 原生模式 (推荐，无需 PM2 / 端口)${NC}"
+  echo "  由 Claude Code 直接拉起进程。在项目目录执行:"
+  echo "    claude mcp add browser -- node \"$SCRIPT_DIR/dist/server.js\" --stdio"
+  echo "    claude mcp add database -e MCP_TRANSPORT=stdio -- node \"$SCRIPT_DIR/mcp-database/dist/server.js\" --stdio"
+  echo ""
+  echo "  或将项目根目录的 .mcp.json.example 复制为 .mcp.json 并填入绝对路径。"
+  echo "  也可运行:  node mcp.mjs config   一键获取上述命令。"
+  echo ""
+  echo -e "${YELLOW}  方式 B: HTTP / PM2 模式 (服务器或多客户端共享)${NC}"
   echo "  配置文件: ~/.config/claude-code/mcp.json"
   echo ""
   if [[ "$IS_LINUX" == "false" ]]; then
@@ -207,7 +216,7 @@ show_claude_config() {
     echo '    }'
     echo '  }'
   else
-    echo '  Debian 配置 (无头 + 数据库):'
+    echo '  Linux 配置 (无头 + 数据库):'
     echo '  {'
     echo '    "mcpServers": {'
     echo '      "browser-headless": { "type": "http", "url": "http://localhost:3215/mcp" },'

@@ -1,27 +1,31 @@
 {
   "name": "claudemcp-database",
-  "version": "1.0.0",
-  "description": "Windsurf 版 MCP Database Bridge - PostgreSQL & MySQL",
+  "version": "2.0.0",
+  "description": "Claude Code MCP database server — PostgreSQL & MySQL over stdio / Streamable HTTP",
   "type": "module",
   "main": "dist/server.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
     "build": "tsc",
     "start": "node dist/server.js",
+    "start:stdio": "node dist/server.js --stdio",
     "dev": "tsx watch src/server.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "dotenv": "^17.2.3",
-    "express": "^4.18.2",
-    "mysql2": "^3.6.5",
-    "pg": "^8.11.3",
-    "zod": "^3.22.4"
+    "express": "^4.21.2",
+    "mysql2": "^3.22.3",
+    "pg": "^8.21.0",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
-    "@types/express": "^4.17.21",
-    "@types/node": "^20.10.0",
-    "@types/pg": "^8.10.9",
-    "tsx": "^4.6.2",
-    "typescript": "^5.3.2"
+    "@types/express": "^4.17.23",
+    "@types/node": "^24.12.4",
+    "@types/pg": "^8.20.0",
+    "tsx": "^4.22.2",
+    "typescript": "^5.9.3"
   }
 }

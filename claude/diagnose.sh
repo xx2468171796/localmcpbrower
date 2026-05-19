@@ -1,10 +1,10 @@
 #!/bin/bash
-# Windsurf MCP - Diagnostic Tool (macOS)
+# Claude Code MCP - 诊断工具 (macOS / Linux)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 echo "========================================"
-echo "  Windsurf MCP Diagnostic Tool (Mac)"
+echo "  Claude Code MCP Diagnostic Tool"
 echo "========================================"
 echo ""
 
@@ -12,8 +12,8 @@ echo "[1/8] Checking Node.js..."
 if command -v node &>/dev/null; then
     echo "[OK] Node.js $(node -v)"
 else
-    echo "[FAIL] Node.js not installed"
-    echo "[FIX] Run: brew install node"
+    echo "[FAIL] Node.js not installed (需要 >= 20)"
+    echo "[FIX] macOS: brew install node  |  Linux: 见 nodesource.com  |  Windows: nodejs.org"
 fi
 echo ""
 
@@ -63,29 +63,28 @@ fi
 echo ""
 
 echo "[7/8] Checking ports..."
-if lsof -ti tcp:3213 &>/dev/null; then
-    echo "[OK] Port 3213 in use (Browser MCP running)"
-else
-    echo "[INFO] Port 3213 available (Browser MCP not running)"
-fi
-if lsof -ti tcp:3214 &>/dev/null; then
-    echo "[OK] Port 3214 in use (Database MCP running)"
-else
-    echo "[INFO] Port 3214 available (Database MCP not running)"
-fi
+for p in 3213 3215 3214; do
+    if lsof -ti tcp:$p &>/dev/null; then
+        echo "[OK]   Port $p in use"
+    else
+        echo "[INFO] Port $p available"
+    fi
+done
+echo "  (3213=有头浏览器  3215=无头浏览器  3214=数据库)"
 echo ""
 
-echo "[8/8] Testing services..."
-if curl -s http://localhost:3213/health &>/dev/null; then
-    echo "[OK] Browser MCP service running"
-else
-    echo "[INFO] Browser MCP not responding"
-fi
-if curl -s http://localhost:3214/health &>/dev/null; then
-    echo "[OK] Database MCP service running"
-else
-    echo "[INFO] Database MCP not responding"
-fi
+echo "[8/8] Testing services (HTTP 模式)..."
+for entry in "3213:有头浏览器 MCP" "3215:无头浏览器 MCP" "3214:数据库 MCP"; do
+    port="${entry%%:*}"; label="${entry#*:}"
+    if curl -s "http://localhost:$port/health" &>/dev/null; then
+        echo "[OK]   $label ($port) running"
+    else
+        echo "[INFO] $label ($port) not responding"
+    fi
+done
+echo ""
+echo "[提示] stdio 原生模式由 Claude Code 直接拉起进程，不占用端口；"
+echo "       上述端口检查仅适用于 HTTP / PM2 模式。"
 echo ""
 
 echo "========================================"

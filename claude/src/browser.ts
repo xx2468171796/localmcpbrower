@@ -1,6 +1,7 @@
 /**
  * BrowserManager - 跨平台 Playwright 浏览器单例管理器
- * 支持 macOS / Linux (Debian/Ubuntu) 无头模式
+ * 支持 macOS / Linux (Debian/Ubuntu) / Windows 无头模式
+ * Claude Code 版本
  */
 
 import { chromium, type BrowserContext, type Page } from 'playwright';
@@ -10,6 +11,10 @@ import type { ConsoleLogEntry, NetworkRequestEntry, BrowserConfig } from './type
 
 const IS_LINUX = process.platform === 'linux';
 const IS_MAC = process.platform === 'darwin';
+const IS_WIN = process.platform === 'win32';
+
+// Chrome 版本号 token，统一用于各平台 UA 字符串
+const CHROME_VERSION = '140.0.0.0';
 
 const DEFAULT_CONFIG: BrowserConfig = {
   // headless 默认开启；Mac 调试时设 HEADLESS=false
@@ -88,9 +93,12 @@ class BrowserManager {
     const macArgs = ['--enable-gpu-rasterization', '--enable-zero-copy', '--use-mock-keychain'];
     // Linux 专属（无 GPU，服务器沙箱兼容）
     const linuxArgs = ['--disable-gpu', '--disable-software-rasterizer', '--disable-setuid-sandbox', '--single-process', '--no-zygote'];
+    // Windows 专属：无需额外启动参数，通用参数已足够
+    const winArgs: string[] = [];
+    const platformArgs = IS_LINUX ? linuxArgs : IS_MAC ? macArgs : IS_WIN ? winArgs : [];
     const launchArgs = [
       ...commonArgs,
-      ...(IS_LINUX ? linuxArgs : (IS_MAC ? macArgs : [])),
+      ...platformArgs,
       `--window-size=${this.config.viewportWidth},${this.config.viewportHeight}`
     ];
 
@@ -112,10 +120,12 @@ class BrowserManager {
         ignoreHTTPSErrors: true,            // 忽略 HTTPS 错误，避免卡住
         javaScriptEnabled: true,
         acceptDownloads: true,
-        // 平台对应 UA
-        userAgent: IS_LINUX
-          ? 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-          : 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        // 平台对应 UA（macOS / Linux / Windows 各自匹配）
+        userAgent: IS_WIN
+          ? `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_VERSION} Safari/537.36`
+          : IS_LINUX
+            ? `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_VERSION} Safari/537.36`
+            : `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_VERSION} Safari/537.36`,
         extraHTTPHeaders: {
           'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
           'Accept-Encoding': 'gzip, deflate, br'

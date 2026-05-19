@@ -1,13 +1,15 @@
 @echo off
+REM ============================================================
+REM Claude Code MCP - 启动 (Windows)
+REM 委托给跨平台 Node CLI: mcp.mjs
+REM
+REM   start.bat            启动全部 (HTTP/PM2 模式)
+REM   start.bat browser    仅启动浏览器 MCP
+REM   start.bat db         仅启动数据库 MCP
+REM
+REM 推荐 stdio 原生模式 (无需 PM2): 运行  node mcp.mjs config
+REM ============================================================
 setlocal
-
-set "DIR=%~dp0"
-cd /d "%DIR%"
-
-if not exist ".env" (
-    copy ".env.example" ".env" >nul
-    echo Created .env from .env.example
-)
-
-echo Starting MCP Browser server...
-node dist/server.js
+cd /d "%~dp0"
+node mcp.mjs start %*
+endlocal

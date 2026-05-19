@@ -1,24 +1,25 @@
 #!/bin/bash
-# Windsurf MCP - Full Installation (macOS)
+# Claude Code MCP - 一键安装 (macOS / Linux)
+# 跨平台主入口为 node mcp.mjs install (含 Windows)；本脚本为类 Unix 原生回退
 set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 echo "========================================"
-echo "  Windsurf MCP - Full Installation (Mac)"
+echo "  Claude Code MCP - Full Installation"
 echo "  Browser MCP + Database MCP"
 echo "========================================"
 echo ""
 
 echo "[1/6] Checking Node.js..."
 if ! command -v node &>/dev/null; then
-    echo "[ERROR] Node.js not installed. Please install Node.js 18+"
+    echo "[ERROR] Node.js not installed. Please install Node.js 20+"
     echo "Install via: brew install node"
     exit 1
 fi
 NODE_VER=$(node -v | sed 's/v//' | cut -d. -f1)
-if [ "$NODE_VER" -lt 18 ]; then
-    echo "[ERROR] Node.js version too low. Required: 18+"
+if [ "$NODE_VER" -lt 20 ]; then
+    echo "[ERROR] Node.js version too low. Required: 20+"
     exit 1
 fi
 echo "[OK] Node.js $(node -v)"
@@ -69,13 +70,18 @@ echo "========================================"
 echo ""
 echo "Next steps:"
 echo "  1. Edit database config: mcp-database/.env"
-echo "  2. Run: ./manage.sh"
+echo "  2a. 推荐 (stdio 原生): 运行  node mcp.mjs config  获取 Claude Code 配置命令"
+echo "  2b. HTTP / PM2 模式:   运行  ./manage.sh"
 echo ""
-echo "Windsurf MCP Config (add to mcp_config.json):"
+echo "Claude Code MCP - stdio 原生配置 (推荐，无需 PM2 / 端口):"
+echo "  claude mcp add browser  -- node \"$SCRIPT_DIR/dist/server.js\" --stdio"
+echo "  claude mcp add database -e MCP_TRANSPORT=stdio -- node \"$SCRIPT_DIR/mcp-database/dist/server.js\" --stdio"
+echo ""
+echo "Claude Code MCP - HTTP 配置 (服务器 / 多客户端共享):"
 echo '{'
 echo '  "mcpServers": {'
-echo '    "stable-browser": { "serverUrl": "http://localhost:3213/mcp" },'
-echo '    "database": { "serverUrl": "http://localhost:3214/mcp" }'
+echo '    "browser":  { "type": "http", "url": "http://localhost:3213/mcp" },'
+echo '    "database": { "type": "http", "url": "http://localhost:3214/mcp" }'
 echo '  }'
 echo '}'
 echo ""
