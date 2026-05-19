@@ -21,7 +21,9 @@ export const TypeSchema = z.object({
 
 export const ScreenshotSchema = z.object({
   name: z.string().optional().describe('截图文件名（不含扩展名），不填则自动生成'),
-  fullPage: z.boolean().default(false).describe('是否截取整页（含滚动区域），默认仅当前视口')
+  fullPage: z.boolean().default(false).describe('是否截取整页（含滚动区域），默认仅当前视口'),
+  format: z.enum(['jpeg', 'png']).default('jpeg').describe('图片格式，jpeg 编码更快（默认），png 无损但更慢'),
+  quality: z.number().min(1).max(100).default(80).describe('JPEG 压缩质量 1-100（仅 jpeg 格式生效），默认 80')
 });
 
 export const ExecuteJsSchema = z.object({
@@ -56,7 +58,16 @@ export const HoverSchema = z.object({
 
 export const SnapshotSchema = z.object({
   interactiveOnly: z.boolean().default(false).describe('仅输出可交互元素（链接/按钮/输入框等），默认 false 包含标题与可见文本'),
-  maxChars: z.number().int().positive().optional().describe('输出字符上限，超出会被截断并标注，默认约 12000')
+  maxChars: z.number().int().positive().optional().describe('输出字符上限，超出会被截断并标注，默认约 12000'),
+  deep: z.boolean().default(false).describe('深度扫描，用 CDP 事件监听找出仅通过 addEventListener 绑定 click 的元素，较慢，默认关闭')
+});
+
+/** 站点 URL 发现 */
+export const DiscoverUrlsSchema = z.object({
+  url: z.string().url().describe('站点根/入口 URL，会从此页面及其 sitemap/robots.txt 发现地址'),
+  maxUrls: z.number().int().positive().default(300).describe('最多返回的 URL 数量，默认 300'),
+  sameDomainOnly: z.boolean().default(true).describe('仅保留与入口 URL 同域名的地址，默认 true'),
+  includeSitemap: z.boolean().default(true).describe('是否解析 robots.txt 与 sitemap.xml 发现更多地址，默认 true')
 });
 
 export const ExtractArticleSchema = z.object({
@@ -162,6 +173,7 @@ export type PageReportInput = z.infer<typeof PageReportSchema>;
 export type SetViewportInput = z.infer<typeof SetViewportSchema>;
 export type SnapshotInput = z.infer<typeof SnapshotSchema>;
 export type ExtractArticleInput = z.infer<typeof ExtractArticleSchema>;
+export type DiscoverUrlsInput = z.infer<typeof DiscoverUrlsSchema>;
 
 // ============================================================
 // 爬虫工具 Schema

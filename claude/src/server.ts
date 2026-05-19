@@ -33,7 +33,7 @@ import {
   NewTabSchema, TabIndexSchema, InterceptRequestsSchema,
   ExtractLinksSchema, ExtractDataSchema, BatchFetchSchema,
   CrawlPagesSchema, WaitAndExtractSchema, SetBlockRulesSchema,
-  SnapshotSchema, ExtractArticleSchema
+  SnapshotSchema, ExtractArticleSchema, DiscoverUrlsSchema
 } from './schemas.js';
 
 const PORT = parseInt(process.env['PORT'] ?? '3211', 10);
@@ -180,8 +180,9 @@ function createMcpServer(): McpServer {
   }, async (args) => {
     const result = await tools.takeScreenshot(args);
     if (result.success && result.data.base64) {
+      const mimeType = result.data.format === 'png' ? 'image/png' : 'image/jpeg';
       return { content: [
-        { type: 'image' as const, data: result.data.base64, mimeType: 'image/png' as const },
+        { type: 'image' as const, data: result.data.base64, mimeType },
         { type: 'text' as const, text: JSON.stringify({ success: true, data: { path: result.data.path, fullPage: result.data.fullPage } }) }
       ] };
     }
@@ -359,11 +360,19 @@ function createMcpServer(): McpServer {
   // === ARIA 快照 & 正文提取 ===
   server.registerTool('snapshot', {
     title: '页面无障碍快照',
-    description: '返回当前页面的无障碍树（accessibility tree）大纲，每个可交互元素带有 ref 编号（如 e5）。相比 take_screenshot 截图，token 消耗极低，是了解页面结构、定位元素的首选。标准工作流：先 snapshot 获取大纲 → 读取目标元素的 ref → 用 click/type/hover 传 ref 参数操作（无需写 CSS 选择器）。注意：ref 仅在页面未重新渲染前有效；SPA/动态页面如交互失败,请重新调用 snapshot 获取最新 ref。',
+    description: '返回当前页面的无障碍树（accessibility tree）大纲，每个可交互元素带有 ref 编号（如 e5）。相比 take_screenshot 截图，token 消耗极低，是了解页面结构、定位元素的首选。现已能识别框架无语义可点击元素（cursor:pointer / tabindex>=0 / 扩展 role 等无标签 div）。可选 deep 参数：开启后用 CDP 事件监听深度扫描，找出仅靠 addEventListener 绑定 click 的元素（较慢，默认关闭）。标准工作流：先 snapshot 获取大纲 → 读取目标元素的 ref → 用 click/type/hover 传 ref 参数操作（无需写 CSS 选择器）。注意：ref 仅在页面未重新渲染前有效；SPA/动态页面如交互失败,请重新调用 snapshot 获取最新 ref。',
     inputSchema: SnapshotSchema.shape,
     outputSchema: ResultEnvelope,
     annotations: { title: '页面无障碍快照', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
   }, async (args) => structured(await tools.snapshot(args)));
+
+  server.registerTool('discover_urls', {
+    title: '站点 URL 发现',
+    description: '站点 URL 发现,爬取大站前先用它探明所有页面地址(走 sitemap.xml + robots.txt + 页面链接),不抓正文,速度快。',
+    inputSchema: DiscoverUrlsSchema.shape,
+    outputSchema: ResultEnvelope,
+    annotations: { title: '站点 URL 发现', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } satisfies ToolAnnotations,
+  }, async (args) => structured(await tools.discoverUrls(args)));
 
   server.registerTool('extract_article', {
     title: '提取正文',

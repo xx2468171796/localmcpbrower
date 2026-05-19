@@ -14,7 +14,7 @@ import {
   PageReportSchema, SetViewportSchema,
   ExtractLinksSchema, ExtractDataSchema, BatchFetchSchema,
   CrawlPagesSchema, WaitAndExtractSchema, SetBlockRulesSchema,
-  SnapshotSchema, ExtractArticleSchema
+  SnapshotSchema, ExtractArticleSchema, DiscoverUrlsSchema
 } from './schemas.js';
 import { Readability } from '@mozilla/readability';
 import { JSDOM } from 'jsdom';
@@ -154,30 +154,37 @@ export async function type(input: unknown): Promise<ToolResult<TypeResult>> {
   }
 }
 
-export async function takeScreenshot(input: unknown): Promise<ToolResult<ScreenshotResult & { base64?: string }>> {
+export async function takeScreenshot(input: unknown): Promise<ToolResult<ScreenshotResult & { base64?: string; format?: 'jpeg' | 'png' }>> {
   try {
     const parsed = ScreenshotSchema.safeParse(input);
     if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
-    const { name, fullPage } = parsed.data;
+    const { name, fullPage, format, quality } = parsed.data;
     const page = await getBrowserManager().getPage();
     const screenshotDir = ensureScreenshotDir();
     const fileName = name ?? `screenshot-${Date.now()}`;
-    const filePath = path.join(screenshotDir, `${fileName}.png`);
+    const ext = format === 'png' ? 'png' : 'jpg';
+    const filePath = path.join(screenshotDir, `${fileName}.${ext}`);
 
-    // 先等待页面稳定（最多 2 秒），忽略超时
-    await page.evaluate('document.fonts && document.fonts.ready').catch(() => {});
-    await new Promise(resolve => setTimeout(resolve, 500));
+    // 等待字体就绪，但用 300ms 超时兜底，避免 document.fonts.ready 永不 resolve 导致挂起
+    await Promise.race([
+      page.evaluate('document.fonts && document.fonts.ready').catch(() => {}),
+      new Promise(resolve => setTimeout(resolve, 300)),
+    ]);
+
+    const shotOpts = format === 'jpeg'
+      ? { type: 'jpeg' as const, quality }
+      : { type: 'png' as const };
 
     let buffer: Buffer;
     try {
       // 第一次尝试：正常截图，10 秒超时
-      buffer = await page.screenshot({ path: filePath, fullPage, timeout: 10000, animations: 'disabled', scale: 'css' });
+      buffer = await page.screenshot({ path: filePath, fullPage, timeout: 10000, animations: 'disabled', scale: 'css', ...shotOpts });
     } catch {
       // 第二次尝试：不等待字体，缩小视口截图
-      buffer = await page.screenshot({ path: filePath, fullPage: false, timeout: 10000, animations: 'disabled', scale: 'css' });
+      buffer = await page.screenshot({ path: filePath, fullPage: false, timeout: 10000, animations: 'disabled', scale: 'css', ...shotOpts });
     }
     const base64 = buffer.toString('base64');
-    return { success: true, data: { path: filePath, fullPage, base64 } };
+    return { success: true, data: { path: filePath, fullPage, base64, format } };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
@@ -819,14 +826,14 @@ export async function snapshot(input: unknown): Promise<ToolResult<{ snapshot: s
   try {
     const parsed = SnapshotSchema.safeParse(input);
     if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
-    const { interactiveOnly, maxChars } = parsed.data;
+    const { interactiveOnly, maxChars, deep } = parsed.data;
     const page = await getBrowserManager().getPage();
     const cap = maxChars ?? 12000;
 
     const result = await page.evaluate(`(function() {
       var interactiveOnly = ${interactiveOnly};
       var cap = ${cap};
-      var INTERACTIVE_ROLES = ['button','link','checkbox','menuitem','tab','switch'];
+      var INTERACTIVE_ROLES = ['button','link','checkbox','menuitem','tab','switch','radio','option','treeitem'];
       var lines = [];
       var refCount = 0;
       var truncated = false;
@@ -845,6 +852,14 @@ export async function snapshot(input: unknown): Promise<ToolResult<{ snapshot: s
         var role = el.getAttribute('role');
         if (role && INTERACTIVE_ROLES.indexOf(role) !== -1) return true;
         if (el.hasAttribute('onclick')) return true;
+        // 框架无语义可点击元素：cursor:pointer / tabindex>=0
+        try {
+          if (window.getComputedStyle(el).cursor === 'pointer') return true;
+        } catch (e) { /* noop */ }
+        if (el.hasAttribute('tabindex')) {
+          var ti = parseInt(el.getAttribute('tabindex'), 10);
+          if (!isNaN(ti) && ti >= 0) return true;
+        }
         return false;
       }
       function roleOf(el) {
@@ -929,8 +944,75 @@ export async function snapshot(input: unknown): Promise<ToolResult<{ snapshot: s
     })()`);
 
     const r = result as { snapshot: string; refCount: number; truncated: boolean };
-    const snap = r.truncated ? r.snapshot + '\n\n[... 已截断，可调大 maxChars 或设置 interactiveOnly:true]' : r.snapshot;
-    return { success: true, data: { snapshot: snap, refCount: r.refCount, truncated: r.truncated } };
+    let deepLines: string[] = [];
+    let deepRefCount = 0;
+
+    // 深度 CDP 扫描：找出仅通过 addEventListener 绑定 click/mousedown 的元素
+    if (deep) {
+      try {
+        const session = await page.context().newCDPSession(page);
+        const deadline = Date.now() + 4000; // 整体上限 4 秒
+        const CAND_QUERY = 'div,span,li,td,th,section,article,header,footer,nav,p,img,svg,a';
+        try {
+          // 把候选元素挂到一个全局数组，后续按下标用 CDP 取 objectId
+          const candCount = await page.evaluate(`(function() {
+            window.__mcpDeepCands = [];
+            var els = document.querySelectorAll(${JSON.stringify(CAND_QUERY)});
+            for (var i = 0; i < els.length && window.__mcpDeepCands.length < 400; i++) {
+              var el = els[i];
+              if (el.hasAttribute('data-mcp-ref')) continue;
+              var style = window.getComputedStyle(el);
+              if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity) === 0) continue;
+              var rect = el.getBoundingClientRect();
+              if (rect.width < 8 || rect.height < 8 || rect.width > 1600 || rect.height > 900) continue;
+              window.__mcpDeepCands.push(el);
+            }
+            return window.__mcpDeepCands.length;
+          })()`) as number;
+
+          for (let idx = 0; idx < candCount; idx++) {
+            if (Date.now() > deadline) break;
+            try {
+              // 通过 CDP Runtime.evaluate 直接拿到该元素的 objectId
+              const evalRes = await session.send('Runtime.evaluate', {
+                expression: `window.__mcpDeepCands[${idx}]`,
+                returnByValue: false,
+              }).catch(() => null) as { result?: { objectId?: string } } | null;
+              const objId = evalRes?.result?.objectId;
+              if (!objId) continue;
+              const listeners = await session.send('DOMDebugger.getEventListeners', { objectId: objId })
+                .catch(() => null) as { listeners?: Array<{ type: string }> } | null;
+              await session.send('Runtime.releaseObject', { objectId: objId }).catch(() => {});
+              if (listeners?.listeners?.some(l => l.type === 'click' || l.type === 'mousedown')) {
+                deepRefCount++;
+                const ref = 'd' + deepRefCount;
+                const label = await page.evaluate(`(function() {
+                  var el = window.__mcpDeepCands[${idx}];
+                  if (!el || el.hasAttribute('data-mcp-ref')) return null;
+                  el.setAttribute('data-mcp-ref', '${ref}');
+                  var n = el.getAttribute('aria-label') || el.getAttribute('title') || (el.textContent || '').replace(/\\s+/g,' ').trim();
+                  return n.slice(0, 80);
+                })()`).catch(() => '') as string | null;
+                if (label === null) { deepRefCount--; continue; }
+                deepLines.push('clickable "' + String(label).replace(/"/g, "'") + '" [ref=' + ref + ']');
+              }
+            } catch (e) { /* 单个元素失败忽略 */ }
+          }
+        } finally {
+          await page.evaluate('delete window.__mcpDeepCands').catch(() => {});
+          await session.detach().catch(() => {});
+        }
+      } catch (e) {
+        // CDP 路径任何异常都优雅降级，不影响快照主结果
+        deepLines = [];
+      }
+    }
+
+    let snap = r.truncated ? r.snapshot + '\n\n[... 已截断，可调大 maxChars 或设置 interactiveOnly:true]' : r.snapshot;
+    if (deepLines.length > 0) {
+      snap += '\n\n[深度扫描发现 ' + deepLines.length + ' 个事件监听可点击元素]\n' + deepLines.join('\n');
+    }
+    return { success: true, data: { snapshot: snap, refCount: r.refCount + deepRefCount, truncated: r.truncated } };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
@@ -969,6 +1051,114 @@ export async function extractArticle(input: unknown): Promise<ToolResult<{
         textPreview: text.slice(0, 300),
       },
     };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** 站点 URL 发现：走 sitemap.xml + robots.txt + 页面链接，快速探明站点页面地址 */
+export async function discoverUrls(input: unknown): Promise<ToolResult<{
+  urls: string[]; total: number; fromSitemap: number; fromLinks: number; truncated: boolean;
+}>> {
+  try {
+    const parsed = DiscoverUrlsSchema.safeParse(input);
+    if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
+    const { url, maxUrls, sameDomainOnly, includeSitemap } = parsed.data;
+    const page = await getBrowserManager().getPage();
+    const request = page.context().request;
+
+    const rootOrigin = new URL(url).origin;
+    const rootHost = new URL(url).hostname;
+    const sitemapUrls = new Set<string>();
+    const linkUrls = new Set<string>();
+
+    /** 抓取文本，8 秒超时，失败返回空 */
+    const fetchText = async (target: string): Promise<string> => {
+      try {
+        const resp = await request.get(target, { timeout: 8000, failOnStatusCode: false });
+        if (!resp.ok()) return '';
+        return await resp.text();
+      } catch {
+        return '';
+      }
+    };
+
+    /** 解析 sitemap XML 中的 <loc> */
+    const parseLocs = (xml: string): string[] => {
+      const out: string[] = [];
+      const re = /<loc>\s*([^<\s]+)\s*<\/loc>/gi;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(xml)) !== null) {
+        if (m[1]) out.push(m[1].trim());
+      }
+      return out;
+    };
+
+    if (includeSitemap) {
+      let sitemapFetches = 0;
+      const sitemapQueue: string[] = [];
+
+      // robots.txt 中的 Sitemap: 行
+      const robots = await fetchText(`${rootOrigin}/robots.txt`);
+      if (robots) {
+        for (const line of robots.split(/\r?\n/)) {
+          const m = line.match(/^\s*sitemap:\s*(\S+)/i);
+          if (m && m[1]) sitemapQueue.push(m[1].trim());
+        }
+      }
+      // 默认 sitemap.xml
+      sitemapQueue.push(`${rootOrigin}/sitemap.xml`);
+
+      // 至多抓取 ~5 个 sitemap，支持 sitemap-index 下钻一层
+      while (sitemapQueue.length > 0 && sitemapFetches < 5) {
+        const sm = sitemapQueue.shift()!;
+        sitemapFetches++;
+        const xml = await fetchText(sm);
+        if (!xml) continue;
+        const locs = parseLocs(xml);
+        // sitemap-index：<loc> 指向其它 .xml sitemap
+        const childSitemaps = locs.filter(l => /\.xml(\?|$)/i.test(l));
+        const isIndex = /<sitemapindex/i.test(xml) || (childSitemaps.length > 0 && childSitemaps.length === locs.length);
+        if (isIndex) {
+          for (const child of childSitemaps) {
+            if (sitemapFetches + sitemapQueue.length < 5) sitemapQueue.push(child);
+          }
+        } else {
+          for (const l of locs) sitemapUrls.add(l);
+        }
+      }
+    }
+
+    // 当前页面的 <a href>
+    try {
+      await page.goto(url, { waitUntil: 'commit', timeout: 8000 });
+      await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {});
+      const hrefs = await page.evaluate(`Array.from(document.querySelectorAll('a[href]')).map(function(a){ return a.href; })`) as string[];
+      for (const h of hrefs) linkUrls.add(h);
+    } catch { /* 页面抓取失败不影响 sitemap 结果 */ }
+
+    // 合并、去重、过滤
+    const isHttp = (u: string) => /^https?:\/\//i.test(u);
+    const seen = new Set<string>();
+    const merged: string[] = [];
+    let fromSitemap = 0;
+    let fromLinks = 0;
+    for (const [src, set] of [['sitemap', sitemapUrls], ['links', linkUrls]] as const) {
+      for (const raw of set) {
+        if (!isHttp(raw)) continue;
+        let host: string;
+        try { host = new URL(raw).hostname; } catch { continue; }
+        if (sameDomainOnly && host !== rootHost) continue;
+        if (seen.has(raw)) continue;
+        seen.add(raw);
+        merged.push(raw);
+        if (src === 'sitemap') fromSitemap++; else fromLinks++;
+      }
+    }
+
+    const truncated = merged.length > maxUrls;
+    const urls = merged.slice(0, maxUrls);
+    return { success: true, data: { urls, total: urls.length, fromSitemap, fromLinks, truncated } };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
