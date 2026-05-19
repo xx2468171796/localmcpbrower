@@ -359,7 +359,7 @@ function createMcpServer(): McpServer {
   // === ARIA 快照 & 正文提取 ===
   server.registerTool('snapshot', {
     title: '页面无障碍快照',
-    description: '返回当前页面的无障碍树（accessibility tree）大纲，每个可交互元素带有 ref 编号（如 e5）。相比 take_screenshot 截图，token 消耗极低，是了解页面结构、定位元素的首选。标准工作流：先 snapshot 获取大纲 → 读取目标元素的 ref → 用 click/type/hover 传 ref 参数操作（无需写 CSS 选择器）。',
+    description: '返回当前页面的无障碍树（accessibility tree）大纲，每个可交互元素带有 ref 编号（如 e5）。相比 take_screenshot 截图，token 消耗极低，是了解页面结构、定位元素的首选。标准工作流：先 snapshot 获取大纲 → 读取目标元素的 ref → 用 click/type/hover 传 ref 参数操作（无需写 CSS 选择器）。注意：ref 仅在页面未重新渲染前有效；SPA/动态页面如交互失败,请重新调用 snapshot 获取最新 ref。',
     inputSchema: SnapshotSchema.shape,
     outputSchema: ResultEnvelope,
     annotations: { title: '页面无障碍快照', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,

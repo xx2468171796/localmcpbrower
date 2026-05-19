@@ -37,7 +37,13 @@ export async function navigate(input: unknown): Promise<ToolResult<NavigateResul
     const { url } = parsed.data;
     const page = await getBrowserManager().getPage();
     await page.goto(url, { waitUntil: 'commit', timeout: 30000 });
-    const title = await page.title();
+    // 'commit' 在文档 title 解析前就返回，需等 DOM 解析完成再读 title。
+    // 慢页面用短超时兜底，避免 hang；超时后仍尝试用 document.title 兜底。
+    await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => {});
+    let title = await page.title().catch(() => '');
+    if (!title) {
+      title = await page.evaluate(() => document.title).catch(() => '') || '';
+    }
     return { success: true, data: { url, title } };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
@@ -58,10 +64,23 @@ export async function setViewport(input: unknown): Promise<ToolResult<{ width: n
 }
 
 /** 把 ref 编号解析为 CSS 选择器；selector / ref 二选一 */
-function resolveTarget(selector?: string, ref?: string): { ok: true; selector: string } | { ok: false; error: string } {
-  if (ref) return { ok: true, selector: `[data-mcp-ref="${ref}"]` };
-  if (selector) return { ok: true, selector };
+function resolveTarget(selector?: string, ref?: string): { ok: true; selector: string; fromRef: boolean } | { ok: false; error: string } {
+  if (ref) return { ok: true, selector: `[data-mcp-ref="${ref}"]`, fromRef: true };
+  if (selector) return { ok: true, selector, fromRef: false };
   return { ok: false, error: 'selector 与 ref 必须提供其一' };
+}
+
+/** 当目标来自 ref 时，校验该 ref 仍存在于 DOM；不存在则返回友好提示 */
+async function checkRefAlive(
+  page: import('rebrowser-playwright').Page,
+  selector: string,
+  fromRef: boolean,
+  ref?: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!fromRef) return { ok: true };
+  const count = await page.locator(selector).count().catch(() => 0);
+  if (count > 0) return { ok: true };
+  return { ok: false, error: `ref ${ref ?? ''} 未找到(页面可能已重新渲染),请重新调用 snapshot 获取最新 ref` };
 }
 
 export async function click(input: unknown): Promise<ToolResult<ClickResult>> {
@@ -72,6 +91,8 @@ export async function click(input: unknown): Promise<ToolResult<ClickResult>> {
     if (!target.ok) return { success: false, error: target.error };
     const selector = target.selector;
     const page = await getBrowserManager().getPage();
+    const refCheck = await checkRefAlive(page, selector, target.fromRef, parsed.data.ref);
+    if (!refCheck.ok) return { success: false, error: refCheck.error };
     try {
       // 优先尝试正常点击（等待可见）
       await page.waitForSelector(selector, { timeout: 3000, state: 'visible' });
@@ -104,6 +125,8 @@ export async function type(input: unknown): Promise<ToolResult<TypeResult>> {
     const selector = target.selector;
     const { text } = parsed.data;
     const page = await getBrowserManager().getPage();
+    const refCheck = await checkRefAlive(page, selector, target.fromRef, parsed.data.ref);
+    if (!refCheck.ok) return { success: false, error: refCheck.error };
     try {
       // 优先尝试正常填充（等待可见）
       await page.waitForSelector(selector, { timeout: 3000, state: 'visible' });
@@ -182,8 +205,26 @@ export async function executeJs(input: unknown): Promise<ToolResult<ExecuteJsRes
     if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
     const { script } = parsed.data;
     const page = await getBrowserManager().getPage();
-    const wrappedScript = script.trimStart().startsWith('return ') ? `(() => { ${script} })()` : script;
-    const result = await page.evaluate(wrappedScript);
+    // 用户脚本可能是：(a) 裸表达式 document.title，(b) 含顶层 return 的语句，
+    // (c) 多语句脚本含顶层 return。后两者作为裸表达式传给 evaluate 会报
+    // "Illegal return statement"。统一包成异步函数体即可让 return 合法。
+    // 裸表达式则直接 return 它，保持原有返回值语义。
+    const trimmed = script.trim();
+    const looksLikeStatements = /\breturn\b/.test(trimmed) || /[;\n]/.test(trimmed);
+    const wrappedScript = looksLikeStatements
+      ? `(async () => { ${script}\n})()`
+      : `(async () => { return (${script}\n); })()`;
+    let result: unknown;
+    try {
+      result = await page.evaluate(wrappedScript);
+    } catch (err) {
+      // 极少数裸表达式被误判（如对象字面量），回退为直接求值
+      if (!looksLikeStatements) {
+        result = await page.evaluate(script);
+      } else {
+        throw err;
+      }
+    }
     return { success: true, data: { result } };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
@@ -235,6 +276,8 @@ export async function hover(input: unknown): Promise<ToolResult<{ hovered: boole
     if (!target.ok) return { success: false, error: target.error };
     const selector = target.selector;
     const page = await getBrowserManager().getPage();
+    const refCheck = await checkRefAlive(page, selector, target.fromRef, parsed.data.ref);
+    if (!refCheck.ok) return { success: false, error: refCheck.error };
     await page.hover(selector, { timeout: 5000 });
     return { success: true, data: { hovered: true } };
   } catch (error) {
