@@ -555,7 +555,14 @@ async function killPortProcess(port: number): Promise<void> {
   } catch {}
 }
 
-/** stdio 传输入口：供 Claude Code 原生 MCP 客户端使用 */
+/** stdio 传输入口：供 Claude Code 原生 MCP 客户端使用
+ *
+ * 关键退出路径（防止 SSH 断开后变孤儿进程 + chromium 累积爆内存）：
+ *   1. SIGINT / SIGTERM / SIGHUP：父进程主动通知。
+ *   2. stdin 'end'/'close'：MCP 协议在 stdio 上跑，stdin 关闭意味着客户端已经走了。
+ *   3. ppid 轮询：SSH 强断时上面两个信号可能都不发，定时检测 ppid===1 即父进程已死。
+ *   4. stdout 'error'(EPIPE)：写日志到已关闭管道时触发，作为兜底。
+ */
 async function runStdio(): Promise<void> {
   // 预热浏览器，失败不阻塞，首个请求会重试
   try {
@@ -566,7 +573,48 @@ async function runStdio(): Promise<void> {
   }
   const server = createMcpServer();
   await server.connect(new StdioServerTransport());
-  console.error(`[Server] Claude Code MCP Browser v${SERVER_VERSION} ready on stdio`);
+  console.error(`[Server] Claude Code MCP Browser v${SERVER_VERSION} ready on stdio (pid=${process.pid} ppid=${process.ppid})`);
+
+  let shuttingDown = false;
+  const shutdown = async (reason: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.error(`[Server] stdio shutdown: ${reason}`);
+    // 5 秒兜底硬退，防止 chromium 卡住导致孤儿继续占内存
+    const hardExit = setTimeout(() => {
+      console.error('[Server] force exit after 5s');
+      process.exit(1);
+    }, 5000);
+    hardExit.unref?.();
+    try { await getBrowserManager().close(); } catch (e) { console.error('[Server] close error:', e); }
+    process.exit(0);
+  };
+
+  process.on('SIGINT', () => { void shutdown('SIGINT'); });
+  process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
+  process.on('SIGHUP', () => { void shutdown('SIGHUP'); });
+
+  // stdin 关闭 = MCP 客户端断开
+  process.stdin.on('end', () => { void shutdown('stdin end'); });
+  process.stdin.on('close', () => { void shutdown('stdin close'); });
+  process.stdin.on('error', (err) => { void shutdown(`stdin error: ${err.message}`); });
+
+  // stdout EPIPE 兜底（向已关闭的客户端写时触发）
+  process.stdout.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EPIPE') void shutdown('stdout EPIPE');
+  });
+
+  // ppid 轮询：捕获 SSH 强断后被 reparent 的情况（通常 reparent 到 init=1，
+  // 但 systemd-user/subreaper 场景也可能 reparent 到别的 PID，所以只要 ppid 变了就退）
+  const initialPpid = process.ppid;
+  const ppidCheck = setInterval(() => {
+    const currentPpid = process.ppid;
+    if (currentPpid !== initialPpid) {
+      clearInterval(ppidCheck);
+      void shutdown(`parent gone (ppid ${initialPpid} -> ${currentPpid})`);
+    }
+  }, 3000);
+  ppidCheck.unref?.();
 }
 
 /** HTTP 传输入口：Express + Streamable HTTP */

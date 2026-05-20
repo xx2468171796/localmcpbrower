@@ -321,7 +321,39 @@ async function runStdio(): Promise<void> {
   const server = createMcpServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('[MCP] Claude Code stdio 数据库服务已就绪');
+  console.error(`[MCP] Claude Code stdio 数据库服务已就绪 (pid=${process.pid} ppid=${process.ppid})`);
+
+  // 孤儿进程防护：SSH 断开后让 stdio 进程自杀，避免连接池泄漏
+  let shuttingDown = false;
+  const shutdown = async (reason: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.error(`[MCP] stdio shutdown: ${reason}`);
+    const hardExit = setTimeout(() => process.exit(1), 5000);
+    hardExit.unref?.();
+    try { await getDatabaseManager().disconnect(); } catch (e) { console.error('[MCP] disconnect error:', e); }
+    process.exit(0);
+  };
+
+  process.on('SIGINT', () => { void shutdown('SIGINT'); });
+  process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
+  process.on('SIGHUP', () => { void shutdown('SIGHUP'); });
+  process.stdin.on('end', () => { void shutdown('stdin end'); });
+  process.stdin.on('close', () => { void shutdown('stdin close'); });
+  process.stdin.on('error', (err) => { void shutdown(`stdin error: ${err.message}`); });
+  process.stdout.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EPIPE') void shutdown('stdout EPIPE');
+  });
+
+  const initialPpid = process.ppid;
+  const ppidCheck = setInterval(() => {
+    const currentPpid = process.ppid;
+    if (currentPpid !== initialPpid) {
+      clearInterval(ppidCheck);
+      void shutdown(`parent gone (ppid ${initialPpid} -> ${currentPpid})`);
+    }
+  }, 3000);
+  ppidCheck.unref?.();
 }
 
 async function runHttp(): Promise<void> {
