@@ -33,6 +33,8 @@ class BrowserManager {
   private consoleLogs: ConsoleLogEntry[] = [];
   private networkRequests: NetworkRequestEntry[] = [];
   private config: BrowserConfig;
+  // 当前 chromium 子进程 PID — 用于 stdio 模式退出兜底 SIGKILL，防止孤儿
+  private chromiumPid: number | null = null;
 
   private constructor(config: BrowserConfig) {
     this.config = config;
@@ -164,11 +166,37 @@ class BrowserManager {
           : origQuery(params);
     });
 
+    // 抓 chromium 子进程 pid — Playwright 内部 API 但多年稳定；失败不影响主流程
+    try {
+      const browser = this.context.browser();
+      const child = (browser as unknown as { _process?: { pid?: number } })?._process;
+      this.chromiumPid = child?.pid ?? null;
+    } catch {
+      this.chromiumPid = null;
+    }
+
     const pages = this.context.pages();
     this.page = pages[0] ?? await this.context.newPage();
     this.setupPageListeners(this.page);
 
     return this.context;
+  }
+
+  /** 返回当前 chromium 进程 PID（无活跃浏览器则 null）— stdio 退出钩子用 */
+  public getChromiumPid(): number | null {
+    return this.chromiumPid;
+  }
+
+  /** 同步 SIGKILL chromium 子进程 — 用于 process.on('exit') / 超时兜底，无 await */
+  public killChromiumSync(): void {
+    const pid = this.chromiumPid;
+    this.chromiumPid = null;
+    if (!pid) return;
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      // 已死或无权限，无所谓
+    }
   }
 
   public async getPage(): Promise<Page> {
@@ -247,6 +275,7 @@ class BrowserManager {
       await this.context.close();
       this.context = null;
       this.page = null;
+      this.chromiumPid = null;
     }
   }
 }

@@ -557,11 +557,14 @@ async function killPortProcess(port: number): Promise<void> {
 
 /** stdio 传输入口：供 Claude Code 原生 MCP 客户端使用
  *
- * 关键退出路径（防止 SSH 断开后变孤儿进程 + chromium 累积爆内存）：
- *   1. SIGINT / SIGTERM / SIGHUP：父进程主动通知。
- *   2. stdin 'end'/'close'：MCP 协议在 stdio 上跑，stdin 关闭意味着客户端已经走了。
- *   3. ppid 轮询：SSH 强断时上面两个信号可能都不发，定时检测 ppid===1 即父进程已死。
- *   4. stdout 'error'(EPIPE)：写日志到已关闭管道时触发，作为兜底。
+ * 退出路径（防止 SSH 断开 / 客户端崩 → stdio 进程变孤儿 → chromium 累积爆内存）：
+ *   1. SIGINT / SIGTERM / SIGHUP：父进程主动通知 → 优雅 close → SIGKILL chromium 兜底
+ *   2. stdin 'end'/'close'：MCP 跑在 stdio 上，stdin 关闭 = 客户端走了
+ *   3. ppid 轮询（1s）：SSH 强断时信号不一定到，靠主动检测 ppid 变化（被 reparent）
+ *   4. stdout 'error'(EPIPE)：向已关闭客户端写日志时触发，兜底
+ *   5. process.on('exit') 同步钩子：Node 真正退出前的**最后一道闸**，无论 exit() / 异常 /
+ *      事件循环空都会触发；这里直接 SIGKILL chromium pid，**保证 chromium 不会被 reparent**。
+ *      唯一覆盖不到的是 node 进程本身被 SIGKILL —— 那只能靠 cron 兜底了。
  */
 async function runStdio(): Promise<void> {
   // 预热浏览器，失败不阻塞，首个请求会重试
@@ -575,18 +578,39 @@ async function runStdio(): Promise<void> {
   await server.connect(new StdioServerTransport());
   console.error(`[Server] Claude Code MCP Browser v${SERVER_VERSION} ready on stdio (pid=${process.pid} ppid=${process.ppid})`);
 
+  // ★ 最后一道闸：Node 退出前同步 SIGKILL chromium，无论怎么退都执行
+  // 这一步比 await close() 重要 —— close() 可能卡住或失败；SIGKILL pid 是原子的
+  process.on('exit', () => {
+    try { getBrowserManager().killChromiumSync(); } catch { /* exit handler 不能抛 */ }
+  });
+  // uncaughtException / unhandledRejection 兜底：转成正常退出走 exit 钩子
+  process.on('uncaughtException', (err) => {
+    console.error('[Server] uncaughtException:', err);
+    process.exit(1);
+  });
+  process.on('unhandledRejection', (reason) => {
+    console.error('[Server] unhandledRejection:', reason);
+    process.exit(1);
+  });
+
   let shuttingDown = false;
   const shutdown = async (reason: string): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
     console.error(`[Server] stdio shutdown: ${reason}`);
-    // 5 秒兜底硬退，防止 chromium 卡住导致孤儿继续占内存
+    // 2 秒兜底：close() 卡住就直接 SIGKILL chromium pid 然后退
+    // 上次 fix 给了 5 秒,但 process.exit(1) 不杀 chromium —— 那个 5 秒等于白等
     const hardExit = setTimeout(() => {
-      console.error('[Server] force exit after 5s');
+      console.error('[Server] close() timeout, SIGKILL chromium and force exit');
+      try { getBrowserManager().killChromiumSync(); } catch { /* noop */ }
       process.exit(1);
-    }, 5000);
+    }, 2000);
     hardExit.unref?.();
-    try { await getBrowserManager().close(); } catch (e) { console.error('[Server] close error:', e); }
+    try {
+      await getBrowserManager().close();
+    } catch (e) {
+      console.error('[Server] close error:', e);
+    }
     process.exit(0);
   };
 
@@ -604,8 +628,9 @@ async function runStdio(): Promise<void> {
     if (err.code === 'EPIPE') void shutdown('stdout EPIPE');
   });
 
-  // ppid 轮询：捕获 SSH 强断后被 reparent 的情况（通常 reparent 到 init=1，
-  // 但 systemd-user/subreaper 场景也可能 reparent 到别的 PID，所以只要 ppid 变了就退）
+  // ppid 轮询：1 秒一次，捕获 SSH 强断后被 reparent 的情况
+  // 上次 fix 是 3 秒,SSH 强断到检测到 + close 5 秒 = 最多 8 秒 chromium 还活着 → 必然孤儿
+  // 改 1 秒后窗口期 ≤ 3 秒,加上 exit 钩子做最后兜底 → 不会泄漏
   const initialPpid = process.ppid;
   const ppidCheck = setInterval(() => {
     const currentPpid = process.ppid;
@@ -613,7 +638,7 @@ async function runStdio(): Promise<void> {
       clearInterval(ppidCheck);
       void shutdown(`parent gone (ppid ${initialPpid} -> ${currentPpid})`);
     }
-  }, 3000);
+  }, 1000);
   ppidCheck.unref?.();
 }
 
