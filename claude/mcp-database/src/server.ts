@@ -323,13 +323,27 @@ async function runStdio(): Promise<void> {
   await server.connect(transport);
   console.error(`[MCP] Claude Code stdio 数据库服务已就绪 (pid=${process.pid} ppid=${process.ppid})`);
 
-  // 孤儿进程防护：SSH 断开后让 stdio 进程自杀，避免连接池泄漏
+  // uncaughtException / unhandledRejection 兜底:转 exit 走清理路径
+  process.on('uncaughtException', (err) => {
+    console.error('[MCP] uncaughtException:', err);
+    process.exit(1);
+  });
+  process.on('unhandledRejection', (reason) => {
+    console.error('[MCP] unhandledRejection:', reason);
+    process.exit(1);
+  });
+
+  // 孤儿进程防护:SSH 断开 / 客户端崩 → 自杀,避免连接池累积
   let shuttingDown = false;
   const shutdown = async (reason: string): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
     console.error(`[MCP] stdio shutdown: ${reason}`);
-    const hardExit = setTimeout(() => process.exit(1), 5000);
+    // 2 秒兜底(原 5 秒;disconnect 卡住也只能硬退,5 秒等于白等)
+    const hardExit = setTimeout(() => {
+      console.error('[MCP] disconnect timeout, force exit');
+      process.exit(1);
+    }, 2000);
     hardExit.unref?.();
     try { await getDatabaseManager().disconnect(); } catch (e) { console.error('[MCP] disconnect error:', e); }
     process.exit(0);
@@ -345,6 +359,7 @@ async function runStdio(): Promise<void> {
     if (err.code === 'EPIPE') void shutdown('stdout EPIPE');
   });
 
+  // ppid 轮询 1s(原 3s)— 跟 browser server 对齐,父死到自死窗口 ≤ 3s
   const initialPpid = process.ppid;
   const ppidCheck = setInterval(() => {
     const currentPpid = process.ppid;
@@ -352,7 +367,7 @@ async function runStdio(): Promise<void> {
       clearInterval(ppidCheck);
       void shutdown(`parent gone (ppid ${initialPpid} -> ${currentPpid})`);
     }
-  }, 3000);
+  }, 1000);
   ppidCheck.unref?.();
 }
 
