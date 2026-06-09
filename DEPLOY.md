@@ -93,12 +93,24 @@ codex mcp add database --env MCP_TRANSPORT=stdio -- node <绝对路径>/claude/m
 [mcp_servers.browser]
 command = "node"
 args = ["<绝对路径>/claude/dist/server.js", "--stdio"]
+type = "stdio"
+cwd = "<绝对路径>/claude"
+startup_timeout_sec = 30
 
 [mcp_servers.database]
 command = "node"
 args = ["<绝对路径>/claude/mcp-database/dist/server.js", "--stdio"]
-env = { MCP_TRANSPORT = "stdio" }
+type = "stdio"
+cwd = "<绝对路径>/claude/mcp-database"
+startup_timeout_sec = 30
+
+[mcp_servers.database.env]
+MCP_TRANSPORT = "stdio"
 ```
+
+> 如果 Codex 的 shell 环境找不到 `node`，把 `command = "node"` 改成绝对路径，例如 macOS Apple Silicon 常见为 `/opt/homebrew/bin/node`。数据库 MCP 建议配置 `cwd`，这样 stdio 启动时能稳定读取 `claude/mcp-database/.env`。
+
+更完整的 Codex 用法见 [`CODEX.md`](./CODEX.md)。项目根目录的 [`AGENTS.md`](./AGENTS.md) 会告诉 Codex 优先使用 `mcp__browser__*` 和 `mcp__database__*` 工具。
 
 ### Cursor / Windsurf / Cline 等
 

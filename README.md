@@ -33,4 +33,5 @@ node mcp.mjs start
 
 - [`DEPLOY.md`](./DEPLOY.md) —— **新机器 / 多机部署指南**（macOS / Linux / Windows 一步步走）
 - [`claude/README.md`](./claude/README.md) —— 完整安装、配置与用法
+- [`CODEX.md`](./CODEX.md) —— Codex CLI 全局 MCP 注册、调用与排障
 - [`USAGE.md`](./USAGE.md) —— 工具调用规则（给 AI 看的手册）
