@@ -11,7 +11,17 @@ cd claude
 node mcp.mjs install
 ```
 
-This installs browser/database dependencies, downloads Chromium, and builds the TypeScript output under `dist/`.
+This installs browser/database dependencies, downloads the Patchright Chromium build, and builds the TypeScript output under `dist/`.
+
+## Update
+
+When the repository has new commits, upgrade everything with one command:
+
+```bash
+node claude/mcp.mjs update
+```
+
+It runs `git pull --ff-only`, reinstalls dependencies, verifies the Patchright Chromium binary, rebuilds both packages, and restarts any running PM2 services. It aborts safely on a dirty working tree. stdio servers pick up the new build on the next session.
 
 ## Global Codex Registration
 
@@ -105,6 +115,6 @@ When loaded into a Codex session, the tool names should appear as:
 
 Prefer `mcp__browser__snapshot` before clicking unfamiliar pages. Prefer `mcp__browser__get_page_content` or extraction tools for text/data, and screenshots only for visual verification.
 
-Prefer `mcp__database__status`, `list_tables`, `describe_table`, and `query` for read-only work. Explain and confirm destructive SQL unless the user has clearly requested that exact change.
+Prefer `mcp__database__status`, `list_tables`, `describe_table`, and `query` for read-only work. The `query` tool enforces read-only SQL (SELECT/WITH/SHOW/EXPLAIN) and rejects mutations; all writes must go through `execute`, which is marked destructive. Explain and confirm destructive SQL unless the user has clearly requested that exact change.
 
 If MCP tools are configured but not visible in a session, restart Codex. If `codex mcp list` shows HTTP URLs like `localhost:3213` or `localhost:3214`, switch back to the stdio config above.

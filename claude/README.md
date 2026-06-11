@@ -223,16 +223,18 @@ DB_PROD_PASSWORD=secret
 
 ---
 
-## 七、浏览器 MCP 工具（38 个）
+## 七、浏览器 MCP 工具（39 个）
 
 导航、点击、填表、截图、多标签页管理、Cookie 操作、JS 执行、
 网络拦截、PDF 导出、元素提取、页面爬取、拖拽、键盘输入、
-无障碍快照（snapshot）、正文提取（extract_article）等。
-完整清单见仓库根目录 `USAGE.md`。
+无障碍快照（snapshot + ref 操作）、正文提取（extract_article，defuddle 转 Markdown）、
+站点 URL 发现（discover_urls）等。
+完整清单与调用规则见仓库根目录 `USAGE.md`。
 
 ## 八、数据库 MCP 工具（15 个）
 
 SQL 查询、表结构查看、索引分析、外键关系、数据导出（CSV）、多数据库切换等。
+`query` 强制只读（SELECT/WITH/SHOW/EXPLAIN），写操作必须走 `execute`。
 完整清单见仓库根目录 `USAGE.md`。
 
 ---

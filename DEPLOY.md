@@ -32,10 +32,10 @@ cd localmcpbrower/claude
 node mcp.mjs install
 ```
 
-一条命令完成：浏览器 + 数据库依赖安装、Chromium 下载、TypeScript 构建。三平台行为一致。
+一条命令完成：浏览器 + 数据库依赖安装、Patchright Chromium 下载、TypeScript 构建。三平台行为一致。
 
 - **Linux**：会自动用 `--with-deps` 安装 Chromium 所需系统库（`libnss3` 等），可能需要 `sudo` 权限。
-- **Windows**：直接可用；也可改用 `install-all.ps1`（PowerShell）。
+- **Windows**：直接可用，所有命令统一走 `node mcp.mjs <cmd>`。
 
 ### 3. 注册到 Claude Code
 
@@ -166,10 +166,14 @@ cp claude/mcp-database/.env.example claude/mcp-database/.env
 ## 升级 / 卸载
 
 ```bash
-# 升级：拉取最新代码后重新安装
-git pull && node mcp.mjs install
+# 升级：一条命令完成 git pull + 重装依赖 + 校验 Chromium + 重建 + 重启 PM2 服务
+node mcp.mjs update
 
 # 卸载：移除 Claude Code 注册
 claude mcp remove browser -s user
 claude mcp remove database -s user
 ```
+
+> `update` 自带保护：本地有未提交改动会中止；非 git 仓库（复制部署）或分支无远端时
+> 自动跳过拉取、只重建。stdio 模式更新后**下次会话**自动生效（当前会话 `/mcp` 重连）。
+> 对 AI 说"更新本地 MCP"即可触发这条命令（见 `AGENTS.md`）。

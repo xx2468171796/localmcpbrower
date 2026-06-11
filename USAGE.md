@@ -15,6 +15,9 @@ stdio 模式由 Claude Code 直接拉起进程，**无需启动服务、无需�
 # 首次安装 / 重新构建（跨平台）
 node mcp.mjs install
 
+# 仓库更新后一键升级（git pull + 重装依赖 + 重建 + 重启 PM2）
+node mcp.mjs update
+
 # 获取 stdio 配置命令（推荐路径）
 node mcp.mjs config
 ```
@@ -51,8 +54,10 @@ set_block_rules({ blockImages: true, blockMedia: true, blockFonts: true, blockAd
 | 提取列表数据 | `extract_data` | 多次 `get_element_text` |
 | 多页爬取 | `crawl_pages` | 手动循环 `click` + `extract_data` |
 | 批量抓取不同URL | `batch_fetch` | 循环 `navigate` + `get_page_content` |
+| 爬大站前探明页面地址 | `discover_urls`（sitemap+robots+链接）| 逐页 `navigate` 摸索 |
 | 动态/Ajax页面 | `wait_and_extract` | 直接 `extract_data`（会拿到空数据）|
 | 提取所有链接 | `extract_links` | `execute_js` 手写 querySelectorAll |
+| 文章/博客/文档正文 | `extract_article`（defuddle 转 Markdown）| `get_page_content` + 手动清洗 |
 | 简单页面内容 | `get_page_content` | `take_screenshot`（截图慢且大）|
 
 ### 规则 3：等待策略
@@ -72,7 +77,7 @@ click 和 type 已内置三级 fallback（正常→force→JS），无需手动�
 execute_js({ script: "document.querySelector('#btn').click()" })
 ```
 
-### 规则 7：用 snapshot + ref 操作元素（省 token）
+### 规则 5：用 snapshot + ref 操作元素（省 token）
 
 ```
 不确定选择器时，先调用 snapshot 获取页面无障碍大纲，
@@ -81,11 +86,14 @@ snapshot()                          # 获取大纲，读取目标 ref
 click({ ref: "e5" })                # 用 ref 点击（selector 与 ref 二选一）
 type({ ref: "e3", text: "关键词" })  # 用 ref 输入
 
-正文采集首选 extract_article（自动剥离导航/广告，返回干净 Markdown），
+ref 在页面重新渲染后失效，SPA 交互失败时重新 snapshot 拿新 ref。
+找不到可点击元素时可加 deep:true（CDP 扫描 addEventListener 绑定的元素，较慢）。
+
+正文采集首选 extract_article（defuddle 提取，自动剥离导航/广告，返回干净 Markdown），
 比 get_page_content + 手动清洗更省 token。
 ```
 
-### 规则 5：截图使用场景
+### 规则 6：截图使用场景
 
 ```
 截图比较慢（~1秒），只在以下情况使用：
@@ -96,7 +104,7 @@ type({ ref: "e3", text: "关键词" })  # 用 ref 输入
 不要用截图来"读取"页面内容，用 get_page_content 或 extract_data 更快。
 ```
 
-### 规则 6：多标签页
+### 规则 7：多标签页
 
 ```
 需要同时保持多个页面时用多标签页，比反复 navigate 快：
@@ -112,11 +120,19 @@ list_tabs()                        # 查看所有标签
 ### 标准爬虫流程
 
 ```
-1. set_block_rules(blockImages+blockAds)   # 开启加速
+1. set_block_rules(blockImages+blockAds)   # 开启加速（context 级，对所有标签页生效）
 2. navigate({ url: "起始页" })              # 打开页面
 3. wait_for_selector({ selector: "数据容器" }) # 等待加载（动态页面）
 4. extract_data({ itemSelector, fields })   # 提取数据
 5. crawl_pages(...)                         # 如需翻页
+```
+
+### 爬整站 / 大站
+
+```
+1. discover_urls({ url: "站点入口" })        # 先走 sitemap+robots+页面链接探明全部地址，快且不抓正文
+2. 按 URL 规律筛选出目标页面
+3. batch_fetch / extract_article 分批抓取正文
 ```
 
 ### 批量抓取多个详情页
@@ -174,16 +190,26 @@ DB_PROD_SSL=true
 
 > stdio 模式修改 `.env` 后重新触发 MCP 即生效；HTTP / PM2 模式需 `node mcp.mjs restart db`。
 
+### 读写规则（必读）
+
+```
+- query 强制只读：仅接受 SELECT/WITH/SHOW/EXPLAIN/DESCRIBE，其他语句直接报错
+- 写操作（INSERT/UPDATE/DELETE/DDL）必须用 execute，它带 destructiveHint，
+  执行前向用户确认；execute 成功后 SELECT 缓存自动失效
+- SELECT 结果有 60 秒缓存，重复查询很快；需要强制最新数据时改写 SQL（如加注释）
+- explain_query 对写语句只输出执行计划、不会真执行（PG 的 ANALYZE 仅用于只读语句）
+```
+
 ### 数据库工具（15个）
 
 | 工具 | 用途 |
 |------|------|
-| `query` | SELECT 查询 |
-| `execute` | INSERT/UPDATE/DELETE |
+| `query` | 只读查询（SELECT/WITH/SHOW/EXPLAIN），结果短时缓存 |
+| `execute` | INSERT/UPDATE/DELETE/DDL（破坏性，需确认） |
 | `list_tables` | 列出所有表 |
 | `describe_table` | 查看表结构 |
 | `list_databases` | 列出所有数据库 |
-| `explain_query` | 分析查询性能 |
+| `explain_query` | 分析执行计划（写语句只出计划不执行） |
 | `table_indexes` | 查看索引 |
 | `table_relations` | 查看外键关系 |
 | `table_stats` | 表统计信息 |
@@ -196,7 +222,7 @@ DB_PROD_SSL=true
 
 ---
 
-## 五、完整工具清单（浏览器 MCP，38个）
+## 五、完整工具清单（浏览器 MCP，39个）
 
 ### 基础操作（14个）
 | 工具 | 参数 | 说明 |
@@ -229,8 +255,8 @@ DB_PROD_SSL=true
 | `execute_js` | script | 执行 JS |
 | `generate_page_report` | - | 页面结构报告 |
 | `intercept_requests` | urlPattern, action | 拦截请求 |
-| `snapshot` | interactiveOnly?, maxChars? | 无障碍树快照，返回元素 ref，省 token；先 snapshot 再用 ref 操作 |
-| `extract_article` | url? | 提取主正文为 Markdown，剥离导航/广告 |
+| `snapshot` | interactiveOnly?, maxChars?, deep? | 无障碍树快照，返回元素 ref，省 token；deep 用 CDP 找事件监听元素 |
+| `extract_article` | url? | defuddle 提取主正文为 Markdown，剥离导航/广告（Readability 兜底）|
 
 ### 截图导出（2个）
 | 工具 | 参数 | 说明 |
@@ -246,10 +272,11 @@ DB_PROD_SSL=true
 | `switch_tab` | index | 切换标签页 |
 | `close_tab` | index | 关闭标签页 |
 
-### 爬虫工具（6个）
+### 爬虫工具（7个）
 | 工具 | 参数 | 说明 |
 |------|------|------|
-| `set_block_rules` | blockImages?, blockMedia?, blockFonts?, blockAds? | 屏蔽请求加速 |
+| `set_block_rules` | blockImages?, blockMedia?, blockFonts?, blockAds? | 屏蔽请求加速（context 级，所有标签页生效）|
+| `discover_urls` | url, maxUrls?, sameDomainOnly? | 站点 URL 发现（sitemap+robots+页面链接）|
 | `extract_links` | selector?, filter?, limit? | 提取链接 |
 | `extract_data` | itemSelector, fields[], limit? | 批量提取结构化数据 |
 | `wait_and_extract` | waitSelector, extractSelector, attribute?, timeout? | 等待后提取 |
