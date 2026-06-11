@@ -2,12 +2,12 @@
 
 为 Claude Code 提供**浏览器自动化**和**数据库操作**能力的 MCP 服务。
 
-基于 Playwright + Express + MCP SDK，**v2.0.0** 起同时支持两种传输方式：
+基于 Patchright (Playwright 反检测分支) + Express 5 + MCP SDK，**v2.0.0** 起同时支持两种传输方式：
 
 - **stdio 原生模式** — Claude Code 直接拉起进程，**无需 PM2、无需端口**，最简单，**推荐**。
 - **HTTP（Streamable HTTP）模式** — 长驻服务，适合服务器环境或多个客户端共享。
 
-> 浏览器服务现已支持 **Windows**（Playwright Chromium 原生运行于 win32）。
+> 浏览器服务现已支持 **Windows**（Patchright Chromium 原生运行于 win32）。
 
 ## 系统要求
 
@@ -37,7 +37,7 @@
 node mcp.mjs install
 ```
 
-该命令会为浏览器目录和数据库目录依次执行：`npm install` → `npx playwright install chromium` → `npm run build`。
+该命令会为浏览器目录和数据库目录依次执行：`npm install` → `npx patchright install chromium` → `npm run build`。
 
 ### bash 安装脚本（可选，macOS / Linux）
 
@@ -164,6 +164,7 @@ claude mcp add --transport http database          http://localhost:3214/mcp
 | 子命令 | 说明 |
 |--------|------|
 | `node mcp.mjs install` | 安装依赖 + Chromium + 构建（浏览器 + 数据库） |
+| `node mcp.mjs update` | 一键更新：git pull + 重装依赖 + 重新构建 + 重启 PM2 服务 |
 | `node mcp.mjs start [browser\|db\|all]` | 通过 PM2 启动服务（默认 all） |
 | `node mcp.mjs stop [browser\|db\|all]` | 停止服务 |
 | `node mcp.mjs restart [browser\|db\|all]` | 重启服务 |

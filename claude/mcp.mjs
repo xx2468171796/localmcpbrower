@@ -7,6 +7,7 @@
  *
  * 子命令:
  *   install                      安装依赖 + Chromium + 构建 (浏览器 + 数据库)
+ *   update                       git pull + 重装依赖 + 重新构建 (+重启 PM2 服务)
  *   start  [browser|db|all]      通过 PM2 启动服务 (默认 all)
  *   stop   [browser|db|all]      停止服务
  *   restart[browser|db|all]      重启服务
@@ -65,17 +66,9 @@ function cmdInstall() {
   step('[1/5] 安装浏览器 MCP 依赖');
   run(NPM, ['install'], ROOT);
 
-  step('[2/5] 安装 Playwright Chromium');
-  // rebrowser-playwright 自带 CLI 有 bug，改用 playwright-core 的 CLI 安装。
-  // npm 会把 playwright-core 提升到顶层 node_modules，直接 resolve 该模块更可靠
-  // (旧写法假设 cli.js 嵌套在 rebrowser-playwright/node_modules 下，提升后会 MODULE_NOT_FOUND)
+  step('[2/5] 安装 Patchright Chromium');
   const require = createRequire(join(ROOT, 'package.json'));
-  let pwCli;
-  try {
-    pwCli = require.resolve('playwright-core/cli.js');
-  } catch {
-    pwCli = join(dirname(require.resolve('rebrowser-playwright/package.json')), 'node_modules', 'playwright-core', 'cli.js');
-  }
+  const pwCli = require.resolve('patchright/cli.js');
   // Linux 需 --with-deps 自动安装 Chromium 运行所需系统库 (libnss3 等)，否则浏览器无法启动
   const pwArgs = process.platform === 'linux'
     ? ['install', '--with-deps', 'chromium']
@@ -96,6 +89,93 @@ function cmdInstall() {
   log('============================================================');
   log('  推荐 (stdio 原生模式): 运行  node mcp.mjs config  获取配置命令');
   log('  HTTP / PM2 模式:        运行  node mcp.mjs start');
+}
+
+// ── update ───────────────────────────────────────────────
+function runCapture(cmd, args, cwd) {
+  const res = spawnSync(cmd, args, { cwd: cwd || ROOT, encoding: 'utf-8', shell: IS_WIN });
+  return { status: res.status, stdout: (res.stdout || '').trim(), stderr: (res.stderr || '').trim() };
+}
+
+function cmdUpdate() {
+  log('============================================================');
+  log('  Claude Code MCP - 更新 (拉取仓库 + 重装依赖 + 重新构建)');
+  log('============================================================');
+
+  const REPO = dirname(ROOT); // 仓库根目录 (claude/ 的上一级)
+
+  // ── git 拉取 ──
+  step('[1/4] 拉取仓库更新');
+  const isRepo = runCapture('git', ['rev-parse', '--is-inside-work-tree'], REPO).stdout === 'true';
+  let oldHead = '';
+  if (!isRepo) {
+    log('  ⚠  非 git 仓库 (可能是复制部署)，跳过拉取，仅重装依赖并重新构建');
+  } else {
+    oldHead = runCapture('git', ['rev-parse', '--short', 'HEAD'], REPO).stdout;
+    // 本地有未提交改动时中止，避免 pull 弄脏/冲掉手头工作
+    const dirty = runCapture('git', ['status', '--porcelain'], REPO).stdout;
+    if (dirty) {
+      fail(`仓库有未提交的本地改动，请先 commit 或 stash 后再更新:\n${dirty.split('\n').slice(0, 10).map(l => '    ' + l).join('\n')}`);
+    }
+    // 当前分支没有远端 upstream (如本地开发分支) 时跳过拉取，仅重建
+    const upstream = runCapture('git', ['rev-parse', '--abbrev-ref', '@{u}'], REPO);
+    if (upstream.status !== 0) {
+      log('  ⚠  当前分支没有远端 upstream，跳过拉取，仅重装依赖并重新构建');
+    } else {
+      // --ff-only: 本地分支与远端分叉时拒绝合并，不静默产生 merge commit
+      run('git', ['pull', '--ff-only'], REPO);
+    }
+    const newHead = runCapture('git', ['rev-parse', '--short', 'HEAD'], REPO).stdout;
+    if (newHead === oldHead) {
+      log(`  [✓] 已是最新 (${newHead})，继续校验依赖与构建产物`);
+    } else {
+      log(`  [✓] 已更新 ${oldHead} → ${newHead}，变更摘要:`);
+      const changed = runCapture('git', ['log', '--oneline', `${oldHead}..${newHead}`], REPO).stdout;
+      for (const line of changed.split('\n').slice(0, 15)) log(`      ${line}`);
+    }
+  }
+
+  // ── 依赖 + 浏览器 ──
+  step('[2/4] 更新依赖 (浏览器 + 数据库)');
+  run(NPM, ['install'], ROOT);
+  run(NPM, ['install'], DB_DIR);
+
+  step('[3/4] 校验 Patchright Chromium (已存在则跳过下载)');
+  const require = createRequire(join(ROOT, 'package.json'));
+  const pwCli = require.resolve('patchright/cli.js');
+  const pwArgs = process.platform === 'linux'
+    ? ['install', '--with-deps', 'chromium']
+    : ['install', 'chromium'];
+  run(process.execPath, [pwCli, ...pwArgs], ROOT);
+
+  // ── 构建 ──
+  step('[4/4] 重新构建');
+  run(NPM, ['run', 'build'], ROOT);
+  run(NPM, ['run', 'build'], DB_DIR);
+
+  // ── PM2 服务在跑则重启，让 HTTP 模式立即用上新代码 ──
+  // 注意: pm2 守护进程未启动时 jlist 会先输出 "[PM2] Spawning..." 等日志行，
+  // 真正的 JSON 数组在最后一行，需逐行从后往前找
+  const pm2List = runCapture(PM2, ['jlist']);
+  if (pm2List.status === 0) {
+    try {
+      const jsonLine = pm2List.stdout.split('\n').reverse()
+        .find(l => l.trim().startsWith('[') && !l.trim().startsWith('[PM2]'));
+      const procs = jsonLine ? JSON.parse(jsonLine) : [];
+      const running = Object.values(SERVICES).filter(svc =>
+        procs.some(p => p.name === svc.name && p.pm2_env?.status === 'online'));
+      for (const svc of running) {
+        step(`重启运行中的 ${svc.label}`);
+        run(PM2, ['restart', svc.name]);
+      }
+    } catch { /* pm2 输出异常则跳过，不影响更新结果 */ }
+  }
+
+  log('\n============================================================');
+  log('  更新完成！');
+  log('============================================================');
+  log('  stdio 模式: 新代码在下次 Claude Code 会话自动生效');
+  log('  (当前会话要立即生效，可在 Claude Code 里执行 /mcp 重连)');
 }
 
 // ── PM2 控制 ──────────────────────────────────────────────
@@ -180,6 +260,7 @@ function cmdHelp() {
 
 命令:
   install                      安装依赖 + Chromium + 构建 (浏览器 + 数据库)
+  update                       git pull + 重装依赖 + 重新构建 (+重启 PM2 服务)
   start   [browser|db|all]     通过 PM2 启动服务 (默认 all)
   stop    [browser|db|all]     停止服务 (默认 all)
   restart [browser|db|all]     重启服务 (默认 all)
@@ -189,6 +270,7 @@ function cmdHelp() {
 
 示例:
   node mcp.mjs install         # 首次安装
+  node mcp.mjs update          # 仓库更新后一键升级本地服务
   node mcp.mjs config          # 获取 stdio 配置 (推荐路径)
   node mcp.mjs start           # HTTP 模式启动全部服务
   node mcp.mjs status
@@ -202,6 +284,7 @@ function cmdHelp() {
 const [cmd, arg] = process.argv.slice(2);
 switch (cmd) {
   case 'install':           cmdInstall(); break;
+  case 'update':            cmdUpdate(); break;
   case 'start':             cmdStart(arg); break;
   case 'stop':              cmdStop(arg); break;
   case 'restart':           cmdRestart(arg); break;

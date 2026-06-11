@@ -58,3 +58,13 @@ Use an absolute Node path when the Codex shell environment does not include `nod
 - When changing tool behavior, update `USAGE.md`.
 - When changing install/config behavior, update `DEPLOY.md`, `claude/README.md`, and `CODEX.md` if applicable.
 - After TypeScript changes, run the relevant build command under `claude/`.
+
+## Updating the Local MCP Servers
+
+When the user asks to update the local MCP browser/database servers (e.g. "更新本地 MCP" / "update the local MCP servers"), run:
+
+```bash
+node claude/mcp.mjs update
+```
+
+This pulls the latest repo changes (`git pull --ff-only`), reinstalls dependencies in both packages, verifies the Patchright Chromium binary, rebuilds `dist/`, and restarts any running PM2 services. It aborts safely if the working tree has uncommitted changes — ask the user to commit or stash first. stdio-mode servers pick up the new build on the next session (or after `/mcp` reconnect in Claude Code).
