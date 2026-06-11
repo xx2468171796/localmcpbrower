@@ -19,7 +19,6 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
-import { createRequire } from 'node:module';
 
 const IS_WIN = process.platform === 'win32';
 const ROOT = dirname(fileURLToPath(import.meta.url));      // claude/
@@ -67,13 +66,12 @@ function cmdInstall() {
   run(NPM, ['install'], ROOT);
 
   step('[2/5] 安装 Patchright Chromium');
-  const require = createRequire(join(ROOT, 'package.json'));
-  const pwCli = require.resolve('patchright/cli.js');
+  // 注意: patchright 的 exports 不暴露 cli.js,不能 require.resolve,走 npx
   // Linux 需 --with-deps 自动安装 Chromium 运行所需系统库 (libnss3 等)，否则浏览器无法启动
   const pwArgs = process.platform === 'linux'
     ? ['install', '--with-deps', 'chromium']
     : ['install', 'chromium'];
-  run(process.execPath, [pwCli, ...pwArgs], ROOT);
+  run(NPX, ['patchright', ...pwArgs], ROOT);
 
   step('[3/5] 构建浏览器 MCP');
   run(NPM, ['run', 'build'], ROOT);
@@ -141,12 +139,10 @@ function cmdUpdate() {
   run(NPM, ['install'], DB_DIR);
 
   step('[3/4] 校验 Patchright Chromium (已存在则跳过下载)');
-  const require = createRequire(join(ROOT, 'package.json'));
-  const pwCli = require.resolve('patchright/cli.js');
   const pwArgs = process.platform === 'linux'
     ? ['install', '--with-deps', 'chromium']
     : ['install', 'chromium'];
-  run(process.execPath, [pwCli, ...pwArgs], ROOT);
+  run(NPX, ['patchright', ...pwArgs], ROOT);
 
   // ── 构建 ──
   step('[4/4] 重新构建');
