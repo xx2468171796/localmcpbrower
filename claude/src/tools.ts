@@ -17,6 +17,7 @@ import {
   SnapshotSchema, ExtractArticleSchema, DiscoverUrlsSchema
 } from './schemas.js';
 import { Readability } from '@mozilla/readability';
+import { Defuddle } from 'defuddle/node';
 import { JSDOM } from 'jsdom';
 import TurndownService from 'turndown';
 import type {
@@ -72,7 +73,7 @@ function resolveTarget(selector?: string, ref?: string): { ok: true; selector: s
 
 /** 当目标来自 ref 时，校验该 ref 仍存在于 DOM；不存在则返回友好提示 */
 async function checkRefAlive(
-  page: import('rebrowser-playwright').Page,
+  page: import('patchright').Page,
   selector: string,
   fromRef: boolean,
   ref?: string,
@@ -104,9 +105,10 @@ export async function click(input: unknown): Promise<ToolResult<ClickResult>> {
       } catch {
         // 最终 fallback: 通过 JS 直接点击
         await page.evaluate(`(function() {
-          var el = document.querySelector('${selector.replace(/'/g, "\\'")}');
+          var sel = ${JSON.stringify(selector)};
+          var el = document.querySelector(sel);
           if (el) el.click();
-          else throw new Error('元素未找到: ${selector.replace(/'/g, "\\'")}');
+          else throw new Error('元素未找到: ' + sel);
         })()`);
       }
     }
@@ -137,12 +139,11 @@ export async function type(input: unknown): Promise<ToolResult<TypeResult>> {
         await page.fill(selector, text, { force: true, timeout: 5000 });
       } catch {
         // 最终 fallback: 通过 JS 直接设置值
-        const escapedSelector = selector.replace(/'/g, "\\'");
-        const escapedText = text.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
         await page.evaluate(`(function() {
-          var el = document.querySelector('${escapedSelector}');
-          if (!el) throw new Error('元素未找到: ${escapedSelector}');
-          el.value = '${escapedText}';
+          var sel = ${JSON.stringify(selector)};
+          var el = document.querySelector(sel);
+          if (!el) throw new Error('元素未找到: ' + sel);
+          el.value = ${JSON.stringify(text)};
           el.dispatchEvent(new Event('input', { bubbles: true }));
           el.dispatchEvent(new Event('change', { bubbles: true }));
         })()`);
@@ -573,6 +574,9 @@ export async function closeTab(input: unknown): Promise<ToolResult<{ closed: boo
 }
 
 // Network intercept
+// 已注册的拦截 handler，按 urlPattern 索引；同一 pattern 重复调用时先 unroute 旧 handler，避免叠加
+const interceptHandlers = new Map<string, { regex: RegExp; handler: (route: import('patchright').Route) => void }>();
+
 export async function interceptRequests(input: unknown): Promise<ToolResult<{ intercepting: boolean; urlPattern: string; action: string }>> {
   try {
     const { urlPattern, action } = input as { urlPattern: string; action: string };
@@ -587,18 +591,27 @@ export async function interceptRequests(input: unknown): Promise<ToolResult<{ in
       regex = new RegExp(globToRegex);
     }
 
+    const prev = interceptHandlers.get(urlPattern);
+    if (prev) {
+      await page.unroute(prev.regex, prev.handler).catch(() => {});
+      interceptHandlers.delete(urlPattern);
+    }
+
+    let handler: (route: import('patchright').Route) => void;
     if (action === 'block') {
-      await page.route(regex, route => route.abort());
+      handler = route => route.abort();
     } else if (action === 'log') {
-      await page.route(regex, route => {
+      handler = route => {
         console.log(`[Intercept] ${route.request().method()} ${route.request().url()}`);
         route.continue();
-      });
+      };
     } else if (action === 'modify') {
-      await page.route(regex, route => route.continue());
+      handler = route => route.continue();
     } else {
       return { success: false, error: `Unknown action: ${action}. Use block/log/modify` };
     }
+    await page.route(regex, handler);
+    interceptHandlers.set(urlPattern, { regex, handler });
     return { success: true, data: { intercepting: true, urlPattern, action } };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
@@ -612,18 +625,23 @@ export async function interceptRequests(input: unknown): Promise<ToolResult<{ in
 /** 广告域名黑名单 */
 const AD_DOMAINS = ['doubleclick.net','googlesyndication.com','adservice.google','amazon-adsystem.com','facebook.com/tr','analytics.google','googletagmanager.com','hotjar.com','clarity.ms'];
 
-/** 全局请求拦截状态 */
-let blockRulesActive = false;
+// 挂在 context 上的当前屏蔽规则 handler；重复调用 set_block_rules 时先 unroute，避免叠加
+let activeBlockHandler: ((route: import('patchright').Route) => void) | null = null;
 
-/** 设置请求拦截规则（屏蔽图片/广告，加速爬取） */
+/** 设置请求拦截规则（屏蔽图片/广告，加速爬取）。挂在 context 上，对所有标签页（含后开的）生效 */
 export async function setBlockRules(input: unknown): Promise<ToolResult<{ active: boolean; rules: object }>> {
   try {
     const parsed = SetBlockRulesSchema.safeParse(input);
     if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
     const { blockImages, blockMedia, blockFonts, blockAds, customPatterns } = parsed.data;
-    const page = await getBrowserManager().getPage();
+    const context = await getBrowserManager().getContext();
 
-    await page.route('**/*', (route) => {
+    if (activeBlockHandler) {
+      await context.unroute('**/*', activeBlockHandler).catch(() => {});
+      activeBlockHandler = null;
+    }
+
+    const handler = (route: import('patchright').Route) => {
       const url = route.request().url();
       const resourceType = route.request().resourceType();
 
@@ -633,9 +651,10 @@ export async function setBlockRules(input: unknown): Promise<ToolResult<{ active
       if (blockAds && AD_DOMAINS.some(d => url.includes(d))) { route.abort(); return; }
       if (customPatterns.some(p => url.includes(p))) { route.abort(); return; }
       route.continue();
-    });
+    };
+    await context.route('**/*', handler);
+    activeBlockHandler = handler;
 
-    blockRulesActive = true;
     return { success: true, data: { active: true, rules: { blockImages, blockMedia, blockFonts, blockAds, customPatterns } } };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
@@ -653,10 +672,10 @@ export async function extractLinks(input: unknown): Promise<ToolResult<{ links: 
     const scope = selector ?? 'body';
     const filterStr = filter ?? '';
     const links = await page.evaluate(`(function() {
-      var container = document.querySelector('${scope.replace(/'/g, "\\'")}') || document.documentElement;
+      var container = document.querySelector(${JSON.stringify(scope)}) || document.documentElement;
       var anchors = Array.from(container.querySelectorAll('a[href]'));
       var result = [];
-      var filter = '${filterStr.replace(/'/g, "\\'")}';
+      var filter = ${JSON.stringify(filterStr)};
       var limit = ${limit};
       for (var i = 0; i < anchors.length && result.length < limit; i++) {
         var a = anchors[i];
@@ -718,7 +737,7 @@ export async function waitAndExtract(input: unknown): Promise<ToolResult<{ items
 
     const attrStr = attribute ?? '';
     const items = await page.evaluate(`(function() {
-      var attr = '${attrStr.replace(/'/g, "\\'")}';
+      var attr = ${JSON.stringify(attrStr)};
       return Array.from(document.querySelectorAll(${JSON.stringify(extractSelector)})).map(function(el) {
         return attr ? (el.getAttribute(attr) || '') : (el.textContent || '').trim();
       }).filter(Boolean);
@@ -1028,14 +1047,40 @@ export async function extractArticle(input: unknown): Promise<ToolResult<{
     if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
     const { url } = parsed.data;
     const page = await getBrowserManager().getPage();
-    if (url) await page.goto(url, { waitUntil: 'commit', timeout: 30000 });
+    if (url) {
+      await page.goto(url, { waitUntil: 'commit', timeout: 30000 });
+      // commit 阶段 DOM 还没解析完，直接 content() 会拿到半成品页面
+      await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+    }
 
     const html = await page.content();
     const pageUrl = page.url();
+
+    // 首选 defuddle（Readability 的现代替代：多轮清洗、脚注/代码块标准化、直接出 Markdown）
+    try {
+      const dom = new JSDOM(html, { url: pageUrl });
+      const result = await Defuddle(dom, pageUrl, { markdown: true });
+      if (result.content && result.wordCount > 0) {
+        const text = result.content.replace(/\s+/g, ' ').trim();
+        return {
+          success: true,
+          data: {
+            title: result.title ?? '',
+            byline: result.author || null,
+            excerpt: result.description || null,
+            length: result.wordCount,
+            markdown: result.content,
+            textPreview: text.slice(0, 300),
+          },
+        };
+      }
+    } catch { /* defuddle 失败则回退 Readability */ }
+
+    // 兜底：Readability + Turndown
     const dom = new JSDOM(html, { url: pageUrl });
     const article = new Readability(dom.window.document).parse();
     if (!article || !article.content) {
-      return { success: false, error: '该页面不是文章，或无法提取主正文（Readability 返回空）' };
+      return { success: false, error: '该页面不是文章，或无法提取主正文（defuddle 与 Readability 均返回空）' };
     }
     const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
     const markdown = turndown.turndown(article.content);
@@ -1163,59 +1208,3 @@ export async function discoverUrls(input: unknown): Promise<ToolResult<{
     return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
-
-export const toolRegistry = {
-  // ============================================================
-  // 基础操作
-  // ============================================================
-  navigate: { name: 'navigate', description: '跳转至指定网址', inputSchema: { type: 'object', properties: { url: { type: 'string', description: '要跳转的 URL' } }, required: ['url'] }, handler: navigate },
-  click: { name: 'click', description: '点击页面元素（自动 fallback: 正常→force→JS）', inputSchema: { type: 'object', properties: { selector: { type: 'string', description: 'CSS 选择器' } }, required: ['selector'] }, handler: click },
-  type: { name: 'type', description: '在输入框输入文本（自动 fallback: 正常→force→JS）', inputSchema: { type: 'object', properties: { selector: { type: 'string', description: 'CSS 选择器' }, text: { type: 'string', description: '要输入的文本' } }, required: ['selector', 'text'] }, handler: type },
-  hover: { name: 'hover', description: '鼠标悬停到元素上', inputSchema: { type: 'object', properties: { selector: { type: 'string', description: 'CSS 选择器' } }, required: ['selector'] }, handler: hover },
-  scroll: { name: 'scroll', description: '滚动页面（x/y 坐标或滚动到指定元素）', inputSchema: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, selector: { type: 'string' } } }, handler: scroll },
-  keyboard_press: { name: 'keyboard_press', description: '按下键盘按键（如 Enter/Tab/Escape）', inputSchema: { type: 'object', properties: { key: { type: 'string', description: '按键名称，如 Enter/Tab/Escape/ArrowDown' } }, required: ['key'] }, handler: keyboardPress },
-  drag_and_drop: { name: 'drag_and_drop', description: '拖拽元素', inputSchema: { type: 'object', properties: { source: { type: 'string', description: '源元素 CSS 选择器' }, target: { type: 'string', description: '目标元素 CSS 选择器' } }, required: ['source', 'target'] }, handler: dragAndDrop },
-  select_option: { name: 'select_option', description: '选择下拉框选项', inputSchema: { type: 'object', properties: { selector: { type: 'string' }, value: { type: 'string' } }, required: ['selector', 'value'] }, handler: selectOption },
-  fill_form: { name: 'fill_form', description: '批量填写表单（一次填多个字段）', inputSchema: { type: 'object', properties: { fields: { type: 'array', items: { type: 'object', properties: { selector: { type: 'string' }, value: { type: 'string' } }, required: ['selector', 'value'] } } }, required: ['fields'] }, handler: fillForm },
-  file_upload: { name: 'file_upload', description: '上传文件', inputSchema: { type: 'object', properties: { selector: { type: 'string' }, filePath: { type: 'string' } }, required: ['selector', 'filePath'] }, handler: fileUpload },
-  wait_for_selector: { name: 'wait_for_selector', description: '等待元素出现/消失（适合动态页面）', inputSchema: { type: 'object', properties: { selector: { type: 'string' }, state: { type: 'string', enum: ['visible','hidden','attached','detached'], default: 'visible' }, timeout: { type: 'number', default: 10000 } }, required: ['selector'] }, handler: waitForSelector },
-  go_back: { name: 'go_back', description: '浏览器后退', inputSchema: { type: 'object', properties: {} }, handler: goBack },
-  go_forward: { name: 'go_forward', description: '浏览器前进', inputSchema: { type: 'object', properties: {} }, handler: goForward },
-  set_viewport: { name: 'set_viewport', description: '设置浏览器视口大小', inputSchema: { type: 'object', properties: { width: { type: 'number' }, height: { type: 'number' } }, required: ['width', 'height'] }, handler: setViewport },
-  // ============================================================
-  // 数据提取
-  // ============================================================
-  get_page_content: { name: 'get_page_content', description: '获取页面完整 HTML 内容', inputSchema: { type: 'object', properties: { selector: { type: 'string', description: '可选，只获取指定元素的内容' } } }, handler: getPageContent },
-  get_element_text: { name: 'get_element_text', description: '获取元素文本内容', inputSchema: { type: 'object', properties: { selector: { type: 'string' } }, required: ['selector'] }, handler: getElementText },
-  get_element_attribute: { name: 'get_element_attribute', description: '获取元素属性值（如 href/src/value）', inputSchema: { type: 'object', properties: { selector: { type: 'string' }, attribute: { type: 'string' } }, required: ['selector', 'attribute'] }, handler: getElementAttribute },
-  get_cookies: { name: 'get_cookies', description: '获取当前页面 cookies', inputSchema: { type: 'object', properties: { name: { type: 'string', description: '可选，指定 cookie 名称' } } }, handler: getCookies },
-  set_cookies: { name: 'set_cookies', description: '设置 cookies', inputSchema: { type: 'object', properties: { cookies: { type: 'array', items: { type: 'object' } } }, required: ['cookies'] }, handler: setCookies },
-  get_console_logs: { name: 'get_console_logs', description: '获取页面 console 输出', inputSchema: { type: 'object', properties: {} }, handler: getConsoleLogs },
-  get_network: { name: 'get_network', description: '获取网络请求记录', inputSchema: { type: 'object', properties: {} }, handler: getNetwork },
-  execute_js: { name: 'execute_js', description: '执行自定义 JavaScript 并返回结果', inputSchema: { type: 'object', properties: { script: { type: 'string', description: 'JavaScript 代码（支持 return 语句）' } }, required: ['script'] }, handler: executeJs },
-  generate_page_report: { name: 'generate_page_report', description: '生成页面结构分析报告（链接/图片/表单统计）', inputSchema: { type: 'object', properties: {} }, handler: generatePageReport },
-  // ============================================================
-  // 截图 & 导出
-  // ============================================================
-  take_screenshot: { name: 'take_screenshot', description: '截取当前页面截图（返回 base64 图片）', inputSchema: { type: 'object', properties: { name: { type: 'string', description: '截图文件名（不含扩展名）' }, fullPage: { type: 'boolean', description: '是否截全页，默认 false' } } }, handler: takeScreenshot },
-  pdf_export: { name: 'pdf_export', description: '将页面导出为 PDF', inputSchema: { type: 'object', properties: { path: { type: 'string', description: '保存路径' }, fullPage: { type: 'boolean', default: true } }, required: ['path'] }, handler: pdfExport },
-  intercept_requests: { name: 'intercept_requests', description: '拦截并修改网络请求', inputSchema: { type: 'object', properties: { urlPattern: { type: 'string' }, action: { type: 'string', enum: ['block','log','modify'], default: 'log' } }, required: ['urlPattern'] }, handler: interceptRequests },
-  // ============================================================
-  // 多标签页管理
-  // ============================================================
-  list_tabs: { name: 'list_tabs', description: '列出所有打开的标签页', inputSchema: { type: 'object', properties: {} }, handler: listTabs },
-  new_tab: { name: 'new_tab', description: '打开新标签页', inputSchema: { type: 'object', properties: { url: { type: 'string', description: '可选，新标签页要打开的 URL' } } }, handler: newTab },
-  switch_tab: { name: 'switch_tab', description: '切换到指定标签页', inputSchema: { type: 'object', properties: { index: { type: 'number', description: '标签页索引（从 0 开始）' } }, required: ['index'] }, handler: switchTab },
-  close_tab: { name: 'close_tab', description: '关闭指定标签页', inputSchema: { type: 'object', properties: { index: { type: 'number', description: '标签页索引（从 0 开始）' } }, required: ['index'] }, handler: closeTab },
-  // ============================================================
-  // 爬虫工具（高性能批量采集）
-  // ============================================================
-  set_block_rules: { name: 'set_block_rules', description: '【爬虫加速】屏蔽图片/广告/字体请求，爬取速度提升 3-5 倍。爬虫任务开始前必须先调用此工具', inputSchema: { type: 'object', properties: { blockImages: { type: 'boolean', default: true }, blockMedia: { type: 'boolean', default: true }, blockFonts: { type: 'boolean', default: true }, blockAds: { type: 'boolean', default: true }, customPatterns: { type: 'array', items: { type: 'string' }, default: [] } } }, handler: setBlockRules },
-  extract_links: { name: 'extract_links', description: '【爬虫】提取页面所有链接，支持 CSS 范围限定和 URL 关键词过滤', inputSchema: { type: 'object', properties: { selector: { type: 'string', description: '限定范围的 CSS 选择器，如 .article-list' }, filter: { type: 'string', description: 'URL 过滤关键词，如 /product/' }, limit: { type: 'number', default: 100 } } }, handler: extractLinks },
-  extract_data: { name: 'extract_data', description: '【爬虫】按 CSS 选择器批量提取结构化数据（列表/表格），支持多字段映射', inputSchema: { type: 'object', properties: { itemSelector: { type: 'string', description: '每条数据的容器选择器，如 .product-item' }, fields: { type: 'array', items: { type: 'object', properties: { name: { type: 'string', description: '字段名' }, selector: { type: 'string', description: '相对于 item 的子选择器' }, attribute: { type: 'string', description: '提取属性，如 href/src' }, type: { type: 'string', enum: ['text','html','attr'], default: 'text' } }, required: ['name','selector'] } }, limit: { type: 'number', default: 200 } }, required: ['itemSelector','fields'] }, handler: extractData },
-  wait_and_extract: { name: 'wait_and_extract', description: '【爬虫】等待动态内容加载后提取，适合 SPA/懒加载/Ajax 页面', inputSchema: { type: 'object', properties: { waitSelector: { type: 'string', description: '等待此元素出现后再提取' }, extractSelector: { type: 'string', description: '要提取内容的选择器' }, attribute: { type: 'string', description: '提取属性，不填则取文本' }, timeout: { type: 'number', default: 10000 } }, required: ['waitSelector','extractSelector'] }, handler: waitAndExtract },
-  batch_fetch: { name: 'batch_fetch', description: '【爬虫】批量抓取多个 URL（最多20个），支持内容提取和请求间隔控制', inputSchema: { type: 'object', properties: { urls: { type: 'array', items: { type: 'string' }, description: 'URL 列表，最多20个' }, waitFor: { type: 'string', description: '每页等待此选择器出现' }, extractSelector: { type: 'string', description: '提取内容的选择器' }, delay: { type: 'number', default: 500, description: '每次请求间隔(ms)，防封号' } }, required: ['urls'] }, handler: batchFetch },
-  crawl_pages: { name: 'crawl_pages', description: '【爬虫】自动分页爬取，自动点击下一页并汇总所有数据，适合商品列表/新闻列表等', inputSchema: { type: 'object', properties: { startUrl: { type: 'string', description: '起始 URL' }, nextPageSelector: { type: 'string', description: '下一页按钮的 CSS 选择器' }, itemSelector: { type: 'string', description: '每条数据的容器选择器' }, fields: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, selector: { type: 'string' }, attribute: { type: 'string' }, type: { type: 'string', enum: ['text','html','attr'], default: 'text' } }, required: ['name','selector'] } }, maxPages: { type: 'number', default: 5, description: '最多爬取页数' }, delay: { type: 'number', default: 800, description: '翻页间隔(ms)' } }, required: ['startUrl','nextPageSelector','itemSelector','fields'] }, handler: crawlPages }
-} as const;
-
-export type ToolName = keyof typeof toolRegistry;

@@ -17,7 +17,7 @@ import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { InMemoryEventStore } from '@modelcontextprotocol/sdk/examples/shared/inMemoryEventStore.js';
+import { BoundedEventStore } from './eventStore.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 import { getDatabaseManager } from './database.js';
@@ -190,7 +190,8 @@ function cleanupSessions(): void {
     }
   }
 }
-setInterval(cleanupSessions, 5 * 60 * 1000);
+// 仅 HTTP 模式需要定期清理 session；unref 避免阻止进程自然退出
+if (!STDIO) setInterval(cleanupSessions, 5 * 60 * 1000).unref();
 
 // Direct tool handler map for sessionless requests (兼容无会话客户端)
 const directToolHandlers: Record<string, (args: unknown) => Promise<unknown>> = {
@@ -251,7 +252,7 @@ function createApp(): express.Application {
             return;
           }
         }
-        const eventStore = new InMemoryEventStore();
+        const eventStore = new BoundedEventStore();
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           eventStore,

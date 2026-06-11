@@ -17,7 +17,7 @@ import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { InMemoryEventStore } from '@modelcontextprotocol/sdk/examples/shared/inMemoryEventStore.js';
+import { BoundedEventStore } from './eventStore.js';
 import { isInitializeRequest, type ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 import { getBrowserManager } from './browser.js';
 import * as tools from './tools.js';
@@ -55,7 +55,8 @@ function cleanupSessions(): void {
     }
   }
 }
-setInterval(cleanupSessions, 5 * 60 * 1000);
+// 仅 HTTP 模式需要定期清理 session；unref 避免阻止进程自然退出
+if (!STDIO) setInterval(cleanupSessions, 5 * 60 * 1000).unref();
 
 // Helper to wrap tool results
 function text(result: unknown) {
@@ -400,6 +401,12 @@ function createApp(): express.Application {
 
   // Rate limiter: 100 req/s per IP
   const requestCounts = new Map<string, { count: number; resetAt: number }>();
+  setInterval(() => {
+    const now = Date.now();
+    for (const [ip, entry] of requestCounts) {
+      if (now > entry.resetAt) requestCounts.delete(ip);
+    }
+  }, 60 * 1000).unref();
   app.use((req: Request, res: Response, next: NextFunction) => {
     const ip = req.ip ?? 'unknown';
     const now = Date.now();
@@ -453,7 +460,7 @@ function createApp(): express.Application {
             return;
           }
         }
-        const eventStore = new InMemoryEventStore();
+        const eventStore = new BoundedEventStore();
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           eventStore,

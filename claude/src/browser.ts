@@ -4,7 +4,7 @@
  * Claude Code 版本
  */
 
-import { chromium, type BrowserContext, type Page } from 'rebrowser-playwright';
+import { chromium, type BrowserContext, type Page } from 'patchright';
 import * as path from 'path';
 import * as fs from 'fs';
 import type { ConsoleLogEntry, NetworkRequestEntry, BrowserConfig } from './types.js';
@@ -14,7 +14,8 @@ const IS_MAC = process.platform === 'darwin';
 const IS_WIN = process.platform === 'win32';
 
 // Chrome 版本号 token，统一用于各平台 UA 字符串
-const CHROME_VERSION = '140.0.0.0';
+// patchright 1.60 捆绑 Chrome for Testing 148，UA 需与真实内核版本一致，否则指纹自相矛盾
+const CHROME_VERSION = process.env['UA_CHROME_VERSION'] ?? '148.0.0.0';
 
 const DEFAULT_CONFIG: BrowserConfig = {
   // headless 默认开启；Mac 调试时设 HEADLESS=false
@@ -32,6 +33,8 @@ class BrowserManager {
   private page: Page | null = null;
   private consoleLogs: ConsoleLogEntry[] = [];
   private networkRequests: NetworkRequestEntry[] = [];
+  // 已挂过监听器的页面，防止 switch_tab 来回切换时重复挂载导致日志重复
+  private listenedPages = new WeakSet<Page>();
   private config: BrowserConfig;
   // 当前 chromium 子进程 PID — 用于 stdio 模式退出兜底 SIGKILL，防止孤儿
   private chromiumPid: number | null = null;
@@ -213,6 +216,8 @@ class BrowserManager {
   }
 
   private setupPageListeners(page: Page): void {
+    if (this.listenedPages.has(page)) return;
+    this.listenedPages.add(page);
     page.on('console', (msg) => {
       const type = msg.type() as ConsoleLogEntry['type'];
       this.consoleLogs.push({ type, text: msg.text(), timestamp: Date.now() });

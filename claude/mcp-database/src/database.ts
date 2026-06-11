@@ -18,7 +18,7 @@ class DatabaseManager {
   private readonly CACHE_TTL = 60000;
   private readonly MAX_CACHE_SIZE = 500;
 
-  private constructor() { setInterval(() => this.cleanCache(), 60000); }
+  private constructor() { setInterval(() => this.cleanCache(), 60000).unref(); }
 
   public static getInstance(): DatabaseManager {
     if (!DatabaseManager.instance) { DatabaseManager.instance = new DatabaseManager(); }
@@ -35,7 +35,8 @@ class DatabaseManager {
         host: config.host, port: config.port, database: config.database,
         user: config.user, password: config.password,
         ssl: config.ssl ? { rejectUnauthorized: false } : undefined,
-        max: 50, min: 5, idleTimeoutMillis: 120000, connectionTimeoutMillis: 15000,
+        // stdio 模式下每个 Claude 会话都是独立进程，min>0 会让空闲连接成倍累积
+        max: 10, min: 0, idleTimeoutMillis: 60000, connectionTimeoutMillis: 15000,
         allowExitOnIdle: false, statement_timeout: 60000, query_timeout: 60000,
         application_name: 'mcp-database-bridge'
       });
@@ -46,8 +47,8 @@ class DatabaseManager {
         host: config.host, port: config.port, database: config.database,
         user: config.user, password: config.password,
         ssl: config.ssl ? { rejectUnauthorized: false } : undefined,
-        waitForConnections: true, connectionLimit: 50, maxIdle: 20,
-        idleTimeout: 120000, queueLimit: 0, enableKeepAlive: true,
+        waitForConnections: true, connectionLimit: 10, maxIdle: 2,
+        idleTimeout: 60000, queueLimit: 0, enableKeepAlive: true,
         keepAliveInitialDelay: 0, multipleStatements: false, namedPlaceholders: true
       });
       const conn = await this.mysqlPool.getConnection();
@@ -91,8 +92,17 @@ class DatabaseManager {
     return `${sql}:${JSON.stringify(params || [])}`;
   }
 
+  /** 判断语句是否只读（SELECT/WITH/SHOW/EXPLAIN/DESCRIBE 开头） */
+  private isReadOnlySql(sql: string): boolean {
+    return /^\s*(select|with|show|explain|describe|desc)\b/i.test(sql);
+  }
+
   public async query(sql: string, params?: unknown[]): Promise<QueryResult> {
     if (!this.isConnected()) throw new Error('未连接数据库，请先调用 connect 工具');
+    // query 工具只允许只读语句，写操作必须走 execute（带 destructiveHint，宿主会要求确认）
+    if (!this.isReadOnlySql(sql)) {
+      throw new Error('query 工具仅允许只读语句（SELECT/WITH/SHOW/EXPLAIN），写操作请改用 execute 工具');
+    }
     const isSelect = sql.trim().toLowerCase().startsWith('select');
     if (isSelect) {
       const cacheKey = this.getCacheKey(sql, params);
@@ -117,6 +127,8 @@ class DatabaseManager {
 
   public async execute(sql: string, params?: unknown[]): Promise<{ affectedRows: number }> {
     if (!this.isConnected()) throw new Error('未连接数据库，请先调用 connect 工具');
+    // 数据已变更，旧的 SELECT 缓存全部失效，避免后续 query 返回陈旧结果
+    this.queryCache.clear();
     if (this.currentType === 'postgresql' && this.pgPool) {
       const result = await this.pgPool.query(sql, params);
       return { affectedRows: result.rowCount ?? 0 };
@@ -182,7 +194,9 @@ class DatabaseManager {
   public async explainQuery(sql: string): Promise<QueryResult> {
     this.ensureConnected();
     if (this.pgPool) {
-      const result = await this.pgPool.query(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${sql}`);
+      // EXPLAIN ANALYZE 会真正执行语句！对 INSERT/UPDATE/DELETE 等写语句只出计划不执行
+      const explainOpts = this.isReadOnlySql(sql) ? '(ANALYZE, BUFFERS, FORMAT JSON)' : '(FORMAT JSON)';
+      const result = await this.pgPool.query(`EXPLAIN ${explainOpts} ${sql}`);
       return { rows: result.rows, rowCount: result.rowCount ?? 0, fields: result.fields?.map(f => f.name) };
     } else if (this.mysqlPool) {
       const [rows, fields] = await this.mysqlPool.execute(`EXPLAIN ${sql}`);
@@ -210,7 +224,9 @@ class DatabaseManager {
         ORDER BY i.relname`, [table, s]);
       return result.rows;
     } else if (this.mysqlPool) {
-      const [rows] = await this.mysqlPool.execute(`SHOW INDEX FROM \`${table}\``);
+      // 表名是标识符不能参数化，转义反引号防注入
+      const safeTable = table.replace(/`/g, '``');
+      const [rows] = await this.mysqlPool.query(`SHOW INDEX FROM \`${safeTable}\``);
       return rows as Record<string, unknown>[];
     }
     throw new Error('数据库连接异常');
