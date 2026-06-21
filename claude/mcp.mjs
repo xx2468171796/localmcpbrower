@@ -52,6 +52,31 @@ function run(cmd, args, cwd) {
   }
 }
 
+// 非致命版 run:失败只返回 false,不中止整个流程(用于"可降级/可后补"的步骤)
+function runSoft(cmd, args, cwd) {
+  log(`  $ ${cmd} ${args.join(' ')}${cwd ? `   (cwd: ${cwd})` : ''}`);
+  const q = (s) => (IS_WIN && typeof s === 'string' && /\s/.test(s) && !s.startsWith('"')) ? `"${s}"` : s;
+  const res = spawnSync(IS_WIN ? q(cmd) : cmd, IS_WIN ? args.map(q) : args, { cwd: cwd || ROOT, stdio: 'inherit', shell: IS_WIN });
+  return res.status === 0;
+}
+
+// 安装 Patchright Chromium。关键:Linux 的 --with-deps 用包管理器装系统库(libnss3 等)需要 root;
+// 非 root(尤其 AI 的非 tty shell)用 --with-deps 会卡在 sudo 输密码、永久挂起 → 这里降级:
+//   非 root 只装 chromium 二进制(不卡、不要 sudo),系统库留给人工一条 sudo 命令补。
+// 整步非致命:就算没成也不中止,后续数据库 MCP / 注册 / 配置照常完成。
+function installChromium() {
+  const isLinux = process.platform === 'linux';
+  const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+  const pwArgs = (isLinux && isRoot) ? ['install', '--with-deps', 'chromium'] : ['install', 'chromium'];
+  const ok = runSoft(NPX, ['patchright', ...pwArgs], ROOT);
+  if (isLinux && !isRoot) {
+    log('  ⚠ 未以 root 运行,已跳过系统库(--with-deps),避免卡在 sudo。');
+    log('    浏览器要能真正启动,请在你自己的终端手动跑一次(会要 sudo 密码):');
+    log('        sudo npx patchright install-deps chromium');
+  }
+  if (!ok) log('  ⚠ Chromium 这步未完成,可稍后单独重试;不影响其余 MCP / 初始化继续。');
+}
+
 // ── install ──────────────────────────────────────────────
 function cmdInstall() {
   log('============================================================');
@@ -66,12 +91,7 @@ function cmdInstall() {
   run(NPM, ['install'], ROOT);
 
   step('[2/5] 安装 Patchright Chromium');
-  // 注意: patchright 的 exports 不暴露 cli.js,不能 require.resolve,走 npx
-  // Linux 需 --with-deps 自动安装 Chromium 运行所需系统库 (libnss3 等)，否则浏览器无法启动
-  const pwArgs = process.platform === 'linux'
-    ? ['install', '--with-deps', 'chromium']
-    : ['install', 'chromium'];
-  run(NPX, ['patchright', ...pwArgs], ROOT);
+  installChromium();
 
   step('[3/5] 构建浏览器 MCP');
   run(NPM, ['run', 'build'], ROOT);
@@ -139,10 +159,7 @@ function cmdUpdate() {
   run(NPM, ['install'], DB_DIR);
 
   step('[3/4] 校验 Patchright Chromium (已存在则跳过下载)');
-  const pwArgs = process.platform === 'linux'
-    ? ['install', '--with-deps', 'chromium']
-    : ['install', 'chromium'];
-  run(NPX, ['patchright', ...pwArgs], ROOT);
+  installChromium();
 
   // ── 构建 ──
   step('[4/4] 重新构建');
