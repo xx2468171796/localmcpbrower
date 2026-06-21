@@ -11,7 +11,12 @@ if (STDIO) {
   console.info = (...a: unknown[]) => console.error(...a);
 }
 
-import 'dotenv/config';
+import dotenv from 'dotenv';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
+// 从本文件所在目录定位 .env(dist/server.js → ../.env):stdio 启动时 cwd 常不是本目录,
+// 不能靠 dotenv 默认从 cwd 找,否则预设/默认库全读不到(配了等于没配)。
+dotenv.config({ path: resolve(dirname(fileURLToPath(import.meta.url)), '../.env') });
 import express from 'express';
 import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
