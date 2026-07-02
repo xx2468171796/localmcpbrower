@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Claude Code MCP - 跨平台命令行管理工具 (v2.0.0)
+ * Claude Code MCP - 跨平台命令行管理工具 (v2.1.0)
  * ============================================================
  * 单一入口，在 macOS / Linux / Windows 上行为一致。
  * 纯 Node 实现，无第三方依赖 (ESM)。
@@ -41,34 +41,74 @@ function log(msg)  { console.log(msg); }
 function step(msg) { console.log(`\n── ${msg}`); }
 function fail(msg) { console.error(`[✗] ${msg}`); process.exit(1); }
 
-function run(cmd, args, cwd) {
+function run(cmd, args, cwd, env) {
   log(`  $ ${cmd} ${args.join(' ')}${cwd ? `   (cwd: ${cwd})` : ''}`);
   // Windows + shell:true 时，cmd.exe 会按空格拆分命令；为含空格的路径加引号
   // (修复 Node.js 安装在 "C:\Program Files\nodejs" 时 install 失败的问题)
   const q = (s) => (IS_WIN && typeof s === 'string' && /\s/.test(s) && !s.startsWith('"')) ? `"${s}"` : s;
-  const res = spawnSync(IS_WIN ? q(cmd) : cmd, IS_WIN ? args.map(q) : args, { cwd: cwd || ROOT, stdio: 'inherit', shell: IS_WIN });
+  const res = spawnSync(IS_WIN ? q(cmd) : cmd, IS_WIN ? args.map(q) : args, { cwd: cwd || ROOT, stdio: 'inherit', shell: IS_WIN, env: env ? { ...process.env, ...env } : process.env });
   if (res.status !== 0) {
     fail(`命令失败: ${cmd} ${args.join(' ')} (退出码 ${res.status})`);
   }
 }
 
 // 非致命版 run:失败只返回 false,不中止整个流程(用于"可降级/可后补"的步骤)
-function runSoft(cmd, args, cwd) {
+function runSoft(cmd, args, cwd, env) {
   log(`  $ ${cmd} ${args.join(' ')}${cwd ? `   (cwd: ${cwd})` : ''}`);
   const q = (s) => (IS_WIN && typeof s === 'string' && /\s/.test(s) && !s.startsWith('"')) ? `"${s}"` : s;
-  const res = spawnSync(IS_WIN ? q(cmd) : cmd, IS_WIN ? args.map(q) : args, { cwd: cwd || ROOT, stdio: 'inherit', shell: IS_WIN });
+  const res = spawnSync(IS_WIN ? q(cmd) : cmd, IS_WIN ? args.map(q) : args, { cwd: cwd || ROOT, stdio: 'inherit', shell: IS_WIN, env: env ? { ...process.env, ...env } : process.env });
   return res.status === 0;
+}
+
+// ── 国内网络适配 ──────────────────────────────────────────
+// npm 官方源在国内常被干扰(SSL 报错/中途断流)。策略:
+//   1. NPM_REGISTRY 环境变量显式指定 → 直接用它
+//   2. 5 秒探测官方源,不通 → 自动切 npmmirror 镜像
+//   3. 官方源探测通过但 install 仍失败 → 再用镜像重试一次(探测过了下载也可能断)
+// Chromium 二进制同理,走 PLAYWRIGHT_DOWNLOAD_HOST 的 npmmirror 镜像。
+const MIRROR_REGISTRY = 'https://registry.npmmirror.com';
+const MIRROR_PW_HOST = 'https://cdn.npmmirror.com/binaries/playwright';
+
+async function detectRegistry() {
+  if (process.env.NPM_REGISTRY) {
+    log(`  [✓] 使用 NPM_REGISTRY 指定源: ${process.env.NPM_REGISTRY}`);
+    return process.env.NPM_REGISTRY;
+  }
+  try {
+    await fetch('https://registry.npmjs.org/-/ping', { signal: AbortSignal.timeout(5000) });
+    return null; // 官方源可用,不加 --registry
+  } catch {
+    log(`  ⚠ npm 官方源不可达,自动切换镜像: ${MIRROR_REGISTRY}`);
+    return MIRROR_REGISTRY;
+  }
+}
+
+function npmInstall(cwd, registry) {
+  const args = registry ? ['install', `--registry=${registry}`] : ['install'];
+  if (runSoft(NPM, args, cwd)) return;
+  if (!registry) {
+    log('  ⚠ 官方源安装失败,改用 npmmirror 镜像重试');
+    run(NPM, ['install', `--registry=${MIRROR_REGISTRY}`], cwd);
+  } else {
+    fail(`npm install 失败 (cwd: ${cwd})`);
+  }
 }
 
 // 安装 Patchright Chromium。关键:Linux 的 --with-deps 用包管理器装系统库(libnss3 等)需要 root;
 // 非 root(尤其 AI 的非 tty shell)用 --with-deps 会卡在 sudo 输密码、永久挂起 → 这里降级:
 //   非 root 只装 chromium 二进制(不卡、不要 sudo),系统库留给人工一条 sudo 命令补。
 // 整步非致命:就算没成也不中止,后续数据库 MCP / 注册 / 配置照常完成。
-function installChromium() {
+function installChromium(preferMirror) {
   const isLinux = process.platform === 'linux';
   const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
   const pwArgs = (isLinux && isRoot) ? ['install', '--with-deps', 'chromium'] : ['install', 'chromium'];
-  const ok = runSoft(NPX, ['patchright', ...pwArgs], ROOT);
+  // 用户已显式设置 PLAYWRIGHT_DOWNLOAD_HOST 则尊重,不覆盖
+  const mirrorEnv = process.env.PLAYWRIGHT_DOWNLOAD_HOST ? undefined : { PLAYWRIGHT_DOWNLOAD_HOST: MIRROR_PW_HOST };
+  let ok = runSoft(NPX, ['patchright', ...pwArgs], ROOT, (preferMirror && mirrorEnv) ? mirrorEnv : undefined);
+  if (!ok && !preferMirror && mirrorEnv) {
+    log('  ⚠ Chromium 官方源下载失败,改用 npmmirror 镜像重试');
+    ok = runSoft(NPX, ['patchright', ...pwArgs], ROOT, mirrorEnv);
+  }
   if (isLinux && !isRoot) {
     log('  ⚠ 未以 root 运行,已跳过系统库(--with-deps),避免卡在 sudo。');
     log('    浏览器要能真正启动,请在你自己的终端手动跑一次(会要 sudo 密码):');
@@ -78,7 +118,7 @@ function installChromium() {
 }
 
 // ── install ──────────────────────────────────────────────
-function cmdInstall() {
+async function cmdInstall() {
   log('============================================================');
   log('  Claude Code MCP - 安装 (浏览器 + 数据库)');
   log('============================================================');
@@ -86,18 +126,19 @@ function cmdInstall() {
   const major = parseInt(process.versions.node.split('.')[0], 10);
   if (major < 20) fail(`Node.js 版本过低 (v${process.versions.node})，需要 >= 20`);
   log(`[✓] Node.js v${process.versions.node}  平台: ${process.platform}`);
+  const registry = await detectRegistry();
 
   step('[1/5] 安装浏览器 MCP 依赖');
-  run(NPM, ['install'], ROOT);
+  npmInstall(ROOT, registry);
 
   step('[2/5] 安装 Patchright Chromium');
-  installChromium();
+  installChromium(!!registry);
 
   step('[3/5] 构建浏览器 MCP');
   run(NPM, ['run', 'build'], ROOT);
 
   step('[4/5] 安装数据库 MCP 依赖');
-  run(NPM, ['install'], DB_DIR);
+  npmInstall(DB_DIR, registry);
 
   step('[5/5] 构建数据库 MCP');
   run(NPM, ['run', 'build'], DB_DIR);
@@ -115,7 +156,7 @@ function runCapture(cmd, args, cwd) {
   return { status: res.status, stdout: (res.stdout || '').trim(), stderr: (res.stderr || '').trim() };
 }
 
-function cmdUpdate() {
+async function cmdUpdate() {
   log('============================================================');
   log('  Claude Code MCP - 更新 (拉取仓库 + 重装依赖 + 重新构建)');
   log('============================================================');
@@ -155,11 +196,12 @@ function cmdUpdate() {
 
   // ── 依赖 + 浏览器 ──
   step('[2/4] 更新依赖 (浏览器 + 数据库)');
-  run(NPM, ['install'], ROOT);
-  run(NPM, ['install'], DB_DIR);
+  const registry = await detectRegistry();
+  npmInstall(ROOT, registry);
+  npmInstall(DB_DIR, registry);
 
   step('[3/4] 校验 Patchright Chromium (已存在则跳过下载)');
-  installChromium();
+  installChromium(!!registry);
 
   // ── 构建 ──
   step('[4/4] 重新构建');
@@ -267,7 +309,7 @@ function cmdConfig() {
 
 // ── help ─────────────────────────────────────────────────
 function cmdHelp() {
-  log(`Claude Code MCP - 跨平台管理工具 (v2.0.0)
+  log(`Claude Code MCP - 跨平台管理工具 (v2.1.0)
 
 用法:  node mcp.mjs <命令> [参数]
 
@@ -296,8 +338,8 @@ function cmdHelp() {
 // ── 入口 ─────────────────────────────────────────────────
 const [cmd, arg] = process.argv.slice(2);
 switch (cmd) {
-  case 'install':           cmdInstall(); break;
-  case 'update':            cmdUpdate(); break;
+  case 'install':           await cmdInstall(); break;
+  case 'update':            await cmdUpdate(); break;
   case 'start':             cmdStart(arg); break;
   case 'stop':              cmdStop(arg); break;
   case 'restart':           cmdRestart(arg); break;

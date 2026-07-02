@@ -1,6 +1,6 @@
 {
   "name": "claudemcp-database",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Claude Code MCP database server — PostgreSQL & MySQL over stdio / Streamable HTTP",
   "type": "module",
   "main": "dist/server.js",
@@ -15,17 +15,17 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "dotenv": "^17.2.3",
+    "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "mysql2": "^3.22.3",
-    "pg": "^8.21.0",
-    "zod": "^3.25.76"
+    "mysql2": "^3.22.5",
+    "pg": "^8.22.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/node": "^24.12.4",
     "@types/pg": "^8.20.0",
     "tsx": "^4.22.2",
-    "typescript": "^5.9.3"
+    "typescript": "^6.0.3"
   }
 }

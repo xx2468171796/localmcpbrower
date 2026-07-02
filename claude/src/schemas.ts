@@ -64,14 +64,14 @@ export const SnapshotSchema = z.object({
 
 /** 站点 URL 发现 */
 export const DiscoverUrlsSchema = z.object({
-  url: z.string().url().describe('站点根/入口 URL，会从此页面及其 sitemap/robots.txt 发现地址'),
+  url: z.url().describe('站点根/入口 URL，会从此页面及其 sitemap/robots.txt 发现地址'),
   maxUrls: z.number().int().positive().default(300).describe('最多返回的 URL 数量，默认 300'),
   sameDomainOnly: z.boolean().default(true).describe('仅保留与入口 URL 同域名的地址，默认 true'),
   includeSitemap: z.boolean().default(true).describe('是否解析 robots.txt 与 sitemap.xml 发现更多地址，默认 true')
 });
 
 export const ExtractArticleSchema = z.object({
-  url: z.string().url().optional().describe('可选，提供则先跳转到该网址再提取，不填则提取当前页面')
+  url: z.url().optional().describe('可选，提供则先跳转到该网址再提取，不填则提取当前页面')
 });
 
 export const SelectOptionSchema = z.object({
@@ -200,7 +200,7 @@ export const ExtractDataSchema = z.object({
 
 /** 批量抓取多个 URL */
 export const BatchFetchSchema = z.object({
-  urls: z.array(z.string().url()).min(1).max(20).describe('要抓取的 URL 列表，最多 20 个'),
+  urls: z.array(z.url()).min(1).max(20).describe('要抓取的 URL 列表，最多 20 个'),
   waitFor: z.string().optional().describe('每个页面等待出现的选择器'),
   extractSelector: z.string().optional().describe('要提取内容的选择器，不填则返回 title+url'),
   delay: z.number().int().min(0).max(5000).default(500).describe('每次请求间隔毫秒，防止被封')
@@ -208,7 +208,7 @@ export const BatchFetchSchema = z.object({
 
 /** 分页爬取 */
 export const CrawlPagesSchema = z.object({
-  startUrl: z.string().url().describe('起始 URL'),
+  startUrl: z.url().describe('起始 URL'),
   nextPageSelector: z.string().describe('下一页按钮/链接的选择器'),
   itemSelector: z.string().describe('每条数据的容器选择器'),
   fields: z.array(z.object({

@@ -38,7 +38,17 @@ import {
 
 const PORT = parseInt(process.env['PORT'] ?? '3211', 10);
 const startTime = Date.now();
-const SERVER_VERSION = '2.0.0';
+const SERVER_VERSION = '2.1.0';
+
+// 服务级使用说明:支持 instructions 的 MCP 客户端(Claude Code / Codex 等)会把这段
+// 注入 AI 上下文,让 AI 不读文档也知道工具间的正确配合方式。保持精炼,别堆细节。
+const SERVER_INSTRUCTIONS = `本地浏览器操控 MCP。工具配合要点:
+- 爬取标准流程:set_block_rules(屏蔽图片/广告,提速 3-5 倍)→ navigate → 动态页先 wait_for_selector → extract_data / extract_links。
+- 了解页面结构首选 snapshot(无障碍树,带 ref 编号,token 极低);take_screenshot 仅用于视觉验证。
+- 操作元素优先传 snapshot 返回的 ref(免写 CSS 选择器);页面重渲染后 ref 失效,交互失败就重新 snapshot。
+- 批量场景:多个不同 URL 用 batch_fetch,自动翻页用 crawl_pages,爬大站前先 discover_urls 探明地址。
+- 新闻/博客/文档类页面用 extract_article 直接拿干净 Markdown 正文。
+- 填 2 个以上表单字段用 fill_form;click/type 内置三级 fallback,仍失败改 execute_js 直接操作 DOM。`;
 
 // Session management
 const SESSION_TTL = 30 * 60 * 1000;
@@ -79,7 +89,10 @@ const ResultEnvelope = {
 };
 
 function createMcpServer(): McpServer {
-  const server = new McpServer({ name: 'claudemcp-browser', version: SERVER_VERSION });
+  const server = new McpServer(
+    { name: 'claudemcp-browser', title: '本地浏览器操控', version: SERVER_VERSION },
+    { instructions: SERVER_INSTRUCTIONS }
+  );
 
   // === Navigation ===
   server.registerTool('navigate', {

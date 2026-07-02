@@ -16,7 +16,8 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 // 从本文件所在目录定位 .env(dist/server.js → ../.env):stdio 启动时 cwd 常不是本目录,
 // 不能靠 dotenv 默认从 cwd 找,否则预设/默认库全读不到(配了等于没配)。
-dotenv.config({ path: resolve(dirname(fileURLToPath(import.meta.url)), '../.env') });
+// quiet: 关掉 dotenv 17 往 stderr 打的注入日志/推广 tip,保持日志干净
+dotenv.config({ path: resolve(dirname(fileURLToPath(import.meta.url)), '../.env'), quiet: true });
 import express from 'express';
 import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -35,6 +36,14 @@ import type { DatabaseType } from './types.js';
 
 const PORT = parseInt(process.env['PORT'] ?? '3212', 10);
 const startTime = Date.now();
+const SERVER_VERSION = '2.1.0';
+
+// 服务级使用说明:支持 instructions 的 MCP 客户端会注入 AI 上下文,免读文档
+const SERVER_INSTRUCTIONS = `数据库操作 MCP(PostgreSQL / MySQL)。工具配合要点:
+- query 强制只读(SELECT);INSERT/UPDATE/DELETE 等写操作必须用 execute,执行前须确认。
+- 未连接时:先 list_presets 查看 .env 预设库 → switch_db 按别名切换;预设之外的库才用 connect 手填连接信息。
+- 摸库结构:list_tables → describe_table(列)/ table_indexes(索引)/ table_relations(外键关系)。
+- 慢查询先 explain_query 看执行计划;大结果集导出用 export_csv。`;
 
 async function autoConnect(): Promise<boolean> {
   const dbType = process.env['DB_TYPE'] as DatabaseType | undefined;
@@ -70,7 +79,10 @@ const CONN: ToolAnnotations = { readOnlyHint: false, openWorldHint: false };
 const WRITE: ToolAnnotations = { readOnlyHint: false, destructiveHint: true, openWorldHint: false };
 
 function createMcpServer(): McpServer {
-  const server = new McpServer({ name: 'claudemcp-database', version: '2.0.0' });
+  const server = new McpServer(
+    { name: 'claudemcp-database', title: '数据库操作', version: SERVER_VERSION },
+    { instructions: SERVER_INSTRUCTIONS }
+  );
 
   // === Connection ===
   server.registerTool('connect', {
@@ -381,7 +393,7 @@ async function runHttp(): Promise<void> {
   const app = createApp();
   app.listen(PORT, '0.0.0.0', async () => {
     console.log('========================================');
-    console.log('  MCP Database Bridge (Claude Code) v2.0.0');
+    console.log(`  MCP Database Bridge (Claude Code) v${SERVER_VERSION}`);
     console.log(`  http://0.0.0.0:${PORT}`);
     console.log(`  MCP: http://0.0.0.0:${PORT}/mcp`);
     console.log('========================================');
