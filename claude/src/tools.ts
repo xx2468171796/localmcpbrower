@@ -529,6 +529,9 @@ export async function newTab(input: unknown): Promise<ToolResult<{ index: number
     const { url } = (input as { url?: string }) ?? {};
     const context = await getBrowserManager().getContext();
     const page = await context.newPage();
+    // 新标签页创建后立即设为当前活动页，符合"新建标签页自动获得焦点"的直觉；
+    // 放在 goto 之前，这样即便跳转超时，后续操作仍作用于这个新标签页而非旧的。
+    getBrowserManager().setActivePage(page);
     if (url) await page.goto(url, { waitUntil: 'commit', timeout: 30000 });
     const pages = context.pages();
     return { success: true, data: { index: pages.indexOf(page), url: page.url() } };

@@ -142,6 +142,18 @@ class BrowserManager {
       }
     );
 
+    // patchright 为规避 Console.enable 检测泄漏，彻底禁用了 CDP Console 域，
+    // 导致 page.on('console') 收不到页面脚本自己的 console.log/warn/error。
+    // 用 exposeBinding 搭一条不经过 CDP Console 域的旁路：页面内 console 方法被
+    // 劫持后直接把日志转发回 Node 端，绕开被禁用的通道。exposeBinding 与
+    // addInitScript 一样对该 context 下所有现有/后续页面自动生效。
+    await this.context.exposeBinding('__mcpConsoleLog', (_source, type: string, text: string) => {
+      this.consoleLogs.push({ type: type as ConsoleLogEntry['type'], text, timestamp: Date.now() });
+      if (this.consoleLogs.length > 2000) {
+        this.consoleLogs = this.consoleLogs.slice(-1000);
+      }
+    });
+
     // 反爬虫指纹伪装：在每个页面执行前注入，掩盖常见的自动化检测向量
     await this.context.addInitScript(() => {
       // 1. navigator.webdriver -> undefined
@@ -171,6 +183,31 @@ class BrowserManager {
         params && params.name === 'notifications'
           ? Promise.resolve({ state: Notification.permission } as PermissionStatus)
           : origQuery(params);
+      // 6. console 劫持:转发给 Node 端(见上方 exposeBinding),同时保留原始行为。
+      // patchright 对同一文档会执行两遍 addInitScript(推测是其绕开 Runtime.enable
+      // 的双重注入机制所致),不加幂等标记会把 console 包两层、每条日志上报两次。
+      try {
+        const w = window as unknown as {
+          __mcpConsoleLog?: (type: string, text: string) => void;
+          __mcpConsolePatched?: boolean;
+        };
+        if (!w.__mcpConsolePatched) {
+          w.__mcpConsolePatched = true;
+          (['log', 'info', 'warn', 'error', 'debug'] as const).forEach((m) => {
+            const orig = console[m].bind(console);
+            console[m] = (...args: unknown[]) => {
+              try {
+                const text = args.map((a) => {
+                  if (typeof a === 'string') return a;
+                  try { return JSON.stringify(a); } catch { return String(a); }
+                }).join(' ');
+                w.__mcpConsoleLog?.(m, text);
+              } catch { /* noop */ }
+              orig(...args);
+            };
+          });
+        }
+      } catch { /* noop */ }
     });
 
     // 抓 chromium 子进程 pid — Playwright 内部 API 但多年稳定；失败不影响主流程
