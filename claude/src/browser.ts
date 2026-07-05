@@ -116,6 +116,10 @@ class BrowserManager {
       path.resolve(this.config.userDataDir),
       {
         headless: this.config.headless,
+        // patchright 在无显式 channel 时，即使 headless:false 也可能悄悄选中
+        // chrome-headless-shell（阉割掉窗口渲染的专用二进制），导致有头模式实际不弹窗。
+        // 显式指定 channel 强制走完整版 chrome.exe，真正弹出可见窗口。
+        ...(this.config.headless ? {} : { channel: 'chromium' as const }),
         slowMo: this.config.slowMo,
         viewport: null,
         args: launchArgs,
