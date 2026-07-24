@@ -4,7 +4,9 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
+import type { Frame, Page } from 'patchright';
 import { getBrowserManager } from './browser.js';
+import { SNAPSHOT_WALKER_FN, EGO_HELPER_SRC } from './injected.js';
 import {
   NavigateSchema, ClickSchema, TypeSchema, ScreenshotSchema,
   ExecuteJsSchema, ScrollSchema, WaitForSelectorSchema,
@@ -14,7 +16,8 @@ import {
   PageReportSchema, SetViewportSchema,
   ExtractLinksSchema, ExtractDataSchema, BatchFetchSchema,
   CrawlPagesSchema, WaitAndExtractSchema, SetBlockRulesSchema,
-  SnapshotSchema, ExtractArticleSchema, DiscoverUrlsSchema
+  SnapshotSchema, ExtractArticleSchema, DiscoverUrlsSchema,
+  RunScriptSchema, SpaceNameSchema
 } from './schemas.js';
 import { Readability } from '@mozilla/readability';
 import { Defuddle } from 'defuddle/node';
@@ -71,17 +74,42 @@ function resolveTarget(selector?: string, ref?: string): { ok: true; selector: s
   return { ok: false, error: 'selector 与 ref 必须提供其一' };
 }
 
-/** 当目标来自 ref 时，校验该 ref 仍存在于 DOM；不存在则返回友好提示 */
-async function checkRefAlive(
-  page: import('patchright').Page,
+/**
+ * 定位 selector 所在的 frame(主框架或任意 iframe)。
+ * 单框架页面直接返回主框架,零额外开销;多框架时逐个扫描,首个命中的返回。
+ * 都没命中则返回 null(交由调用方回退主框架报错)。
+ */
+async function resolveFrame(page: Page, selector: string): Promise<Frame | null> {
+  const frames = page.frames();
+  if (frames.length <= 1) {
+    const c = await page.mainFrame().locator(selector).count().catch(() => 0);
+    return c > 0 ? page.mainFrame() : null;
+  }
+  for (const frame of frames) {
+    try {
+      if (await frame.locator(selector).count() > 0) return frame;
+    } catch { /* 跨域 frame 偶发报错,跳过 */ }
+  }
+  return null;
+}
+
+/**
+ * 解析目标 frame:优先用 selector 所在 frame,找不到则回退主框架。
+ * 当目标来自 ref 且全页(含 iframe)都找不到时返回友好提示,让 AI 重新 snapshot。
+ */
+async function resolveTargetFrame(
+  page: Page,
   selector: string,
   fromRef: boolean,
   ref?: string,
-): Promise<{ ok: true } | { ok: false; error: string }> {
-  if (!fromRef) return { ok: true };
-  const count = await page.locator(selector).count().catch(() => 0);
-  if (count > 0) return { ok: true };
-  return { ok: false, error: `ref ${ref ?? ''} 未找到(页面可能已重新渲染),请重新调用 snapshot 获取最新 ref` };
+): Promise<{ ok: true; frame: Frame } | { ok: false; error: string }> {
+  const frame = await resolveFrame(page, selector);
+  if (frame) return { ok: true, frame };
+  if (fromRef) {
+    return { ok: false, error: `ref ${ref ?? ''} 未找到(页面可能已重新渲染),请重新调用 snapshot 获取最新 ref` };
+  }
+  // 非 ref(裸 CSS 选择器):可能是尚未出现的元素,回退主框架,交由后续等待/报错逻辑处理
+  return { ok: true, frame: page.mainFrame() };
 }
 
 export async function click(input: unknown): Promise<ToolResult<ClickResult>> {
@@ -92,19 +120,20 @@ export async function click(input: unknown): Promise<ToolResult<ClickResult>> {
     if (!target.ok) return { success: false, error: target.error };
     const selector = target.selector;
     const page = await getBrowserManager().getPage();
-    const refCheck = await checkRefAlive(page, selector, target.fromRef, parsed.data.ref);
-    if (!refCheck.ok) return { success: false, error: refCheck.error };
+    const tf = await resolveTargetFrame(page, selector, target.fromRef, parsed.data.ref);
+    if (!tf.ok) return { success: false, error: tf.error };
+    const frame = tf.frame;
     try {
       // 优先尝试正常点击（等待可见）
-      await page.waitForSelector(selector, { timeout: 3000, state: 'visible' });
-      await page.click(selector, { timeout: 5000, noWaitAfter: true });
+      await frame.waitForSelector(selector, { timeout: 3000, state: 'visible' });
+      await frame.click(selector, { timeout: 5000, noWaitAfter: true });
     } catch {
       // 元素隐藏或导航超时时，尝试 force 点击
       try {
-        await page.click(selector, { force: true, timeout: 5000, noWaitAfter: true });
+        await frame.click(selector, { force: true, timeout: 5000, noWaitAfter: true });
       } catch {
         // 最终 fallback: 通过 JS 直接点击
-        await page.evaluate(`(function() {
+        await frame.evaluate(`(function() {
           var sel = ${JSON.stringify(selector)};
           var el = document.querySelector(sel);
           if (el) el.click();
@@ -127,19 +156,20 @@ export async function type(input: unknown): Promise<ToolResult<TypeResult>> {
     const selector = target.selector;
     const { text } = parsed.data;
     const page = await getBrowserManager().getPage();
-    const refCheck = await checkRefAlive(page, selector, target.fromRef, parsed.data.ref);
-    if (!refCheck.ok) return { success: false, error: refCheck.error };
+    const tf = await resolveTargetFrame(page, selector, target.fromRef, parsed.data.ref);
+    if (!tf.ok) return { success: false, error: tf.error };
+    const frame = tf.frame;
     try {
       // 优先尝试正常填充（等待可见）
-      await page.waitForSelector(selector, { timeout: 3000, state: 'visible' });
-      await page.fill(selector, text, { timeout: 5000 });
+      await frame.waitForSelector(selector, { timeout: 3000, state: 'visible' });
+      await frame.fill(selector, text, { timeout: 5000 });
     } catch {
       // 元素隐藏时，尝试 force 填充
       try {
-        await page.fill(selector, text, { force: true, timeout: 5000 });
+        await frame.fill(selector, text, { force: true, timeout: 5000 });
       } catch {
         // 最终 fallback: 通过 JS 直接设置值
-        await page.evaluate(`(function() {
+        await frame.evaluate(`(function() {
           var sel = ${JSON.stringify(selector)};
           var el = document.querySelector(sel);
           if (!el) throw new Error('元素未找到: ' + sel);
@@ -284,9 +314,9 @@ export async function hover(input: unknown): Promise<ToolResult<{ hovered: boole
     if (!target.ok) return { success: false, error: target.error };
     const selector = target.selector;
     const page = await getBrowserManager().getPage();
-    const refCheck = await checkRefAlive(page, selector, target.fromRef, parsed.data.ref);
-    if (!refCheck.ok) return { success: false, error: refCheck.error };
-    await page.hover(selector, { timeout: 5000 });
+    const tf = await resolveTargetFrame(page, selector, target.fromRef, parsed.data.ref);
+    if (!tf.ok) return { success: false, error: tf.error };
+    await tf.frame.hover(selector, { timeout: 5000 });
     return { success: true, data: { hovered: true } };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
@@ -852,120 +882,44 @@ export async function snapshot(input: unknown): Promise<ToolResult<{ snapshot: s
     const page = await getBrowserManager().getPage();
     const cap = maxChars ?? 12000;
 
-    const result = await page.evaluate(`(function() {
-      var interactiveOnly = ${interactiveOnly};
-      var cap = ${cap};
-      var INTERACTIVE_ROLES = ['button','link','checkbox','menuitem','tab','switch','radio','option','treeitem'];
-      var lines = [];
-      var refCount = 0;
-      var truncated = false;
-      var totalLen = 0;
+    // 主框架 + 所有 iframe 逐个快照:ref 编号跨 frame 全局连续,合并输出(#2 跨 iframe 支持)。
+    const mainFrame = page.mainFrame();
+    let running = 0;
+    let combinedTruncated = false;
+    const iframeSections: string[] = [];
 
-      function isVisible(el) {
-        if (!(el instanceof Element)) return false;
-        var style = window.getComputedStyle(el);
-        if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity) === 0) return false;
-        var rect = el.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0;
-      }
-      function isInteractive(el) {
-        var tag = el.tagName.toLowerCase();
-        if (['a','button','input','select','textarea'].indexOf(tag) !== -1) return true;
-        var role = el.getAttribute('role');
-        if (role && INTERACTIVE_ROLES.indexOf(role) !== -1) return true;
-        if (el.hasAttribute('onclick')) return true;
-        // 框架无语义可点击元素：cursor:pointer / tabindex>=0
-        try {
-          if (window.getComputedStyle(el).cursor === 'pointer') return true;
-        } catch (e) { /* noop */ }
-        if (el.hasAttribute('tabindex')) {
-          var ti = parseInt(el.getAttribute('tabindex'), 10);
-          if (!isNaN(ti) && ti >= 0) return true;
-        }
-        return false;
-      }
-      function roleOf(el) {
-        var role = el.getAttribute('role');
-        if (role) return role;
-        var tag = el.tagName.toLowerCase();
-        if (tag === 'a') return 'link';
-        if (tag === 'button') return 'button';
-        if (tag === 'select') return 'combobox';
-        if (tag === 'textarea') return 'textbox';
-        if (tag === 'input') {
-          var t = (el.getAttribute('type') || 'text').toLowerCase();
-          if (t === 'checkbox') return 'checkbox';
-          if (t === 'radio') return 'radio';
-          if (t === 'submit' || t === 'button') return 'button';
-          return 'textbox';
-        }
-        if (/^h[1-6]$/.test(tag)) return 'heading';
-        return '';
-      }
-      function nameOf(el) {
-        var n = el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('title') || el.getAttribute('alt') || '';
-        if (!n) {
-          if (el.tagName.toLowerCase() === 'input' && el.value) n = el.value;
-          else n = (el.textContent || '').replace(/\\s+/g, ' ').trim();
-        }
-        if (n.length > 80) n = n.slice(0, 80) + '…';
-        return n.replace(/"/g, "'");
-      }
-      function emit(depth, txt) {
-        if (totalLen >= cap) { truncated = true; return; }
-        var line = new Array(depth + 1).join('  ') + txt;
-        lines.push(line);
-        totalLen += line.length + 1;
-      }
-      function walk(node, depth) {
-        if (truncated || depth > 25) return;
-        for (var i = 0; i < node.children.length; i++) {
-          if (truncated) return;
-          var el = node.children[i];
-          var tag = el.tagName.toLowerCase();
-          if (['script','style','noscript','svg','head','meta','link'].indexOf(tag) !== -1) continue;
-          if (!isVisible(el)) continue;
-          var meaningful = isInteractive(el) || /^h[1-6]$/.test(tag) || el.hasAttribute('role');
-          var role = roleOf(el);
-          if (meaningful && role) {
-            var refStr = '';
-            if (isInteractive(el)) {
-              refCount++;
-              var ref = 'e' + refCount;
-              el.setAttribute('data-mcp-ref', ref);
-              refStr = ' [ref=' + ref + ']';
-            }
-            if (!interactiveOnly || isInteractive(el)) {
-              emit(depth, role + ' "' + nameOf(el) + '"' + refStr);
-            }
-            walk(el, depth + 1);
-          } else if (!interactiveOnly) {
-            // 叶子可见文本节点
-            var ownText = '';
-            for (var j = 0; j < el.childNodes.length; j++) {
-              var cn = el.childNodes[j];
-              if (cn.nodeType === 3) ownText += cn.textContent;
-            }
-            ownText = ownText.replace(/\\s+/g, ' ').trim();
-            if (ownText && el.children.length === 0) {
-              if (ownText.length > 120) ownText = ownText.slice(0, 120) + '…';
-              emit(depth, 'text "' + ownText.replace(/"/g, "'") + '"');
-            } else {
-              walk(el, depth);
-            }
-          } else {
-            walk(el, depth);
-          }
-        }
-      }
-      // 清除上一次快照的 ref 标记
-      var prev = document.querySelectorAll('[data-mcp-ref]');
-      for (var k = 0; k < prev.length; k++) prev[k].removeAttribute('data-mcp-ref');
-      walk(document.body, 0);
-      return { snapshot: lines.join('\\n'), refCount: refCount, truncated: truncated };
-    })()`);
+    const mainRes = await mainFrame.evaluate(
+      `(${SNAPSHOT_WALKER_FN})(${interactiveOnly}, ${cap}, ${running})`
+    ) as { snapshot: string; refCount: number; truncated: boolean };
+    running = mainRes.refCount;
+    combinedTruncated = combinedTruncated || mainRes.truncated;
+    const mainSnap = mainRes.snapshot;
 
-    const r = result as { snapshot: string; refCount: number; truncated: boolean };
+    for (const frame of page.frames()) {
+      if (frame === mainFrame) continue;
+      if (combinedTruncated) break;
+      try {
+        const used = mainSnap.length + iframeSections.join('\n').length;
+        const remaining = cap - used;
+        if (remaining < 200) { combinedTruncated = true; break; }
+        const fr = await frame.evaluate(
+          `(${SNAPSHOT_WALKER_FN})(${interactiveOnly}, ${remaining}, ${running})`
+        ) as { snapshot: string; refCount: number; truncated: boolean };
+        if (fr.snapshot && fr.snapshot.trim()) {
+          const furl = (frame.url() || '(about:blank)').slice(0, 100).replace(/"/g, "'");
+          const indented = fr.snapshot.split('\n').map((l) => '  ' + l).join('\n');
+          iframeSections.push(`iframe "${furl}"\n${indented}`);
+          running = fr.refCount;
+          combinedTruncated = combinedTruncated || fr.truncated;
+        }
+      } catch { /* 跨域/detached frame 无法 evaluate,静默跳过 */ }
+    }
+
+    const r = {
+      snapshot: iframeSections.length ? `${mainSnap}\n${iframeSections.join('\n')}` : mainSnap,
+      refCount: running,
+      truncated: combinedTruncated,
+    };
     let deepLines: string[] = [];
     let deepRefCount = 0;
 
@@ -1207,6 +1161,84 @@ export async function discoverUrls(input: unknown): Promise<ToolResult<{
     const truncated = merged.length > maxUrls;
     const urls = merged.slice(0, maxUrls);
     return { success: true, data: { urls, total: urls.length, fromSitemap, fromLinks, truncated } };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+// ============================================================
+// run_script:一次跑完(对齐 ego-lite 的代码化执行模型)
+// ============================================================
+
+/**
+ * 在页面上下文里一次性执行一段脚本,脚本内可直接调用 __ego.* 助手
+ * (snapshot/click/fill/waitFor/text/attr/... 见 injected.ts),把 snapshot→
+ * 操作→等待→读结果压进「一次 MCP 往返」,大幅省 token 与延迟。
+ * 支持顶层 await 与顶层 return;返回值 JSON 序列化后回传。
+ */
+export async function runScript(input: unknown): Promise<ToolResult<{ result: unknown }>> {
+  try {
+    const parsed = RunScriptSchema.safeParse(input);
+    if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
+    const { script } = parsed.data;
+    const page = await getBrowserManager().getPage();
+    // 前置幂等注入 __ego(即便首个 about:blank 页尚未经 addInitScript 也保证可用),
+    // 再把用户脚本包进 async IIFE 让顶层 await/return 合法。
+    const wrapped = `(async () => {\n${EGO_HELPER_SRC}\nreturn await (async () => {\n${script}\n})();\n})()`;
+    const result = await page.evaluate(wrapped);
+    return { success: true, data: { result } };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+// ============================================================
+// Task Spaces:并行隔离工作区(对齐 ego-lite 的 Spaces)
+// ============================================================
+
+/** 列出所有 space 及状态(当前活跃 / 是否存活 / 当前 URL) */
+export async function spaceList(): Promise<ToolResult<{
+  active: string; spaces: { name: string; active: boolean; alive: boolean; url: string | null }[];
+}>> {
+  try {
+    const bm = getBrowserManager();
+    return { success: true, data: { active: bm.getActiveSpace(), spaces: bm.listSpaces() } };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** 新建并切换到一个隔离 space(独立 userDataDir → 独立 cookie/登录态) */
+export async function spaceNew(input: unknown): Promise<ToolResult<{ name: string; created: boolean; active: string }>> {
+  try {
+    const parsed = SpaceNameSchema.safeParse(input);
+    if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
+    const res = await getBrowserManager().createSpace(parsed.data.name);
+    return { success: true, data: { ...res, active: getBrowserManager().getActiveSpace() } };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** 切换活跃 space(后续所有工具作用于该 space 的页面) */
+export async function spaceSwitch(input: unknown): Promise<ToolResult<{ name: string; active: string }>> {
+  try {
+    const parsed = SpaceNameSchema.safeParse(input);
+    if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
+    const res = await getBrowserManager().switchSpace(parsed.data.name);
+    return { success: true, data: { ...res, active: getBrowserManager().getActiveSpace() } };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** 关闭并销毁一个 space(default 不可关);关的是当前 space 则自动回落 default */
+export async function spaceClose(input: unknown): Promise<ToolResult<{ closed: boolean; active: string }>> {
+  try {
+    const parsed = SpaceNameSchema.safeParse(input);
+    if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
+    const res = await getBrowserManager().closeSpace(parsed.data.name);
+    return { success: true, data: res };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
   }

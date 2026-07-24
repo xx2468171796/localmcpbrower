@@ -1,13 +1,20 @@
 /**
- * BrowserManager - 跨平台 Playwright 浏览器单例管理器
+ * BrowserManager - 跨平台 Playwright 浏览器管理器(支持 Task Spaces 多隔离工作区)
  * 支持 macOS / Linux (Debian/Ubuntu) / Windows 无头模式
  * Claude Code 版本
+ *
+ * Task Spaces(对齐 ego-lite 的并行隔离工作区):
+ *   - 每个 space = 独立的 persistent context + 独立 userDataDir(cookie/登录态互不污染)
+ *     + 独立 console/network 缓冲。可并行跑多任务或多账号,互不干扰。
+ *   - 默认存在名为 'default' 的 space,行为与旧版单例完全一致;不用多 space 的调用方无感。
+ *   - 所有既有工具都作用于「当前活跃 space」的页面;space_* 工具用于新建/切换/关闭/列举。
  */
 
 import { chromium, type BrowserContext, type Page } from 'patchright';
 import * as path from 'path';
 import * as fs from 'fs';
 import type { ConsoleLogEntry, NetworkRequestEntry, BrowserConfig } from './types.js';
+import { EGO_HELPER_SRC } from './injected.js';
 
 const IS_LINUX = process.platform === 'linux';
 const IS_MAC = process.platform === 'darwin';
@@ -16,6 +23,8 @@ const IS_WIN = process.platform === 'win32';
 // Chrome 版本号 token，统一用于各平台 UA 字符串
 // patchright 1.60 捆绑 Chrome for Testing 148，UA 需与真实内核版本一致，否则指纹自相矛盾
 const CHROME_VERSION = process.env['UA_CHROME_VERSION'] ?? '148.0.0.0';
+
+const DEFAULT_SPACE = 'default';
 
 const DEFAULT_CONFIG: BrowserConfig = {
   // headless 默认开启；Mac 调试时设 HEADLESS=false
@@ -27,20 +36,27 @@ const DEFAULT_CONFIG: BrowserConfig = {
   slowMo: parseInt(process.env['SLOW_MO'] ?? '0', 10)
 };
 
+/** 单个工作区(space)的运行态 —— 一个 space 一份浏览器上下文与独立缓冲 */
+interface Space {
+  name: string;
+  userDataDir: string;
+  context: BrowserContext | null;
+  page: Page | null;
+  consoleLogs: ConsoleLogEntry[];
+  networkRequests: NetworkRequestEntry[];
+  listenedPages: WeakSet<Page>;
+  chromiumPid: number | null;
+}
+
 class BrowserManager {
   private static instance: BrowserManager | null = null;
-  private context: BrowserContext | null = null;
-  private page: Page | null = null;
-  private consoleLogs: ConsoleLogEntry[] = [];
-  private networkRequests: NetworkRequestEntry[] = [];
-  // 已挂过监听器的页面，防止 switch_tab 来回切换时重复挂载导致日志重复
-  private listenedPages = new WeakSet<Page>();
   private config: BrowserConfig;
-  // 当前 chromium 子进程 PID — 用于 stdio 模式退出兜底 SIGKILL，防止孤儿
-  private chromiumPid: number | null = null;
+  private spaces = new Map<string, Space>();
+  private activeSpace = DEFAULT_SPACE;
 
   private constructor(config: BrowserConfig) {
     this.config = config;
+    this.spaces.set(DEFAULT_SPACE, this.newSpaceState(DEFAULT_SPACE, config.userDataDir));
   }
 
   public static getInstance(config: BrowserConfig = DEFAULT_CONFIG): BrowserManager {
@@ -50,19 +66,54 @@ class BrowserManager {
     return BrowserManager.instance;
   }
 
-  private ensureUserDataDir(): void {
-    const dir = path.resolve(this.config.userDataDir);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+  private newSpaceState(name: string, userDataDir: string): Space {
+    return {
+      name,
+      userDataDir,
+      context: null,
+      page: null,
+      consoleLogs: [],
+      networkRequests: [],
+      listenedPages: new WeakSet<Page>(),
+      chromiumPid: null,
+    };
+  }
+
+  /** 当前活跃 space(不存在则回落到 default 并按需重建) */
+  private current(): Space {
+    let sp = this.spaces.get(this.activeSpace);
+    if (!sp) {
+      this.activeSpace = DEFAULT_SPACE;
+      sp = this.spaces.get(DEFAULT_SPACE);
+      if (!sp) {
+        sp = this.newSpaceState(DEFAULT_SPACE, this.config.userDataDir);
+        this.spaces.set(DEFAULT_SPACE, sp);
+      }
+    }
+    return sp;
+  }
+
+  private ensureUserDataDir(dir: string): void {
+    const resolved = path.resolve(dir);
+    if (!fs.existsSync(resolved)) {
+      fs.mkdirSync(resolved, { recursive: true });
     }
   }
 
-  public async getContext(): Promise<BrowserContext> {
-    if (this.context && this.isAlive()) {
-      return this.context;
+  private isSpaceAlive(sp: Space): boolean {
+    try {
+      return sp.context !== null && sp.page !== null && !sp.page.isClosed();
+    } catch {
+      return false;
     }
+  }
 
-    this.ensureUserDataDir();
+  /** 启动某个 space 的浏览器上下文(幂等:已存活直接返回) */
+  private async launchSpace(sp: Space): Promise<BrowserContext> {
+    if (sp.context && this.isSpaceAlive(sp)) {
+      return sp.context;
+    }
+    this.ensureUserDataDir(sp.userDataDir);
 
     // 通用参数（macOS + Linux）
     const commonArgs = [
@@ -112,8 +163,8 @@ class BrowserManager {
       launchArgs.push('--remote-debugging-port=9222');
     }
 
-    this.context = await chromium.launchPersistentContext(
-      path.resolve(this.config.userDataDir),
+    const context = await chromium.launchPersistentContext(
+      path.resolve(sp.userDataDir),
       {
         headless: this.config.headless,
         // patchright 在无显式 channel 时，即使 headless:false 也可能悄悄选中
@@ -147,15 +198,15 @@ class BrowserManager {
     // 用 exposeBinding 搭一条不经过 CDP Console 域的旁路：页面内 console 方法被
     // 劫持后直接把日志转发回 Node 端，绕开被禁用的通道。exposeBinding 与
     // addInitScript 一样对该 context 下所有现有/后续页面自动生效。
-    await this.context.exposeBinding('__mcpConsoleLog', (_source, type: string, text: string) => {
-      this.consoleLogs.push({ type: type as ConsoleLogEntry['type'], text, timestamp: Date.now() });
-      if (this.consoleLogs.length > 2000) {
-        this.consoleLogs = this.consoleLogs.slice(-1000);
+    await context.exposeBinding('__mcpConsoleLog', (_source, type: string, text: string) => {
+      sp.consoleLogs.push({ type: type as ConsoleLogEntry['type'], text, timestamp: Date.now() });
+      if (sp.consoleLogs.length > 2000) {
+        sp.consoleLogs = sp.consoleLogs.slice(-1000);
       }
     });
 
     // 反爬虫指纹伪装：在每个页面执行前注入，掩盖常见的自动化检测向量
-    await this.context.addInitScript(() => {
+    await context.addInitScript(() => {
       // 1. navigator.webdriver -> undefined
       try { delete (Navigator.prototype as { webdriver?: unknown }).webdriver; } catch { /* noop */ }
       Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
@@ -210,118 +261,193 @@ class BrowserManager {
       } catch { /* noop */ }
     });
 
+    // __ego 一次跑完 helper:注入到该 context 所有页面,供 run_script 免手动安装即用。
+    // 幂等自安装(见 injected.ts),重复注入无副作用。
+    await context.addInitScript(EGO_HELPER_SRC);
+
     // 抓 chromium 子进程 pid — Playwright 内部 API 但多年稳定；失败不影响主流程
     try {
-      const browser = this.context.browser();
+      const browser = context.browser();
       const child = (browser as unknown as { _process?: { pid?: number } })?._process;
-      this.chromiumPid = child?.pid ?? null;
+      sp.chromiumPid = child?.pid ?? null;
     } catch {
-      this.chromiumPid = null;
+      sp.chromiumPid = null;
     }
 
-    const pages = this.context.pages();
-    this.page = pages[0] ?? await this.context.newPage();
-    this.setupPageListeners(this.page);
+    sp.context = context;
+    const pages = context.pages();
+    sp.page = pages[0] ?? await context.newPage();
+    this.setupPageListeners(sp, sp.page);
 
-    return this.context;
+    return context;
   }
 
-  /** 返回当前 chromium 进程 PID（无活跃浏览器则 null）— stdio 退出钩子用 */
+  public async getContext(): Promise<BrowserContext> {
+    return this.launchSpace(this.current());
+  }
+
+  /** 返回当前活跃 space 的 chromium 进程 PID（无活跃浏览器则 null）— stdio 退出钩子用 */
   public getChromiumPid(): number | null {
-    return this.chromiumPid;
+    return this.current().chromiumPid;
   }
 
-  /** 同步 SIGKILL chromium 子进程 — 用于 process.on('exit') / 超时兜底，无 await */
+  /** 同步 SIGKILL 所有 space 的 chromium 子进程 — 用于 process.on('exit') / 超时兜底，无 await */
   public killChromiumSync(): void {
-    const pid = this.chromiumPid;
-    this.chromiumPid = null;
-    if (!pid) return;
-    try {
-      process.kill(pid, 'SIGKILL');
-    } catch {
-      // 已死或无权限，无所谓
+    for (const sp of this.spaces.values()) {
+      const pid = sp.chromiumPid;
+      sp.chromiumPid = null;
+      if (!pid) continue;
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        // 已死或无权限，无所谓
+      }
     }
   }
 
   public async getPage(): Promise<Page> {
-    if (!this.isAlive()) {
-      console.log('[BrowserManager] 检测到浏览器/页面已失效，正在重建...');
-      this.context = null;
-      this.page = null;
+    const sp = this.current();
+    if (!this.isSpaceAlive(sp)) {
+      console.log(`[BrowserManager] space '${sp.name}' 浏览器/页面已失效，正在重建...`);
+      sp.context = null;
+      sp.page = null;
     }
-    await this.getContext();
-    if (!this.page) {
+    await this.launchSpace(sp);
+    if (!sp.page) {
       throw new Error('无法获取页面实例');
     }
-    return this.page;
+    return sp.page;
   }
 
-  private setupPageListeners(page: Page): void {
-    if (this.listenedPages.has(page)) return;
-    this.listenedPages.add(page);
+  private setupPageListeners(sp: Space, page: Page): void {
+    if (sp.listenedPages.has(page)) return;
+    sp.listenedPages.add(page);
     page.on('console', (msg) => {
       const type = msg.type() as ConsoleLogEntry['type'];
-      this.consoleLogs.push({ type, text: msg.text(), timestamp: Date.now() });
-      if (this.consoleLogs.length > 2000) {
-        this.consoleLogs = this.consoleLogs.slice(-1000);
+      sp.consoleLogs.push({ type, text: msg.text(), timestamp: Date.now() });
+      if (sp.consoleLogs.length > 2000) {
+        sp.consoleLogs = sp.consoleLogs.slice(-1000);
       }
     });
 
     page.on('response', (response) => {
       const request = response.request();
-      this.networkRequests.push({
+      sp.networkRequests.push({
         url: request.url(),
         method: request.method(),
         status: response.status(),
         resourceType: request.resourceType(),
         timestamp: Date.now()
       });
-      if (this.networkRequests.length > 500) {
-        this.networkRequests = this.networkRequests.slice(-250);
+      if (sp.networkRequests.length > 500) {
+        sp.networkRequests = sp.networkRequests.slice(-250);
       }
     });
 
     page.on('crash', () => {
-      console.error('[BrowserManager] 页面崩溃，将在下次请求时重建');
-      this.page = null;
+      console.error(`[BrowserManager] space '${sp.name}' 页面崩溃，将在下次请求时重建`);
+      sp.page = null;
     });
   }
 
   public getConsoleLogs(): ConsoleLogEntry[] {
-    return [...this.consoleLogs];
+    return [...this.current().consoleLogs];
   }
 
   public clearConsoleLogs(): void {
-    this.consoleLogs = [];
+    this.current().consoleLogs = [];
   }
 
   public getNetworkRequests(): NetworkRequestEntry[] {
-    return [...this.networkRequests];
+    return [...this.current().networkRequests];
   }
 
   public clearNetworkRequests(): void {
-    this.networkRequests = [];
+    this.current().networkRequests = [];
   }
 
   public isAlive(): boolean {
-    try {
-      return this.context !== null && this.page !== null && !this.page.isClosed();
-    } catch {
-      return false;
-    }
+    return this.isSpaceAlive(this.current());
   }
 
   public setActivePage(page: Page): void {
-    this.page = page;
-    this.setupPageListeners(page);
+    const sp = this.current();
+    sp.page = page;
+    this.setupPageListeners(sp, page);
   }
 
+  // ============================================================
+  // Task Spaces 管理
+  // ============================================================
+
+  /** 当前活跃 space 名 */
+  public getActiveSpace(): string {
+    return this.activeSpace;
+  }
+
+  /** 列出所有 space 及状态 */
+  public listSpaces(): { name: string; active: boolean; alive: boolean; url: string | null }[] {
+    return [...this.spaces.values()].map((sp) => ({
+      name: sp.name,
+      active: sp.name === this.activeSpace,
+      alive: this.isSpaceAlive(sp),
+      url: sp.page && !sp.page.isClosed() ? sp.page.url() : null,
+    }));
+  }
+
+  /**
+   * 新建并切换到一个 space(隔离的 userDataDir → 独立 cookie/登录态)。
+   * 已存在同名 space 则直接切过去,不重复创建。
+   */
+  public async createSpace(name: string): Promise<{ name: string; created: boolean }> {
+    const clean = name.trim();
+    if (!clean) throw new Error('space 名不能为空');
+    if (!/^[A-Za-z0-9_-]{1,40}$/.test(clean)) {
+      throw new Error('space 名仅允许字母/数字/下划线/连字符,长度 1-40');
+    }
+    let created = false;
+    if (!this.spaces.has(clean)) {
+      // 每个 space 一份独立 userDataDir,挂在默认 userDataDir 同级的 spaces/ 下
+      const base = path.resolve(this.config.userDataDir);
+      const dir = path.join(path.dirname(base), 'spaces', clean);
+      this.spaces.set(clean, this.newSpaceState(clean, dir));
+      created = true;
+    }
+    this.activeSpace = clean;
+    await this.launchSpace(this.spaces.get(clean)!);
+    return { name: clean, created };
+  }
+
+  /** 切换活跃 space(必须已存在) */
+  public async switchSpace(name: string): Promise<{ name: string }> {
+    const clean = name.trim();
+    if (!this.spaces.has(clean)) throw new Error(`space '${clean}' 不存在,请先 space_new 创建`);
+    this.activeSpace = clean;
+    await this.launchSpace(this.spaces.get(clean)!);
+    return { name: clean };
+  }
+
+  /** 关闭并销毁一个 space(不允许关 default);若关的是当前 space 则回落到 default */
+  public async closeSpace(name: string): Promise<{ closed: boolean; active: string }> {
+    const clean = name.trim();
+    if (clean === DEFAULT_SPACE) throw new Error('default space 不可关闭');
+    const sp = this.spaces.get(clean);
+    if (!sp) throw new Error(`space '${clean}' 不存在`);
+    try { await sp.context?.close(); } catch { /* noop */ }
+    this.spaces.delete(clean);
+    if (this.activeSpace === clean) this.activeSpace = DEFAULT_SPACE;
+    return { closed: true, active: this.activeSpace };
+  }
+
+  /** 关闭全部 space 的浏览器上下文 */
   public async close(): Promise<void> {
-    if (this.context) {
-      await this.context.close();
-      this.context = null;
-      this.page = null;
-      this.chromiumPid = null;
+    for (const sp of this.spaces.values()) {
+      if (sp.context) {
+        try { await sp.context.close(); } catch { /* noop */ }
+        sp.context = null;
+        sp.page = null;
+        sp.chromiumPid = null;
+      }
     }
   }
 }

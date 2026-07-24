@@ -33,12 +33,13 @@ import {
   NewTabSchema, TabIndexSchema, InterceptRequestsSchema,
   ExtractLinksSchema, ExtractDataSchema, BatchFetchSchema,
   CrawlPagesSchema, WaitAndExtractSchema, SetBlockRulesSchema,
-  SnapshotSchema, ExtractArticleSchema, DiscoverUrlsSchema
+  SnapshotSchema, ExtractArticleSchema, DiscoverUrlsSchema,
+  RunScriptSchema, SpaceNameSchema
 } from './schemas.js';
 
 const PORT = parseInt(process.env['PORT'] ?? '3211', 10);
 const startTime = Date.now();
-const SERVER_VERSION = '2.1.0';
+const SERVER_VERSION = '2.2.0';
 
 // 服务级使用说明:支持 instructions 的 MCP 客户端(Claude Code / Codex 等)会把这段
 // 注入 AI 上下文,让 AI 不读文档也知道工具间的正确配合方式。保持精炼,别堆细节。
@@ -48,7 +49,10 @@ const SERVER_INSTRUCTIONS = `本地浏览器操控 MCP。工具配合要点:
 - 操作元素优先传 snapshot 返回的 ref(免写 CSS 选择器);页面重渲染后 ref 失效,交互失败就重新 snapshot。
 - 批量场景:多个不同 URL 用 batch_fetch,自动翻页用 crawl_pages,爬大站前先 discover_urls 探明地址。
 - 新闻/博客/文档类页面用 extract_article 直接拿干净 Markdown 正文。
-- 填 2 个以上表单字段用 fill_form;click/type 内置三级 fallback,仍失败改 execute_js 直接操作 DOM。`;
+- 填 2 个以上表单字段用 fill_form;click/type 内置三级 fallback,仍失败改 execute_js 直接操作 DOM。
+- 多步交互(填表→点击→等待→读结果)优先用 run_script 一次跑完:脚本里调 __ego.click/fill/waitFor/snapshot,省去多次往返。
+- snapshot/click/type/hover 已能穿透 iframe(含跨域),iframe 内元素同样带 ref、可直接操作。
+- 需要并行多任务或多账号隔离时用 space_new 开独立工作区(cookie/登录态互不干扰),space_switch 切换,space_list 查看。`;
 
 // Session management
 const SESSION_TTL = 30 * 60 * 1000;
@@ -224,6 +228,13 @@ function createMcpServer(): McpServer {
     annotations: { title: '执行 JS', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } satisfies ToolAnnotations,
   }, async (args) => text(await tools.executeJs(args)));
 
+  server.registerTool('run_script', {
+    title: '一次跑完脚本',
+    description: '在页面里一次性执行一段 JS，脚本内可直接用 __ego 助手：__ego.snapshot()/click(selOrRef)/fill(selOrRef,val)/waitFor(sel,ms)/text(sel)/attr(sel,name)/exists(sel)/check/select/sleep/$/$$。适合「填表→点击→等待→读结果」这类多步交互，把多次 MCP 往返压成一次，显著省 token 与延迟。selOrRef 同时支持 CSS 选择器和 snapshot 的 ref（如 e5）。支持顶层 await 与 return。',
+    inputSchema: RunScriptSchema.shape,
+    annotations: { title: '一次跑完脚本', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } satisfies ToolAnnotations,
+  }, async (args) => text(await tools.runScript(args)));
+
   server.registerTool('wait_for_selector', {
     title: '等待元素',
     description: '等待指定元素出现/隐藏。SPA/React/Vue 等动态页面在 navigate 后应先等待关键元素再操作，避免拿到空数据。静态页面无需调用。',
@@ -314,6 +325,38 @@ function createMcpServer(): McpServer {
     inputSchema: TabIndexSchema.shape,
     annotations: { title: '关闭标签页', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } satisfies ToolAnnotations,
   }, async (args) => text(await tools.closeTab(args)));
+
+  // === Task Spaces（并行隔离工作区）===
+  server.registerTool('space_list', {
+    title: '列出工作区',
+    description: '列出所有 Task Space（并行隔离工作区）及其状态：名称、是否当前活跃、是否存活、当前 URL。default 工作区始终存在。',
+    outputSchema: ResultEnvelope,
+    annotations: { title: '列出工作区', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
+  }, async () => structured(await tools.spaceList()));
+
+  server.registerTool('space_new', {
+    title: '新建工作区',
+    description: '新建并切换到一个隔离工作区，拥有独立的 userDataDir（cookie/登录态与其它工作区完全隔离）。用于并行跑多任务或同站多账号，互不污染。已存在同名则直接切过去。',
+    inputSchema: SpaceNameSchema.shape,
+    outputSchema: ResultEnvelope,
+    annotations: { title: '新建工作区', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
+  }, async (args) => structured(await tools.spaceNew(args)));
+
+  server.registerTool('space_switch', {
+    title: '切换工作区',
+    description: '切换当前活跃工作区，后续所有浏览器工具都作用于该工作区的页面。目标工作区须已由 space_new 创建。',
+    inputSchema: SpaceNameSchema.shape,
+    outputSchema: ResultEnvelope,
+    annotations: { title: '切换工作区', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
+  }, async (args) => structured(await tools.spaceSwitch(args)));
+
+  server.registerTool('space_close', {
+    title: '关闭工作区',
+    description: '关闭并销毁一个工作区，释放其浏览器进程（default 不可关）。若关闭的是当前工作区，自动回落到 default。',
+    inputSchema: SpaceNameSchema.shape,
+    outputSchema: ResultEnvelope,
+    annotations: { title: '关闭工作区', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false } satisfies ToolAnnotations,
+  }, async (args) => structured(await tools.spaceClose(args)));
 
   // === Network intercept ===
   server.registerTool('intercept_requests', {

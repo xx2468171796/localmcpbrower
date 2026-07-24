@@ -30,6 +30,16 @@ export const ExecuteJsSchema = z.object({
   script: z.string().min(1, 'script 不能为空').describe('要在页面上下文执行的 JavaScript 代码，返回值会被序列化返回')
 });
 
+/** run_script：一次跑完，脚本内可用 __ego.* 助手 */
+export const RunScriptSchema = z.object({
+  script: z.string().min(1, 'script 不能为空').describe('要在页面上下文一次性执行的 JS。可用 __ego 助手：__ego.snapshot()/click(selOrRef)/fill(selOrRef,val)/waitFor(sel,ms)/text(sel)/attr(sel,name)/exists(sel)/sleep(ms)/$(sel)/$$(sel)。支持顶层 await 与 return，返回值序列化回传。')
+});
+
+/** Task Space 名称参数 */
+export const SpaceNameSchema = z.object({
+  name: z.string().min(1, 'name 不能为空').describe('space 名称，仅字母/数字/下划线/连字符，长度 1-40')
+});
+
 export const ScrollSchema = z.object({
   x: z.number().optional().describe('水平滚动到的像素位置'),
   y: z.number().optional().describe('垂直滚动到的像素位置'),
