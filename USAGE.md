@@ -88,6 +88,8 @@ type({ ref: "e3", text: "关键词" })  # 用 ref 输入
 
 ref 在页面重新渲染后失效，SPA 交互失败时重新 snapshot 拿新 ref。
 找不到可点击元素时可加 deep:true（CDP 扫描 addEventListener 绑定的元素，较慢）。
+snapshot 已自动穿透 iframe（含跨域）：iframe 内容会以「iframe "url"」分组缩进输出，
+里面的元素同样带 ref，click/type/hover 传该 ref 即可直接操作，无需切 frame。
 
 正文采集首选 extract_article（defuddle 提取，自动剥离导航/广告，返回干净 Markdown），
 比 get_page_content + 手动清洗更省 token。
@@ -111,6 +113,44 @@ ref 在页面重新渲染后失效，SPA 交互失败时重新 snapshot 拿新 r
 new_tab({ url: "https://..." })   # 新开标签
 switch_tab({ index: 0 })          # 切回第一个
 list_tabs()                        # 查看所有标签
+```
+
+### 规则 8：多步交互优先用 run_script 一次跑完（省 token / 省延迟）
+
+```
+「填表→点击→等待→读结果」这类多步操作，别一步一个工具往返，
+用 run_script 在页面里一次性跑完。脚本内可直接用 __ego 助手：
+  __ego.snapshot({interactiveOnly:true})   页面无障碍快照
+  __ego.click(selOrRef)                     点击（CSS 选择器或 ref e5 均可）
+  __ego.fill(selOrRef, val) / type(...)     写输入框并派发 input/change
+  __ego.check / select / text / attr / exists
+  __ego.waitFor(selector, ms)               等元素出现且可见
+  __ego.sleep(ms) / $(sel) / $$(sel)
+
+示例（登录：填账号密码→点登录→等跳转→读欢迎语，一次调用）：
+run_script({ script: `
+  __ego.fill('#user', 'alice');
+  __ego.fill('#pass', 'secret');
+  __ego.click('button[type=submit]');
+  await __ego.waitFor('.welcome', 5000);
+  return { msg: __ego.text('.welcome') };
+` })
+
+支持顶层 await 与 return，返回值 JSON 序列化回传。
+仍需复杂原生 DOM 时才退回 execute_js。
+```
+
+### 规则 9：并行/隔离任务用 Task Spaces
+
+```
+需要并行跑多任务、或同站多账号互不串号时，开独立工作区（各自独立 cookie/登录态）：
+space_new({ name: "job1" })    # 新建并切换到 job1（独立 userDataDir）
+space_list()                    # 查看所有工作区及当前活跃/URL
+space_switch({ name: "default" })  # 切回默认工作区
+space_close({ name: "job1" })   # 关闭并释放（default 不可关）
+
+切换后，所有浏览器工具都作用于当前工作区的页面。不用多工作区时无需关心，
+default 工作区行为与旧版完全一致。
 ```
 
 ---
@@ -222,7 +262,7 @@ DB_PROD_SSL=true
 
 ---
 
-## 五、完整工具清单（浏览器 MCP，39个）
+## 五、完整工具清单（浏览器 MCP，44个）
 
 ### 基础操作（14个）
 | 工具 | 参数 | 说明 |
@@ -242,9 +282,10 @@ DB_PROD_SSL=true
 | `go_forward` | - | 前进 |
 | `set_viewport` | width, height | 设置视口 |
 
-### 数据提取（12个）
+### 数据提取（13个）
 | 工具 | 参数 | 说明 |
 |------|------|------|
+| `run_script` | script | **一次跑完**：脚本内用 `__ego.click/fill/waitFor/snapshot/text/...`，多步交互压成单次往返，省 token；支持顶层 await/return |
 | `get_page_content` | selector? | 获取 HTML |
 | `get_element_text` | selector | 获取文本 |
 | `get_element_attribute` | selector, attribute | 获取属性 |
@@ -255,7 +296,7 @@ DB_PROD_SSL=true
 | `execute_js` | script | 执行 JS |
 | `generate_page_report` | - | 页面结构报告 |
 | `intercept_requests` | urlPattern, action | 拦截请求 |
-| `snapshot` | interactiveOnly?, maxChars?, deep? | 无障碍树快照，返回元素 ref，省 token；deep 用 CDP 找事件监听元素 |
+| `snapshot` | interactiveOnly?, maxChars?, deep? | 无障碍树快照，返回元素 ref，省 token；**穿透 iframe（含跨域）**；deep 用 CDP 找事件监听元素 |
 | `extract_article` | url? | defuddle 提取主正文为 Markdown，剥离导航/广告（Readability 兜底）|
 
 ### 截图导出（2个）
@@ -271,6 +312,14 @@ DB_PROD_SSL=true
 | `new_tab` | url? | 新建标签页 |
 | `switch_tab` | index | 切换标签页 |
 | `close_tab` | index | 关闭标签页 |
+
+### 工作区 Task Spaces（4个）
+| 工具 | 参数 | 说明 |
+|------|------|------|
+| `space_new` | name | 新建并切换到隔离工作区（独立 cookie/登录态）|
+| `space_switch` | name | 切换活跃工作区 |
+| `space_list` | - | 列出所有工作区及状态 |
+| `space_close` | name | 关闭并释放工作区（default 不可关）|
 
 ### 爬虫工具（7个）
 | 工具 | 参数 | 说明 |

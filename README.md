@@ -4,7 +4,8 @@
 
 ## 特性
 
-- **浏览器 MCP（39 个工具）** —— Patchright 1.61 驱动（自带反检测，Chromium 149），支持导航、点击、填表、截图、无障碍快照（snapshot+ref 操作）、正文提取（defuddle 转 Markdown）、站点 URL 发现、批量爬取、网络拦截、PDF 导出等。
+- **浏览器 MCP（44 个工具）** —— Patchright 1.61 驱动（自带反检测，Chromium 149），支持导航、点击、填表、截图、无障碍快照（snapshot+ref 操作）、正文提取（defuddle 转 Markdown）、站点 URL 发现、批量爬取、网络拦截、PDF 导出等。
+- **v2.2.0 新增（对齐 ego-lite）** —— ① `run_script` 一次跑完：脚本内直接用 `__ego.click/fill/waitFor/snapshot`，把「填表→点击→等待→读结果」压成单次 MCP 往返，省 token 省延迟；② `snapshot` 与 `click/type/hover` **穿透 iframe（含跨域）**，iframe 内元素同样带 ref、可直接操作；③ **Task Spaces**：`space_new/switch/list/close` 开并行隔离工作区，各自独立 cookie/登录态，适合多任务或多账号。
 - **数据库 MCP（15 个工具）** —— PostgreSQL / MySQL 查询、表结构查看、索引分析、CSV 导出、多数据库预设切换；`query` 强制只读，写操作必须走 `execute`。
 - **双传输模式** —— **stdio 原生模式**（Claude Code 直接拉起进程，无需 PM2 / 端口，最简单）与 **HTTP（Streamable HTTP）模式**（长驻服务，适合服务器或多客户端共享）。
 - **跨平台** —— macOS / Linux / Windows 通用，单入口 `node mcp.mjs <cmd>`。

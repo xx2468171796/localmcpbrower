@@ -1,6 +1,6 @@
 {
   "name": "claudemcp-browser",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Claude Code MCP browser server — Playwright browser automation over stdio / Streamable HTTP",
   "main": "dist/server.js",
   "type": "module",
