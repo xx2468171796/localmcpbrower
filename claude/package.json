@@ -27,10 +27,10 @@
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/jsdom": "^28.0.3",
-    "@types/node": "^24.12.4",
+    "@types/node": "^26.1.1",
     "@types/turndown": "^5.0.6",
     "tsx": "^4.22.2",
-    "typescript": "^6.0.3"
+    "typescript": "^7.0.2"
   },
   "engines": {
     "node": ">=20.0.0"
