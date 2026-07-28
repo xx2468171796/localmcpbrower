@@ -77,5 +77,8 @@ export interface HealthCheckResult {
   status: 'ok' | 'error';
   browserAlive: boolean;
   uptime: number;
+  /** MCP 传输层活跃会话数 */
   sessions?: number;
+  /** 真正持有浏览器标签页的会话数(与 sessions 对不上即说明回收有漏) */
+  browserSessions?: number;
 }

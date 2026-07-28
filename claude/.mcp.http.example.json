@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "browser": {
+      "type": "http",
+      "url": "http://127.0.0.1:3215/mcp"
+    },
+    "browser-headed": {
+      "type": "http",
+      "url": "http://127.0.0.1:3213/mcp"
+    },
+    "database": {
+      "type": "http",
+      "url": "http://127.0.0.1:3214/mcp"
+    }
+  }
+}

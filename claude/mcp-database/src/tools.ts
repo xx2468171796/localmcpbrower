@@ -1,5 +1,10 @@
 /**
  * MCP 数据库工具定义 - Claude Code 版本
+ *
+ * connect / switch_db / disconnect / status 只作用于**调用方自己的会话**:
+ * 工具签名里没有 sessionId,由 context.ts 的 AsyncLocalStorage 隐式携带,
+ * DatabaseManager 内部据此找到「本会话当前指向哪个库」。
+ * 会话首次用到数据库时会自动套用 .env 的默认库配置(与改造前的自动连接行为一致)。
  */
 
 import { getDatabaseManager } from './database.js';
@@ -59,7 +64,8 @@ export async function disconnect(): Promise<ToolResult<{ message: string }>> {
 }
 
 export async function status(): Promise<ToolResult<ConnectionStatus>> {
-  try { return { success: true, data: getDatabaseManager().getStatus() }; }
+  // getStatus 会在会话首次使用时套用 .env 默认库(保持"开箱即连"的既有行为),故为异步
+  try { return { success: true, data: await getDatabaseManager().getStatus() }; }
   catch (error) { return { success: false, error: error instanceof Error ? error.message : String(error) }; }
 }
 

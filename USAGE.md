@@ -6,35 +6,50 @@
 
 ## 一、服务管理（先启动再用）
 
-### 推荐：stdio 原生模式
+### 推荐：HTTP 常驻服务
 
-stdio 模式由 Claude Code 直接拉起进程，**无需启动服务、无需端口**。
-只要 `.mcp.json` 或 `claude mcp add` 已配置好，工具即可直接调用，无需 `mcp.mjs start`。
+三个长驻服务由 PM2 托管，所有客户端窗口共用（一份 Chromium、一份登录态、一套数据库连接池）。
+
+```bash
+node mcp.mjs start          # 启动全部三个服务 + 端点健康检查
+node mcp.mjs status         # 查看 PM2 进程状态
+node mcp.mjs restart db     # 改了 mcp-database/.env 后重启数据库服务
+node mcp.mjs stop           # 停止
+node mcp.mjs autostart      # 开机自启指引（--apply 落地）
+```
+
+**MCP 端点（默认只绑 127.0.0.1，三平台端口一致）：**
+- 有头浏览器 `http://127.0.0.1:3213/mcp` —— 窗口可见，可实时观察、随时人工接管
+- 无头浏览器 `http://127.0.0.1:3215/mcp` —— 后台 / 服务器
+- 数据库 `http://127.0.0.1:3214/mcp`
+
+**会话隔离（多窗口并行时的关键语义）：**
+- 每个客户端会话**自动分到自己的标签页**，console / 网络记录、`set_block_rules` 的拦截规则
+  也是各自独立的；`list_tabs` / `switch_tab` / `close_tab` 只看得到、也只动得了本会话的标签页。
+- 每个会话有**自己的数据库指针**：`switch_db` / `connect` / `disconnect` 只改本会话指向哪个库，
+  不会把别的窗口带走；连接池按库共享。
+- **同一个服务内**默认所有会话共用 `default` 工作区，也就是**共享登录态**
+  （在这个服务上登录一次，它的全部窗口可用）；需要独立 cookie / 登录态时用 `space_new`（见规则 9）。
+- **有头（3213）和无头（3215）是两个进程、两份 profile，登录态不互通**
+  （`storage/user_data_headed` vs `storage/user_data`）。在有头里登录的账号，无头看不到；
+  要所有窗口共用一份登录态，就只用其中一个端点。
+  stdio 模式用的也是默认 `storage/user_data`，与无头服务同一份，别同时跑。
+
+### 备用：stdio 原生模式
+
+不想跑常驻服务、或服务不可达时，由客户端直接拉起进程，**不占端口、无需 PM2**，
+行为与旧版完全一致（单会话，无上面的多会话隔离概念）。
 
 ```bash
 # 首次安装 / 重新构建（跨平台）
 node mcp.mjs install
 
-# 仓库更新后一键升级（git pull + 重装依赖 + 重建 + 重启 PM2）
+# 仓库更新后一键升级（git pull + 重装依赖 + 重建 + 重启在跑的 PM2 服务）
 node mcp.mjs update
 
-# 获取 stdio 配置命令（推荐路径）
+# 打印客户端注册方式：方式 A = HTTP（推荐），方式 B = stdio（备用）
 node mcp.mjs config
 ```
-
-### HTTP / PM2 模式（服务器或多客户端共享）
-
-```bash
-node mcp.mjs start          # 启动全部（browser + db）
-node mcp.mjs status         # 查看 PM2 进程状态
-node mcp.mjs stop           # 停止
-```
-
-**MCP 端点（仅 HTTP 模式）：**
-- 有头浏览器 `http://localhost:3213/mcp`
-- 无头浏览器 `http://localhost:3215/mcp`
-- 数据库 `http://localhost:3214/mcp`
-- stdio 模式不占用端口
 
 ---
 
@@ -45,6 +60,9 @@ node mcp.mjs stop           # 停止
 ```
 爬取数据前，第一步永远是调用 set_block_rules，速度提升 3-5 倍：
 set_block_rules({ blockImages: true, blockMedia: true, blockFonts: true, blockAds: true })
+
+规则是**会话级**的：只挂在本会话自己的标签页上（之后 new_tab / 弹窗开出来的新页自动继承），
+不会波及共用同一个服务的其他窗口，所以放心开，也不用替别人收拾。
 ```
 
 ### 规则 2：工具选择优先级
@@ -113,6 +131,10 @@ snapshot 已自动穿透 iframe（含跨域）：iframe 内容会以「iframe "u
 new_tab({ url: "https://..." })   # 新开标签
 switch_tab({ index: 0 })          # 切回第一个
 list_tabs()                        # 查看所有标签
+
+HTTP 模式下这些工具只作用于本会话自己的标签页：
+list_tabs 不会列出别的窗口的标签，index 也只在本会话内编号，
+所以不用担心 close_tab 关掉别人的页面。
 ```
 
 ### 规则 8：多步交互优先用 run_script 一次跑完（省 token / 省延迟）
@@ -149,8 +171,11 @@ space_list()                    # 查看所有工作区及当前活跃/URL
 space_switch({ name: "default" })  # 切回默认工作区
 space_close({ name: "job1" })   # 关闭并释放（default 不可关）
 
-切换后，所有浏览器工具都作用于当前工作区的页面。不用多工作区时无需关心，
-default 工作区行为与旧版完全一致。
+切换后，所有浏览器工具都作用于当前工作区的页面；space_switch 只改本会话，
+不会把别的窗口一起切走。不用多工作区时无需关心，default 工作区行为与旧版完全一致。
+
+什么时候必须开新 space：默认所有会话共用 default 的登录态，
+一个窗口在某站点登出/换号，其他窗口跟着受影响 —— 需要独立账号或独立登录态就 space_new。
 ```
 
 ---
@@ -160,7 +185,7 @@ default 工作区行为与旧版完全一致。
 ### 标准爬虫流程
 
 ```
-1. set_block_rules(blockImages+blockAds)   # 开启加速（context 级，对所有标签页生效）
+1. set_block_rules(blockImages+blockAds)   # 开启加速（会话级：本会话的标签页全部生效，不影响别的窗口）
 2. navigate({ url: "起始页" })              # 打开页面
 3. wait_for_selector({ selector: "数据容器" }) # 等待加载（动态页面）
 4. extract_data({ itemSelector, fields })   # 提取数据
@@ -228,7 +253,8 @@ DB_PROD_PASSWORD=xxx
 DB_PROD_SSL=true
 ```
 
-> stdio 模式修改 `.env` 后重新触发 MCP 即生效；HTTP / PM2 模式需 `node mcp.mjs restart db`。
+> stdio 模式修改 `.env` 后重新触发 MCP 即生效；HTTP 模式需 `node mcp.mjs restart db`。
+> `.env` 里的默认库只是每个会话连上来时的**初始指针**。
 
 ### 读写规则（必读）
 
@@ -237,7 +263,10 @@ DB_PROD_SSL=true
 - 写操作（INSERT/UPDATE/DELETE/DDL）必须用 execute，它带 destructiveHint，
   执行前向用户确认；execute 成功后 SELECT 缓存自动失效
 - SELECT 结果有 60 秒缓存，重复查询很快；需要强制最新数据时改写 SQL（如加注释）
+  缓存按「库 + SQL + 参数」区分，切库后不会拿到上一个库的旧结果
 - explain_query 对写语句只输出执行计划、不会真执行（PG 的 ANALYZE 仅用于只读语句）
+- connect / switch_db / disconnect 只改**本会话**当前指向哪个库，不影响其他窗口；
+  写操作前用 status 确认当前库，别凭上一次 switch_db 的印象直接 execute
 ```
 
 ### 数据库工具（15个）
@@ -324,7 +353,7 @@ DB_PROD_SSL=true
 ### 爬虫工具（7个）
 | 工具 | 参数 | 说明 |
 |------|------|------|
-| `set_block_rules` | blockImages?, blockMedia?, blockFonts?, blockAds? | 屏蔽请求加速（context 级，所有标签页生效）|
+| `set_block_rules` | blockImages?, blockMedia?, blockFonts?, blockAds? | 屏蔽请求加速（**会话级**：本会话所有标签页生效，含之后新开的；不影响别的会话）|
 | `discover_urls` | url, maxUrls?, sameDomainOnly? | 站点 URL 发现（sitemap+robots+页面链接）|
 | `extract_links` | selector?, filter?, limit? | 提取链接 |
 | `extract_data` | itemSelector, fields[], limit? | 批量提取结构化数据 |

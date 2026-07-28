@@ -13,13 +13,14 @@ if (STDIO) {
 
 import express, { type Request, type Response, type NextFunction } from 'express';
 import { z } from 'zod';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { BoundedEventStore } from './eventStore.js';
 import { isInitializeRequest, type ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 import { getBrowserManager } from './browser.js';
+import { mcpCtx, STDIO_SESSION_ID } from './context.js';
 import * as tools from './tools.js';
 import type { HealthCheckResult } from './types.js';
 import {
@@ -41,6 +42,72 @@ const PORT = parseInt(process.env['PORT'] ?? '3211', 10);
 const startTime = Date.now();
 const SERVER_VERSION = '2.2.0';
 
+// ============================================================
+// HTTP 安全参数
+// 浏览器里存着**已登录的公司系统会话**，HTTP 端口等于把这些会话的控制权暴露出去。
+// 因此默认只绑 127.0.0.1；要跨机共享必须显式设 HOST，且此时强制要求 token。
+// ============================================================
+// ?? 只对 null/undefined 回落：HOST 被设成空串时会绑到全部网卡，而 allowedHosts 里存的是
+// ':PORT'，永远匹配不上真实 Host 头 → 所有请求 403，极难排查。用 || + trim 一并挡掉空串/空白。
+const HOST = (process.env['HOST'] || '').trim() || '127.0.0.1';
+const AUTH_TOKEN = (process.env['MCP_AUTH_TOKEN'] ?? '').trim();
+
+/** 是否本机回环地址（含 IPv6 与 127.0.0.0/8 全段） */
+function isLoopbackHost(host: string): boolean {
+  const h = host.trim().toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
+  return h === 'localhost' || h === '::1' || h === '::ffff:127.0.0.1' || /^127\./.test(h);
+}
+
+/**
+ * Host / Origin 白名单：同一份同时喂给 SDK 的 DNS rebinding 防护与 CORS 中间件，
+ * 避免两处规则漂移。显式绑定到其它地址时把该地址也放进去，否则自己都连不上。
+ */
+function buildAllowLists(): { hosts: string[]; origins: string[] } {
+  const hosts = new Set<string>();
+  const origins = new Set<string>();
+  for (const h of ['127.0.0.1', 'localhost', '[::1]']) {
+    hosts.add(`${h}:${PORT}`);
+    origins.add(`http://${h}:${PORT}`);
+  }
+  hosts.add(`${HOST}:${PORT}`);
+  origins.add(`http://${HOST}:${PORT}`);
+  for (const extra of (process.env['MCP_ALLOWED_HOSTS'] ?? '').split(',')) {
+    const v = extra.trim();
+    if (v) hosts.add(v);
+  }
+  for (const extra of (process.env['MCP_ALLOWED_ORIGINS'] ?? '').split(',')) {
+    const v = extra.trim();
+    if (v) origins.add(v);
+  }
+  return { hosts: [...hosts], origins: [...origins] };
+}
+const ALLOWED = buildAllowLists();
+
+/** 定长比较，避免 token 校验被计时侧信道逐字节试出来 */
+function tokenMatches(candidate: string): boolean {
+  const a = Buffer.from(candidate);
+  const b = Buffer.from(AUTH_TOKEN);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+/**
+ * 可选 Bearer 鉴权：设了 MCP_AUTH_TOKEN 就校验，未设则跳过（本机 loopback 场景）。
+ * V1 默认不开，但代码内置 —— 跨机是既定终局，retrofit 鉴权要动全部路由与客户端配置。
+ */
+function requireAuth(req: Request, res: Response, next: NextFunction): void {
+  if (!AUTH_TOKEN) { next(); return; }
+  const raw = (req.headers.authorization ?? '').trim();
+  const m = /^Bearer\s+(.+)$/i.exec(raw);
+  const token = m?.[1]?.trim();
+  if (!token || !tokenMatches(token)) {
+    res.header('WWW-Authenticate', 'Bearer');
+    res.status(401).json({ jsonrpc: '2.0', error: { code: -32001, message: 'Unauthorized' }, id: null });
+    return;
+  }
+  next();
+}
+
 // 服务级使用说明:支持 instructions 的 MCP 客户端(Claude Code / Codex 等)会把这段
 // 注入 AI 上下文,让 AI 不读文档也知道工具间的正确配合方式。保持精炼,别堆细节。
 const SERVER_INSTRUCTIONS = `本地浏览器操控 MCP。工具配合要点:
@@ -59,12 +126,20 @@ const SESSION_TTL = 30 * 60 * 1000;
 const MAX_SESSIONS = 20;
 const transports: Map<string, { transport: StreamableHTTPServerTransport; lastAccess: number }> = new Map();
 
+/** 会话下线统一出口：关掉它名下的全部标签页并清空日志缓冲，避免死会话白占浏览器资源 */
+function releaseSession(sid: string): void {
+  transports.delete(sid);
+  void getBrowserManager().closeSession(sid).catch((e) => {
+    console.error(`[Session] 回收 ${sid} 的页面失败:`, e);
+  });
+}
+
 function cleanupSessions(): void {
   const now = Date.now();
   for (const [sid, entry] of transports) {
     if (now - entry.lastAccess > SESSION_TTL) {
       entry.transport.close?.();
-      transports.delete(sid);
+      releaseSession(sid);
       console.log(`[Session] Expired: ${sid}`);
     }
   }
@@ -92,11 +167,24 @@ const ResultEnvelope = {
   error: z.string().optional(),
 };
 
-function createMcpServer(): McpServer {
+/** 工具 handler 的最宽签名 —— 只用于 wrap 的泛型约束，不参与实际类型推导 */
+type ToolHandler = (...args: never[]) => unknown;
+
+/**
+ * HTTP 模式下每个会话一个独立 McpServer 实例，sessionId 直接闭包捕获。
+ * 全部 44 个 handler 统一套一层 mcpCtx.run，让 BrowserManager 在调用链任意深度
+ * 都能读到「这次调用属于哪个会话」，工具函数签名一律不动（零侵入）。
+ * stdio 传入默认值 → 与改造前的单会话行为完全一致。
+ */
+function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   const server = new McpServer(
     { name: 'claudemcp-browser', title: '本地浏览器操控', version: SERVER_VERSION },
     { instructions: SERVER_INSTRUCTIONS }
   );
+
+  const wrap = <T extends ToolHandler>(fn: T): T =>
+    ((...args: unknown[]) =>
+      mcpCtx.run({ sessionId }, () => (fn as unknown as (...a: unknown[]) => unknown)(...args))) as unknown as T;
 
   // === Navigation ===
   server.registerTool('navigate', {
@@ -104,26 +192,26 @@ function createMcpServer(): McpServer {
     description: '在当前标签页跳转到指定网址并等待加载完成。爬虫标准流程的第二步（先 set_block_rules 再 navigate）。静态页跳转后可直接操作，SPA/动态页需配合 wait_for_selector。',
     inputSchema: NavigateSchema.shape,
     annotations: { title: '打开网页', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.navigate(args)));
+  }, wrap(async (args: unknown) => text(await tools.navigate(args))));
 
   server.registerTool('set_viewport', {
     title: '设置视口',
     description: '设置浏览器窗口的宽高像素，用于测试响应式布局或模拟特定设备分辨率。',
     inputSchema: SetViewportSchema.shape,
     annotations: { title: '设置视口', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.setViewport(args)));
+  }, wrap(async (args: unknown) => text(await tools.setViewport(args))));
 
   server.registerTool('go_back', {
     title: '后退',
     description: '浏览器历史后退一页，等同于点击浏览器返回按钮。',
     annotations: { title: '后退', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true } satisfies ToolAnnotations,
-  }, async () => text(await tools.goBack()));
+  }, wrap(async () => text(await tools.goBack())));
 
   server.registerTool('go_forward', {
     title: '前进',
     description: '浏览器历史前进一页，等同于点击浏览器前进按钮。',
     annotations: { title: '前进', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true } satisfies ToolAnnotations,
-  }, async () => text(await tools.goForward()));
+  }, wrap(async () => text(await tools.goForward())));
 
   // === Interaction ===
   server.registerTool('click', {
@@ -131,63 +219,63 @@ function createMcpServer(): McpServer {
     description: '点击页面元素，内置三级 fallback（正常→force→JS），无需手动重试。若仍失败可改用 execute_js 直接操作 DOM。',
     inputSchema: ClickSchema.shape,
     annotations: { title: '点击元素', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.click(args)));
+  }, wrap(async (args: unknown) => text(await tools.click(args))));
 
   server.registerTool('type', {
     title: '输入文本',
     description: '在输入框中输入文本，内置三级 fallback（正常→force→JS）。批量填表请改用 fill_form，效率更高。',
     inputSchema: TypeSchema.shape,
     annotations: { title: '输入文本', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.type(args)));
+  }, wrap(async (args: unknown) => text(await tools.type(args))));
 
   server.registerTool('hover', {
     title: '悬停元素',
     description: '将鼠标悬停在元素上，用于触发 hover 菜单、提示框或懒加载内容。',
     inputSchema: HoverSchema.shape,
     annotations: { title: '悬停元素', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.hover(args)));
+  }, wrap(async (args: unknown) => text(await tools.hover(args))));
 
   server.registerTool('scroll', {
     title: '滚动页面',
     description: '滚动页面到指定 x/y 坐标，或滚动到某元素可见处。用于触发滚动懒加载内容。',
     inputSchema: ScrollSchema.shape,
     annotations: { title: '滚动页面', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.scroll(args)));
+  }, wrap(async (args: unknown) => text(await tools.scroll(args))));
 
   server.registerTool('select_option', {
     title: '选择下拉项',
     description: '在 select 下拉框中按 value 或可见文本选中选项。',
     inputSchema: SelectOptionSchema.shape,
     annotations: { title: '选择下拉项', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.selectOption(args)));
+  }, wrap(async (args: unknown) => text(await tools.selectOption(args))));
 
   server.registerTool('fill_form', {
     title: '批量填表',
     description: '一次性批量填写多个表单字段（文本框/下拉框/复选框）。需要填写 2 个以上字段时优先用本工具，避免多次调用 type。',
     inputSchema: FillFormSchema.shape,
     annotations: { title: '批量填表', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.fillForm(args)));
+  }, wrap(async (args: unknown) => text(await tools.fillForm(args))));
 
   server.registerTool('keyboard_press', {
     title: '按键',
     description: '按下键盘按键，如 Enter、Tab、Escape、方向键。用于提交表单或键盘导航。',
     inputSchema: KeyboardPressSchema.shape,
     annotations: { title: '按键', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.keyboardPress(args)));
+  }, wrap(async (args: unknown) => text(await tools.keyboardPress(args))));
 
   server.registerTool('drag_and_drop', {
     title: '拖拽元素',
     description: '将源元素拖拽到目标元素位置，用于排序、看板移动等交互。',
     inputSchema: DragAndDropSchema.shape,
     annotations: { title: '拖拽元素', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.dragAndDrop(args)));
+  }, wrap(async (args: unknown) => text(await tools.dragAndDrop(args))));
 
   server.registerTool('file_upload', {
     title: '上传文件',
     description: '向 input[type=file] 元素上传本地文件，需提供文件的本地绝对路径。',
     inputSchema: FileUploadSchema.shape,
     annotations: { title: '上传文件', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.fileUpload(args)));
+  }, wrap(async (args: unknown) => text(await tools.fileUpload(args))));
 
   // === Observation ===
   server.registerTool('take_screenshot', {
@@ -195,7 +283,7 @@ function createMcpServer(): McpServer {
     description: '截取当前页面并返回 base64 图片。截图较慢（约 1 秒），仅在需要视觉验证、调试定位或返回图片给用户时使用。读取页面内容请改用 get_page_content 或 extract_data，更快。',
     inputSchema: ScreenshotSchema.shape,
     annotations: { title: '页面截图', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => {
+  }, wrap(async (args: unknown) => {
     const result = await tools.takeScreenshot(args);
     if (result.success && result.data.base64) {
       const mimeType = result.data.format === 'png' ? 'image/png' : 'image/jpeg';
@@ -205,42 +293,42 @@ function createMcpServer(): McpServer {
       ] };
     }
     return text(result);
-  });
+  }));
 
   server.registerTool('get_console_logs', {
     title: '控制台日志',
     description: '获取页面累计的 console 输出（log/warn/error 等），用于调试前端报错。',
     outputSchema: ResultEnvelope,
     annotations: { title: '控制台日志', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async () => structured(await tools.getConsoleLogs()));
+  }, wrap(async () => structured(await tools.getConsoleLogs())));
 
   server.registerTool('get_network', {
     title: '网络请求记录',
     description: '获取页面累计的网络请求记录（URL、方法、状态码），用于排查接口或资源加载问题。',
     outputSchema: ResultEnvelope,
     annotations: { title: '网络请求记录', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async () => structured(await tools.getNetwork()));
+  }, wrap(async () => structured(await tools.getNetwork())));
 
   server.registerTool('execute_js', {
     title: '执行 JS',
     description: '在页面上下文执行自定义 JavaScript 并返回结果。当 click/type 三级 fallback 仍失败、或需要复杂 DOM 操作时使用。提取链接请优先用 extract_links。',
     inputSchema: ExecuteJsSchema.shape,
     annotations: { title: '执行 JS', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.executeJs(args)));
+  }, wrap(async (args: unknown) => text(await tools.executeJs(args))));
 
   server.registerTool('run_script', {
     title: '一次跑完脚本',
     description: '在页面里一次性执行一段 JS，脚本内可直接用 __ego 助手：__ego.snapshot()/click(selOrRef)/fill(selOrRef,val)/waitFor(sel,ms)/text(sel)/attr(sel,name)/exists(sel)/check/select/sleep/$/$$。适合「填表→点击→等待→读结果」这类多步交互，把多次 MCP 往返压成一次，显著省 token 与延迟。selOrRef 同时支持 CSS 选择器和 snapshot 的 ref（如 e5）。支持顶层 await 与 return。',
     inputSchema: RunScriptSchema.shape,
     annotations: { title: '一次跑完脚本', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.runScript(args)));
+  }, wrap(async (args: unknown) => text(await tools.runScript(args))));
 
   server.registerTool('wait_for_selector', {
     title: '等待元素',
     description: '等待指定元素出现/隐藏。SPA/React/Vue 等动态页面在 navigate 后应先等待关键元素再操作，避免拿到空数据。静态页面无需调用。',
     inputSchema: WaitForSelectorSchema.shape,
     annotations: { title: '等待元素', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.waitForSelector(args)));
+  }, wrap(async (args: unknown) => text(await tools.waitForSelector(args))));
 
   // === Content extraction ===
   server.registerTool('get_element_text', {
@@ -249,7 +337,7 @@ function createMcpServer(): McpServer {
     inputSchema: GetElementTextSchema.shape,
     outputSchema: ResultEnvelope,
     annotations: { title: '获取元素文本', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => structured(await tools.getElementText(args)));
+  }, wrap(async (args: unknown) => structured(await tools.getElementText(args))));
 
   server.registerTool('get_element_attribute', {
     title: '获取元素属性',
@@ -257,7 +345,7 @@ function createMcpServer(): McpServer {
     inputSchema: GetElementAttributeSchema.shape,
     outputSchema: ResultEnvelope,
     annotations: { title: '获取元素属性', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => structured(await tools.getElementAttribute(args)));
+  }, wrap(async (args: unknown) => structured(await tools.getElementAttribute(args))));
 
   server.registerTool('get_page_content', {
     title: '获取页面内容',
@@ -265,7 +353,7 @@ function createMcpServer(): McpServer {
     inputSchema: GetPageContentSchema.shape,
     outputSchema: ResultEnvelope,
     annotations: { title: '获取页面内容', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => structured(await tools.getPageContent(args)));
+  }, wrap(async (args: unknown) => structured(await tools.getPageContent(args))));
 
   server.registerTool('get_cookies', {
     title: '获取 Cookie',
@@ -273,14 +361,14 @@ function createMcpServer(): McpServer {
     inputSchema: GetCookiesSchema.shape,
     outputSchema: ResultEnvelope,
     annotations: { title: '获取 Cookie', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } satisfies ToolAnnotations,
-  }, async (args) => structured(await tools.getCookies(args)));
+  }, wrap(async (args: unknown) => structured(await tools.getCookies(args))));
 
   server.registerTool('set_cookies', {
     title: '设置 Cookie',
     description: '向浏览器写入 Cookie，常用于注入登录态后再访问需要鉴权的页面。',
     inputSchema: SetCookiesSchema.shape,
     annotations: { title: '设置 Cookie', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.setCookies(args)));
+  }, wrap(async (args: unknown) => text(await tools.setCookies(args))));
 
   // === Export & report ===
   server.registerTool('pdf_export', {
@@ -288,7 +376,7 @@ function createMcpServer(): McpServer {
     description: '将当前页面导出为 PDF 文件并保存到指定路径。',
     inputSchema: PdfExportSchema.shape,
     annotations: { title: '导出 PDF', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.pdfExport(args)));
+  }, wrap(async (args: unknown) => text(await tools.pdfExport(args))));
 
   server.registerTool('generate_page_report', {
     title: '页面分析报告',
@@ -296,35 +384,35 @@ function createMcpServer(): McpServer {
     inputSchema: PageReportSchema.shape,
     outputSchema: ResultEnvelope,
     annotations: { title: '页面分析报告', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => structured(await tools.generatePageReport(args)));
+  }, wrap(async (args: unknown) => structured(await tools.generatePageReport(args))));
 
   // === Multi-tab ===
   server.registerTool('list_tabs', {
     title: '列出标签页',
     description: '列出当前所有打开的标签页及索引，配合 switch_tab 使用。',
     annotations: { title: '列出标签页', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async () => text(await tools.listTabs()));
+  }, wrap(async () => text(await tools.listTabs())));
 
   server.registerTool('new_tab', {
     title: '新建标签页',
     description: '打开一个新标签页（可指定网址）。需要同时保持多个页面时用多标签页，比反复 navigate 更快。',
     inputSchema: NewTabSchema.shape,
     annotations: { title: '新建标签页', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.newTab(args)));
+  }, wrap(async (args: unknown) => text(await tools.newTab(args))));
 
   server.registerTool('switch_tab', {
     title: '切换标签页',
     description: '按索引切换当前活动标签页，后续操作都作用于该标签页。',
     inputSchema: TabIndexSchema.shape,
     annotations: { title: '切换标签页', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.switchTab(args)));
+  }, wrap(async (args: unknown) => text(await tools.switchTab(args))));
 
   server.registerTool('close_tab', {
     title: '关闭标签页',
     description: '按索引关闭指定标签页，释放资源。',
     inputSchema: TabIndexSchema.shape,
     annotations: { title: '关闭标签页', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.closeTab(args)));
+  }, wrap(async (args: unknown) => text(await tools.closeTab(args))));
 
   // === Task Spaces（并行隔离工作区）===
   server.registerTool('space_list', {
@@ -332,7 +420,7 @@ function createMcpServer(): McpServer {
     description: '列出所有 Task Space（并行隔离工作区）及其状态：名称、是否当前活跃、是否存活、当前 URL。default 工作区始终存在。',
     outputSchema: ResultEnvelope,
     annotations: { title: '列出工作区', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async () => structured(await tools.spaceList()));
+  }, wrap(async () => structured(await tools.spaceList())));
 
   server.registerTool('space_new', {
     title: '新建工作区',
@@ -340,7 +428,7 @@ function createMcpServer(): McpServer {
     inputSchema: SpaceNameSchema.shape,
     outputSchema: ResultEnvelope,
     annotations: { title: '新建工作区', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => structured(await tools.spaceNew(args)));
+  }, wrap(async (args: unknown) => structured(await tools.spaceNew(args))));
 
   server.registerTool('space_switch', {
     title: '切换工作区',
@@ -348,7 +436,7 @@ function createMcpServer(): McpServer {
     inputSchema: SpaceNameSchema.shape,
     outputSchema: ResultEnvelope,
     annotations: { title: '切换工作区', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => structured(await tools.spaceSwitch(args)));
+  }, wrap(async (args: unknown) => structured(await tools.spaceSwitch(args))));
 
   server.registerTool('space_close', {
     title: '关闭工作区',
@@ -356,7 +444,7 @@ function createMcpServer(): McpServer {
     inputSchema: SpaceNameSchema.shape,
     outputSchema: ResultEnvelope,
     annotations: { title: '关闭工作区', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => structured(await tools.spaceClose(args)));
+  }, wrap(async (args: unknown) => structured(await tools.spaceClose(args))));
 
   // === Network intercept ===
   server.registerTool('intercept_requests', {
@@ -364,15 +452,17 @@ function createMcpServer(): McpServer {
     description: '按 URL 模式拦截/记录/修改网络请求。需要按规则屏蔽图片/广告加速爬取时，优先用更简单的 set_block_rules。',
     inputSchema: InterceptRequestsSchema.shape,
     annotations: { title: '拦截请求', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.interceptRequests(args)));
+  }, wrap(async (args: unknown) => text(await tools.interceptRequests(args))));
 
   // === 爬虫工具 ===
   server.registerTool('set_block_rules', {
     title: '爬虫加速屏蔽',
-    description: '爬虫加速：屏蔽图片/广告/字体请求，爬取数据前第一步调用，速度提升 3-5 倍。标准爬虫流程的起点。',
+    // 语义已从 context 级收敛为**会话级**（挂本会话每张标签页，不再挂 BrowserContext），
+    // description 必须同步说明作用域，否则 AI 会以为它能影响别的会话/整个浏览器。
+    description: '爬虫加速：屏蔽图片/广告/字体请求，爬取数据前第一步调用，速度提升 3-5 倍。标准爬虫流程的起点。作用于本会话（本会话当前及之后新开的标签页），不影响其他会话。',
     inputSchema: SetBlockRulesSchema.shape,
     annotations: { title: '爬虫加速屏蔽', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => text(await tools.setBlockRules(args)));
+  }, wrap(async (args: unknown) => text(await tools.setBlockRules(args))));
 
   server.registerTool('extract_links', {
     title: '提取链接',
@@ -380,7 +470,7 @@ function createMcpServer(): McpServer {
     inputSchema: ExtractLinksSchema.shape,
     outputSchema: ResultEnvelope,
     annotations: { title: '提取链接', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } satisfies ToolAnnotations,
-  }, async (args) => structured(await tools.extractLinks(args)));
+  }, wrap(async (args: unknown) => structured(await tools.extractLinks(args))));
 
   server.registerTool('extract_data', {
     title: '提取结构化数据',
@@ -388,7 +478,7 @@ function createMcpServer(): McpServer {
     inputSchema: ExtractDataSchema.shape,
     outputSchema: ResultEnvelope,
     annotations: { title: '提取结构化数据', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => structured(await tools.extractData(args)));
+  }, wrap(async (args: unknown) => structured(await tools.extractData(args))));
 
   server.registerTool('wait_and_extract', {
     title: '等待并提取',
@@ -396,7 +486,7 @@ function createMcpServer(): McpServer {
     inputSchema: WaitAndExtractSchema.shape,
     outputSchema: ResultEnvelope,
     annotations: { title: '等待并提取', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => structured(await tools.waitAndExtract(args)));
+  }, wrap(async (args: unknown) => structured(await tools.waitAndExtract(args))));
 
   server.registerTool('batch_fetch', {
     title: '批量抓取 URL',
@@ -404,7 +494,7 @@ function createMcpServer(): McpServer {
     inputSchema: BatchFetchSchema.shape,
     outputSchema: ResultEnvelope,
     annotations: { title: '批量抓取 URL', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } satisfies ToolAnnotations,
-  }, async (args) => structured(await tools.batchFetch(args)));
+  }, wrap(async (args: unknown) => structured(await tools.batchFetch(args))));
 
   server.registerTool('crawl_pages', {
     title: '自动翻页爬取',
@@ -412,7 +502,7 @@ function createMcpServer(): McpServer {
     inputSchema: CrawlPagesSchema.shape,
     outputSchema: ResultEnvelope,
     annotations: { title: '自动翻页爬取', readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true } satisfies ToolAnnotations,
-  }, async (args) => structured(await tools.crawlPages(args)));
+  }, wrap(async (args: unknown) => structured(await tools.crawlPages(args))));
 
   // === ARIA 快照 & 正文提取 ===
   server.registerTool('snapshot', {
@@ -421,7 +511,7 @@ function createMcpServer(): McpServer {
     inputSchema: SnapshotSchema.shape,
     outputSchema: ResultEnvelope,
     annotations: { title: '页面无障碍快照', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
-  }, async (args) => structured(await tools.snapshot(args)));
+  }, wrap(async (args: unknown) => structured(await tools.snapshot(args))));
 
   server.registerTool('discover_urls', {
     title: '站点 URL 发现',
@@ -429,7 +519,7 @@ function createMcpServer(): McpServer {
     inputSchema: DiscoverUrlsSchema.shape,
     outputSchema: ResultEnvelope,
     annotations: { title: '站点 URL 发现', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } satisfies ToolAnnotations,
-  }, async (args) => structured(await tools.discoverUrls(args)));
+  }, wrap(async (args: unknown) => structured(await tools.discoverUrls(args))));
 
   server.registerTool('extract_article', {
     title: '提取正文',
@@ -437,7 +527,7 @@ function createMcpServer(): McpServer {
     inputSchema: ExtractArticleSchema.shape,
     outputSchema: ResultEnvelope,
     annotations: { title: '提取正文', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } satisfies ToolAnnotations,
-  }, async (args) => structured(await tools.extractArticle(args)));
+  }, wrap(async (args: unknown) => structured(await tools.extractArticle(args))));
 
   return server;
 }
@@ -446,12 +536,24 @@ function createApp(): express.Application {
   const app = express();
   app.use(express.json({ limit: '10mb' }));
 
-  // CORS
-  app.use((_req: Request, res: Response, next: NextFunction) => {
-    res.header('Access-Control-Allow-Origin', '*');
+  // CORS：从 '*' 收紧到白名单。带 Origin 的请求一定来自浏览器页面，
+  // 不在白名单直接 403（这也是 DNS rebinding 的第一道拦截）；
+  // MCP 客户端（Claude Code / Codex）不带 Origin，走原路放行。
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    const origin = req.headers.origin;
+    if (origin) {
+      if (!ALLOWED.origins.includes(origin)) {
+        res.status(403).json({ error: 'Origin not allowed' });
+        return;
+      }
+      res.header('Access-Control-Allow-Origin', origin);
+      res.header('Vary', 'Origin');
+    }
     res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, mcp-session-id');
-    if (_req.method === 'OPTIONS') { res.sendStatus(204); return; }
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, mcp-session-id, mcp-protocol-version, last-event-id');
+    // 浏览器端要读会话 ID 才能续用会话，必须显式 expose
+    res.header('Access-Control-Expose-Headers', 'mcp-session-id');
+    if (req.method === 'OPTIONS') { res.sendStatus(204); return; }
     next();
   });
 
@@ -476,6 +578,10 @@ function createApp(): express.Application {
     next();
   });
 
+  // 鉴权只挡 MCP 数据面；/health 留给 PM2/探活脚本，不含敏感信息
+  app.use('/mcp', requireAuth);
+  app.use('/connections', requireAuth);
+
   // Health
   app.get('/health', async (_req: Request, res: Response) => {
     const bm = getBrowserManager();
@@ -483,7 +589,10 @@ function createApp(): express.Application {
       status: bm.isAlive() ? 'ok' : 'error',
       browserAlive: bm.isAlive(),
       uptime: Date.now() - startTime,
-      sessions: transports.size
+      // sessions = MCP 传输层会话数；browserSessions = 真正持有标签页的浏览器会话数。
+      // 两者对不上就说明会话回收漏了(排查资源泄漏的第一手指标)。
+      sessions: transports.size,
+      browserSessions: bm.countSessions()
     };
     res.json(result);
   });
@@ -517,19 +626,32 @@ function createApp(): express.Application {
           }
         }
         const eventStore = new BoundedEventStore();
+        // 会话 ID 自己先生成：McpServer 要在 initialize 处理前就建好，
+        // 提前定下 ID 才能让 44 个 handler 闭包捕获到正确的 sessionId。
+        const newSessionId = randomUUID();
         transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => randomUUID(),
+          sessionIdGenerator: () => newSessionId,
           eventStore,
+          // DNS rebinding 防护：拦住「恶意页面把域名解析到 127.0.0.1 后直连本服务」，
+          // 否则任意网页都能驱动这台机器上**已登录**的浏览器
+          enableDnsRebindingProtection: true,
+          allowedHosts: ALLOWED.hosts,
+          allowedOrigins: ALLOWED.origins,
           onsessioninitialized: (sid) => {
             transports.set(sid, { transport, lastAccess: Date.now() });
             console.log(`[Session] New: ${sid} (total: ${transports.size})`);
+          },
+          // SDK 原生钩子：客户端 DELETE 显式下线 → 立刻回收该会话的标签页
+          onsessionclosed: (sid) => {
+            releaseSession(sid);
+            console.log(`[Session] Closed by client: ${sid}`);
           }
         });
         transport.onclose = () => {
-          const sid = [...transports.entries()].find(([_, e]) => e.transport === transport)?.[0];
-          if (sid) { transports.delete(sid); console.log(`[Session] Closed: ${sid}`); }
+          releaseSession(newSessionId);
+          console.log(`[Session] Closed: ${newSessionId}`);
         };
-        const mcpServer = createMcpServer();
+        const mcpServer = createMcpServer(newSessionId);
         await mcpServer.connect(transport);
       } else {
         // No valid session + not initialize → reject
@@ -567,6 +689,9 @@ function createApp(): express.Application {
   return app;
 }
 
+/** 当前正在监听的 HTTP server（listenWithRetry 每次重试会换一个实例，关闭时要关最新那个） */
+let httpServer: ReturnType<express.Application['listen']> | null = null;
+
 function listenWithRetry(app: express.Application, host: string, port: number, retries: number): void {
   const server = app.listen(port, host, () => {
     console.log('========================================');
@@ -575,43 +700,141 @@ function listenWithRetry(app: express.Application, host: string, port: number, r
     console.log(`  MCP: http://${host}:${port}/mcp`);
     console.log('========================================');
   });
+  httpServer = server;
   server.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE' && retries > 0) {
       console.log(`[Server] Port ${port} in use, retrying in 2s...`);
       setTimeout(() => listenWithRetry(app, host, port, retries - 1), 2000);
     } else { console.error('[Server] Failed:', err.message); process.exit(1); }
   });
+  // 注意：信号处理**不能**注册在这里 —— 每次 EADDRINUSE 重试都会再注册一份，
+  // 一次 SIGINT 会并发触发 N 份 shutdown（各自 close 浏览器 + 各自埋一个 exit 定时器）。
+  // 统一改到 installHttpShutdown()，进程内只注册一次。
+}
 
-  // Graceful shutdown
-  const shutdown = async () => {
-    console.log('[Server] Shutting down...');
-    for (const [sid, entry] of transports) { try { entry.transport.close?.(); } catch {} transports.delete(sid); }
-    try { await getBrowserManager().close(); } catch {}
-    server.close(() => process.exit(0));
-    setTimeout(() => process.exit(1), 5000);
+/**
+ * HTTP 常驻服务的优雅退出（PM2 restart / 升级 / 手动 Ctrl-C 都走这里）。
+ * 关键点与 stdio 路径对齐：
+ *  - shuttingDown 布尔防重入：SIGINT 后紧跟 SIGTERM 不会跑两遍回收；
+ *  - 2 秒硬退出兜底里**先 SIGKILL chromium 再退**：close() 卡住时 process.exit 本身不杀浏览器，
+ *    白等 5 秒然后留下孤儿进程正是要消灭的「进程堆积」；2 秒也与 stdio 保持一致，
+ *    避免超过 PM2 kill_timeout 被 TerminateProcess 硬杀（那时任何钩子都来不及跑）。
+ */
+let shuttingDown = false;
+function installHttpShutdown(): void {
+  const shutdown = async (reason: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[Server] Shutting down: ${reason}`);
+    const hardExit = setTimeout(() => {
+      console.error('[Server] close() timeout, SIGKILL chromium and force exit');
+      try { getBrowserManager().killChromiumSync(); } catch { /* noop */ }
+      process.exit(1);
+    }, 2000);
+    hardExit.unref?.();
+    for (const [sid, entry] of transports) { try { entry.transport.close?.(); } catch { /* noop */ } releaseSession(sid); }
+    try { await getBrowserManager().close(); } catch (e) { console.error('[Server] close error:', e); }
+    // 不等连接排空：SSE 长连接会让 server.close() 的回调永远不触发
+    try { httpServer?.close(); } catch { /* noop */ }
+    process.exit(0);
   };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', () => { void shutdown('SIGINT'); });
+  process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
+  process.on('SIGHUP', () => { void shutdown('SIGHUP'); });
+}
+
+/**
+ * 两种传输**共用**的进程级兜底 —— 原来只注册在 runStdio() 里。
+ * HTTP 现在是 7x24 常驻生产路径（PM2 restart / 升级反复走），一旦异常退出，
+ * chromium 变孤儿会一直持有 storage/user_data 的 profile 锁，下次启动直接失败。
+ *
+ * 说明：patchright 自己也在 process.on('exit') 里 taskkill 了浏览器进程树，
+ * 实测大多数场景它已兜住；这里保留同名兜底是为了不依赖第三方内部实现，
+ * 且与 stdio 路径保持完全一致的退出语义。killChromiumSync 幂等，重复执行无副作用。
+ */
+let guardsInstalled = false;
+function installProcessGuards(): void {
+  if (guardsInstalled) return;
+  guardsInstalled = true;
+  // ★ 最后一道闸：Node 退出前同步 SIGKILL chromium，无论怎么退都执行
+  process.on('exit', () => {
+    try { getBrowserManager().killChromiumSync(); } catch { /* exit handler 不能抛 */ }
+  });
+  process.on('uncaughtException', (err) => {
+    console.error('[Server] uncaughtException:', err);
+    process.exit(1);
+  });
+  process.on('unhandledRejection', (reason) => {
+    console.error('[Server] unhandledRejection:', reason);
+    process.exit(1);
+  });
+}
+
+/**
+ * 从 `netstat -ano` 的输出里**精确**挑出监听 `port` 的 PID。
+ *
+ * 原实现是 `netstat -ano | findstr :${port}` —— findstr 是**子串匹配**：
+ * 有人监听 127.0.0.1:32110 时 `findstr :3211` 照样命中该行，行尾正则把它的 PID 抠出来，
+ * 于是 killPortProcess(3211) 会 `taskkill /F /T` 掉一个**完全无关**的进程连同它整棵进程树。
+ * 端口越短命中面越大（:80 能命中 :8080/:8000/:1080…），/T 又把误杀半径放大到子进程树。
+ *
+ * 这里改成按列解析，同时要求三件事全部成立才收下这个 PID：
+ *   1) 协议列以 TCP 开头（兼容部分 Windows 把 IPv6 行标成 TCPv6；
+ *      UDP 行只有 4 列、没有状态列，被下面的列数/状态判断天然挡掉）
+ *   2) 本地地址的**端口字段**严格等于 port —— 取最后一个 ':' 之后的部分做数值比较，
+ *      IPv6 的 `[::1]:3215` / `[::]:3215` 同样正确（不会被 `::` 里的冒号带偏）
+ *   3) 状态是 LISTENING —— 否则一条源端口恰好是 3215 的**出站连接**也会被当成占用者杀掉
+ *
+ * 不加 `-p TCP` 过滤：实测 Windows 的 `netstat -ano -p TCP` 只出 IPv4 行，
+ * 绑在 `[::1]` / `[::]` 上的监听会整个看不见 —— 那样端口被 IPv6 占用时清不掉，
+ * 反而比原实现更糟。全量取回来在这里自己判协议列。
+ *
+ * 非英文 Windows 的 netstat 只本地化表头，状态值仍是 ASCII 的 LISTENING；
+ * 表头乱码行过不了「第一列以 TCP 开头」这关，被自然跳过。
+ */
+function parseWindowsListenerPids(netstatOutput: string, port: number): Set<string> {
+  const pids = new Set<string>();
+  for (const line of netstatOutput.split(/\r?\n/)) {
+    const cols = line.trim().split(/\s+/);
+    // 期望列序: Proto | Local Address | Foreign Address | State | PID
+    if (cols.length < 5) continue;
+    const [proto, local, , state, pid] = cols;
+    if (!proto?.toUpperCase().startsWith('TCP')) continue;
+    if (state?.toUpperCase() !== 'LISTENING') continue;
+    if (!local || !pid || !/^\d+$/.test(pid)) continue;
+    const sep = local.lastIndexOf(':');
+    if (sep < 0) continue;
+    if (Number(local.slice(sep + 1)) !== port) continue;
+    pids.add(pid);
+  }
+  return pids;
 }
 
 async function killPortProcess(port: number): Promise<void> {
+  // 端口先做整数校验再进 shell 命令：既挡住命令注入，也顺手挡住 NaN 拼出的畸形命令
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return;
   try {
     const { execSync } = await import('child_process');
     if (process.platform === 'win32') {
-      const output = execSync(`netstat -ano | findstr :${port}`, { encoding: 'utf-8', timeout: 5000 });
-      const pids = new Set<string>();
-      for (const line of output.trim().split('\n')) {
-        const m = line.trim().match(/\s+(\d+)$/);
-        if (m && m[1] && m[1] !== String(process.pid)) pids.add(m[1]);
-      }
-      for (const pid of pids) {
-        try { execSync(`taskkill /F /PID ${pid}`, { timeout: 5000 }); } catch {}
+      // 不再用 findstr 预筛（子串匹配会把 :32110 当成 :3211），整份输出交给精确解析。
+      // 取全量表就有了旧实现没有的失败模式：连接数极多的机器（数万条 TIME_WAIT）会超过
+      // execSync 默认 1 MiB 的 maxBuffer 抛 ENOBUFS，端口清理直接失效 —— 显式放宽到 16 MiB。
+      const output = execSync('netstat -ano', { encoding: 'utf-8', timeout: 5000, maxBuffer: 16 * 1024 * 1024 });
+      for (const pid of parseWindowsListenerPids(output, port)) {
+        if (pid === String(process.pid)) continue;
+        // /T 连同**子进程树**一起杀：旧 server 被 TerminateProcess 硬杀时它的 exit 钩子
+        // 一个都不会跑，不带 /T 就要靠 chromium 自己发现 CDP 管道断开才退出；
+        // 浏览器卡住（模态框 / 渲染进程无响应）时就会留下持有 profile 锁的孤儿。
+        // 前提是 PID 挑得准 —— 挑错了 /T 会把误杀面从一个进程放大到一整棵树。
+        try { execSync(`taskkill /F /T /PID ${pid}`, { timeout: 5000 }); } catch {}
       }
     } else {
-      const output = execSync(`lsof -ti tcp:${port}`, { encoding: 'utf-8', timeout: 5000 });
+      // lsof 的 -i tcp:PORT 是按端口号精确匹配（不是子串），再加 -sTCP:LISTEN
+      // 排除「源端口恰好等于 port 的出站连接」，与 Windows 分支语义对齐。
+      const output = execSync(`lsof -ti tcp:${port} -sTCP:LISTEN`, { encoding: 'utf-8', timeout: 5000 });
       for (const pid of output.trim().split('\n')) {
-        if (pid && pid !== String(process.pid)) {
-          try { execSync(`kill -9 ${pid}`, { timeout: 5000 }); } catch {}
+        if (pid && /^\d+$/.test(pid.trim()) && pid.trim() !== String(process.pid)) {
+          try { execSync(`kill -9 ${pid.trim()}`, { timeout: 5000 }); } catch {}
         }
       }
     }
@@ -641,22 +864,9 @@ async function runStdio(): Promise<void> {
   await server.connect(new StdioServerTransport());
   console.error(`[Server] Claude Code MCP Browser v${SERVER_VERSION} ready on stdio (pid=${process.pid} ppid=${process.ppid})`);
 
-  // ★ 最后一道闸：Node 退出前同步 SIGKILL chromium，无论怎么退都执行
-  // 这一步比 await close() 重要 —— close() 可能卡住或失败；SIGKILL pid 是原子的
-  process.on('exit', () => {
-    try { getBrowserManager().killChromiumSync(); } catch { /* exit handler 不能抛 */ }
-  });
-  // uncaughtException / unhandledRejection 兜底：转成正常退出走 exit 钩子
-  process.on('uncaughtException', (err) => {
-    console.error('[Server] uncaughtException:', err);
-    process.exit(1);
-  });
-  process.on('unhandledRejection', (reason) => {
-    console.error('[Server] unhandledRejection:', reason);
-    process.exit(1);
-  });
+  // ★ 最后一道闸(exit / uncaughtException / unhandledRejection)已提到 main() 里的
+  // installProcessGuards()，两种传输共用；stdio 侧行为与改造前完全一致。
 
-  let shuttingDown = false;
   const shutdown = async (reason: string): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
@@ -707,16 +917,32 @@ async function runStdio(): Promise<void> {
 
 /** HTTP 传输入口：Express + Streamable HTTP */
 async function runHttp(): Promise<void> {
+  // fail-fast：绑非回环地址等于把「已登录浏览器的控制权」放到网络上，
+  // 没配 token 就直接拒绝启动，防止误开裸端口
+  if (!isLoopbackHost(HOST) && !AUTH_TOKEN) {
+    console.error('========================================');
+    console.error(`[Server] 拒绝启动：HOST=${HOST} 不是回环地址，但未设置 MCP_AUTH_TOKEN。`);
+    console.error('[Server] 浏览器里存着已登录的会话，裸端口等于把控制权交出去。');
+    console.error('[Server] 处理方式二选一：');
+    console.error('[Server]   1) 只本机用 —— 删掉 HOST（默认 127.0.0.1）');
+    console.error('[Server]   2) 跨机共享 —— 设置 MCP_AUTH_TOKEN=<足够长的随机串>，客户端带 Authorization: Bearer <token>');
+    console.error('========================================');
+    process.exit(1);
+  }
   await killPortProcess(PORT);
   await new Promise(resolve => setTimeout(resolve, 1000));
   console.log('[Server] Starting browser...');
   try { await getBrowserManager().getContext(); console.log('[Server] Browser ready'); }
   catch { console.error('[Server] Browser start failed, will retry on first request'); }
   const app = createApp();
-  listenWithRetry(app, process.env['HOST'] ?? '0.0.0.0', PORT, 3);
+  console.log(`[Server] auth=${AUTH_TOKEN ? 'bearer' : 'off (loopback only)'} allowedHosts=${ALLOWED.hosts.join(',')}`);
+  installHttpShutdown();
+  listenWithRetry(app, HOST, PORT, 3);
 }
 
 async function main(): Promise<void> {
+  // 进程级兜底两种传输共用，且必须在启动浏览器**之前**装好
+  installProcessGuards();
   if (STDIO) {
     await runStdio();
   } else {

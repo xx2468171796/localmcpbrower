@@ -4,7 +4,8 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
-import type { Frame, Page } from 'patchright';
+import { fileURLToPath } from 'node:url';
+import type { Frame, Page, Route } from 'patchright';
 import { getBrowserManager } from './browser.js';
 import { SNAPSHOT_WALKER_FN, EGO_HELPER_SRC } from './injected.js';
 import {
@@ -28,8 +29,16 @@ import type {
   ScreenshotResult, ExecuteJsResult, ConsoleLogEntry, NetworkRequestEntry
 } from './types.js';
 
+/**
+ * 服务安装根目录(dist/ 的上一级)。
+ * 截图目录与 profile 一样必须相对**安装目录**解析而不是 process.cwd():
+ * 常驻 HTTP 服务下 CWD 与调用方项目无关,按 CWD 落盘会让 storage/ 散落各处。
+ * 需要落到别处时用 SCREENSHOT_DIR 覆盖。
+ */
+const INSTALL_ROOT = path.resolve(fileURLToPath(import.meta.url), '../..');
+
 function ensureScreenshotDir(): string {
-  const dir = path.resolve('storage/screenshots');
+  const dir = path.resolve(process.env['SCREENSHOT_DIR'] ?? path.join(INSTALL_ROOT, 'storage', 'screenshots'));
   if (!fs.existsSync(dir)) { fs.mkdirSync(dir, { recursive: true }); }
   return dir;
 }
@@ -537,15 +546,22 @@ export async function fileUpload(input: unknown): Promise<ToolResult<{ uploaded:
   }
 }
 
+// ------------------------------------------------------------
+// 多标签页:一律只作用于**调用方会话自己的标签页**。
+// 旧实现枚举整个 context.pages(),HTTP 多会话下 A 会列出、切走甚至关掉 B 的标签页。
+// ------------------------------------------------------------
+
 // Multi-tab: list tabs
-export async function listTabs(): Promise<ToolResult<{ tabs: { index: number; url: string; title: string }[] }>> {
+export async function listTabs(): Promise<ToolResult<{ tabs: { index: number; url: string; title: string; active: boolean }[] }>> {
   try {
-    const context = await getBrowserManager().getContext();
-    const pages = context.pages();
+    const bm = getBrowserManager();
+    const pages = await bm.getSessionPages();
+    const activeIndex = bm.getActiveTabIndex();
     const tabs = await Promise.all(pages.map(async (p, i) => ({
       index: i,
       url: p.url(),
-      title: await p.title().catch(() => '')
+      title: await p.title().catch(() => ''),
+      active: i === activeIndex
     })));
     return { success: true, data: { tabs } };
   } catch (error) {
@@ -557,14 +573,11 @@ export async function listTabs(): Promise<ToolResult<{ tabs: { index: number; ur
 export async function newTab(input: unknown): Promise<ToolResult<{ index: number; url: string }>> {
   try {
     const { url } = (input as { url?: string }) ?? {};
-    const context = await getBrowserManager().getContext();
-    const page = await context.newPage();
-    // 新标签页创建后立即设为当前活动页，符合"新建标签页自动获得焦点"的直觉；
-    // 放在 goto 之前，这样即便跳转超时，后续操作仍作用于这个新标签页而非旧的。
-    getBrowserManager().setActivePage(page);
+    // openTab 内部已把新标签页设为本会话的活跃页(在 goto 之前),
+    // 这样即便跳转超时，后续操作仍作用于这个新标签页而非旧的。
+    const { page, index } = await getBrowserManager().openTab();
     if (url) await page.goto(url, { waitUntil: 'commit', timeout: 30000 });
-    const pages = context.pages();
-    return { success: true, data: { index: pages.indexOf(page), url: page.url() } };
+    return { success: true, data: { index, url: page.url() } };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
@@ -575,12 +588,8 @@ export async function switchTab(input: unknown): Promise<ToolResult<{ index: num
   try {
     const { index } = input as { index: number };
     if (index === undefined) return { success: false, error: 'index is required' };
-    const context = await getBrowserManager().getContext();
-    const pages = context.pages();
-    if (index < 0 || index >= pages.length) return { success: false, error: `Tab index ${index} out of range (0-${pages.length - 1})` };
-    const page = pages[index]!;
+    const page = await getBrowserManager().activateTab(index);
     await page.bringToFront();
-    getBrowserManager().setActivePage(page);
     return { success: true, data: { index, url: page.url(), title: await page.title() } };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
@@ -592,29 +601,30 @@ export async function closeTab(input: unknown): Promise<ToolResult<{ closed: boo
   try {
     const { index } = input as { index: number };
     if (index === undefined) return { success: false, error: 'index is required' };
-    const context = await getBrowserManager().getContext();
-    const pages = context.pages();
-    if (index < 0 || index >= pages.length) return { success: false, error: `Tab index ${index} out of range` };
-    if (pages.length <= 1) return { success: false, error: 'Cannot close the last tab' };
-    await pages[index]!.close();
-    const remaining = context.pages();
-    const nextPage = remaining[Math.min(index, remaining.length - 1)];
-    if (nextPage) getBrowserManager().setActivePage(nextPage);
-    return { success: true, data: { closed: true, remaining: remaining.length } };
+    const remaining = await getBrowserManager().closeTabAt(index);
+    return { success: true, data: { closed: true, remaining } };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
 // Network intercept
-// 已注册的拦截 handler，按 urlPattern 索引；同一 pattern 重复调用时先 unroute 旧 handler，避免叠加
-const interceptHandlers = new Map<string, { regex: RegExp; handler: (route: import('patchright').Route) => void }>();
+// 拦截规则记录挂在**页面**上(WeakMap<Page, ...>),而不是全局 Map:
+//  1) 页面本身就是天然的会话/标签隔离边界,key 不再需要 sessionId 前缀
+//     (原来 key 是「sessionId + 分隔符 + urlPattern」,而那个分隔符是个**裸 NUL 字节**,
+//      会让 git/ripgrep 把本文件判定为二进制:Grep 直接拒绝搜索、diff 渲染异常,
+//      部分编辑器/格式化工具还会静默剥掉它导致 key 冲突);
+//  2) unroute 一定打在当初 route 的那张页上 —— 原来用「调用时的当前活跃页」,
+//     会话中途 switch_tab 后再对同一 pattern 调用,unroute 会打到新页上,旧页的规则永远摘不掉;
+//  3) 条目随页面关闭被 GC 回收 —— 原来是「会话数 × pattern 数」只增不减,常驻服务里会一直涨。
+const interceptHandlers = new WeakMap<Page, Map<string, { regex: RegExp; handler: (route: Route) => void }>>();
 
 export async function interceptRequests(input: unknown): Promise<ToolResult<{ intercepting: boolean; urlPattern: string; action: string }>> {
   try {
     const { urlPattern, action } = input as { urlPattern: string; action: string };
     if (!urlPattern || !action) return { success: false, error: 'urlPattern and action are required' };
     const page = await getBrowserManager().getPage();
+    let perPage = interceptHandlers.get(page);
     // 支持 glob 模式（如 *.css）和正则字符串两种输入
     let regex: RegExp;
     try {
@@ -624,13 +634,13 @@ export async function interceptRequests(input: unknown): Promise<ToolResult<{ in
       regex = new RegExp(globToRegex);
     }
 
-    const prev = interceptHandlers.get(urlPattern);
+    const prev = perPage?.get(urlPattern);
     if (prev) {
       await page.unroute(prev.regex, prev.handler).catch(() => {});
-      interceptHandlers.delete(urlPattern);
+      perPage?.delete(urlPattern);
     }
 
-    let handler: (route: import('patchright').Route) => void;
+    let handler: (route: Route) => void;
     if (action === 'block') {
       handler = route => route.abort();
     } else if (action === 'log') {
@@ -644,7 +654,8 @@ export async function interceptRequests(input: unknown): Promise<ToolResult<{ in
       return { success: false, error: `Unknown action: ${action}. Use block/log/modify` };
     }
     await page.route(regex, handler);
-    interceptHandlers.set(urlPattern, { regex, handler });
+    if (!perPage) { perPage = new Map(); interceptHandlers.set(page, perPage); }
+    perPage.set(urlPattern, { regex, handler });
     return { success: true, data: { intercepting: true, urlPattern, action } };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
@@ -658,23 +669,23 @@ export async function interceptRequests(input: unknown): Promise<ToolResult<{ in
 /** 广告域名黑名单 */
 const AD_DOMAINS = ['doubleclick.net','googlesyndication.com','adservice.google','amazon-adsystem.com','facebook.com/tr','analytics.google','googletagmanager.com','hotjar.com','clarity.ms'];
 
-// 挂在 context 上的当前屏蔽规则 handler；重复调用 set_block_rules 时先 unroute，避免叠加
-let activeBlockHandler: ((route: import('patchright').Route) => void) | null = null;
-
-/** 设置请求拦截规则（屏蔽图片/广告，加速爬取）。挂在 context 上，对所有标签页（含后开的）生效 */
+/**
+ * 设置请求拦截规则（屏蔽图片/广告，加速爬取）。
+ *
+ * 作用范围 = **本会话自己的所有标签页**（含之后新开的），由 BrowserManager.setBlockRoute 落地。
+ * 原来挂在 BrowserContext 上：多个会话共享同一个 default space 的 context，
+ * A 会话开「屏蔽图片」会连带屏蔽 B 会话所有标签页的图片，B 的 take_screenshot 拿到缺图页面。
+ * 重复调用时 setBlockRoute 内部会先 unroute 旧 handler，避免规则叠加。
+ */
 export async function setBlockRules(input: unknown): Promise<ToolResult<{ active: boolean; rules: object }>> {
   try {
     const parsed = SetBlockRulesSchema.safeParse(input);
     if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
     const { blockImages, blockMedia, blockFonts, blockAds, customPatterns } = parsed.data;
-    const context = await getBrowserManager().getContext();
+    // 先确保本会话至少有一张标签页，否则规则挂不上任何页面（首次调用即生效，与旧行为一致）
+    await getBrowserManager().getPage();
 
-    if (activeBlockHandler) {
-      await context.unroute('**/*', activeBlockHandler).catch(() => {});
-      activeBlockHandler = null;
-    }
-
-    const handler = (route: import('patchright').Route) => {
+    const handler = (route: Route) => {
       const url = route.request().url();
       const resourceType = route.request().resourceType();
 
@@ -685,8 +696,7 @@ export async function setBlockRules(input: unknown): Promise<ToolResult<{ active
       if (customPatterns.some(p => url.includes(p))) { route.abort(); return; }
       route.continue();
     };
-    await context.route('**/*', handler);
-    activeBlockHandler = handler;
+    await getBrowserManager().setBlockRoute(handler);
 
     return { success: true, data: { active: true, rules: { blockImages, blockMedia, blockFonts, blockAds, customPatterns } } };
   } catch (error) {

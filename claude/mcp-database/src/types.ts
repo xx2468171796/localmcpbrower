@@ -51,4 +51,8 @@ export interface ConnectionStatus {
   type: DatabaseType | null;
   host: string | null;
   database: string | null;
+  /** 当前会话标识:HTTP 多会话共享服务时用于区分「我这条连接」,stdio 恒为 __stdio__ */
+  sessionId?: string;
+  /** 全服务当前存活的共享连接池数量(排障用) */
+  pools?: number;
 }
