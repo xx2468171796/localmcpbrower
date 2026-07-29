@@ -74,6 +74,7 @@ HTTP 模式在 Claude Code 里 `/mcp` 重连即可生效；stdio 模式下次会
 
 ## 文档
 
+- [`AI-DEPLOY.md`](./AI-DEPLOY.md) —— **给 AI 助手的部署 Runbook**（可直接执行的命令序列 + 每步自检 + 不可违背的约束）
 - [`DEPLOY.md`](./DEPLOY.md) —— **新机器 / 多机部署指南**（含三平台开机自启、安全默认值、排障）
 - [`claude/README.md`](./claude/README.md) —— 完整安装、配置与用法
 - [`CODEX.md`](./CODEX.md) —— Codex CLI 全局 MCP 注册、调用与排障
