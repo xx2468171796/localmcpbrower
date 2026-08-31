@@ -752,6 +752,26 @@ function installHttpShutdown(): void {
  * 实测大多数场景它已兜住；这里保留同名兜底是为了不依赖第三方内部实现，
  * 且与 stdio 路径保持完全一致的退出语义。killChromiumSync 幂等，重复执行无副作用。
  */
+/**
+ * 「目标已关闭」类协议错误 —— 属于**正常竞态**，不是 bug。
+ *
+ * patchright 内部会在新 frame/session 附着时重新下发拦截指令
+ * (CRNetworkManager.setRequestInterception → _forEachSession → Network.setCacheDisabled)。
+ * 这条链路上的 Promise **不属于任何调用方** —— 我们这边所有 route/unroute 都带了 .catch()，
+ * 照样兜不住它。只要在它遍历 session 的瞬间有一张标签页被关掉(用户手动关、页面自己 window.close、
+ * popup 生命周期结束…)，就会抛出一条无主的 ProtocolError，直接进 unhandledRejection。
+ *
+ * 原来这里无差别 process.exit(1)，后果被严重放大：
+ * 关掉一张标签页 → 整个常驻服务退出 → PM2 拉起新进程 → **浏览器连同全部登录态一起没了**。
+ * 用户观感就是「浏览器总是自动关闭」，而且越用越频繁(标签页开关越多，撞上竞态的概率越大)。
+ *
+ * 所以这里只对**这一类**已知良性错误放行(记一条 warn 便于观察频次)，
+ * 其余未捕获拒绝仍然 exit(1) 快速失败 —— 不掩盖真 bug。
+ * uncaughtException 保持原样退出：那类错误可能让进程处于不一致状态，继续跑更危险。
+ */
+const BENIGN_CLOSED_TARGET =
+  /(target|session|page|browser|context)\s+closed|已关闭|Execution context was destroyed|frame was detached/i;
+
 let guardsInstalled = false;
 function installProcessGuards(): void {
   if (guardsInstalled) return;
@@ -765,6 +785,12 @@ function installProcessGuards(): void {
     process.exit(1);
   });
   process.on('unhandledRejection', (reason) => {
+    const msg = reason instanceof Error ? `${reason.name}: ${reason.message}` : String(reason);
+    if (BENIGN_CLOSED_TARGET.test(msg)) {
+      // 不退出：一张标签页的关闭竞态不该赔上整个浏览器和登录态
+      console.warn('[Server] 忽略已关闭目标的协议错误(不退出):', msg.split('\n')[0]);
+      return;
+    }
     console.error('[Server] unhandledRejection:', reason);
     process.exit(1);
   });
