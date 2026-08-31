@@ -519,12 +519,15 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   }, wrap(async (args: unknown, ctx: unknown) => {
     const { message } = args as { message: string };
     const responses = (ctx as { mcpReq?: { inputResponses?: unknown } } | undefined)?.mcpReq?.inputResponses;
-    const ack = readHumanAck(responses);
-    if (!ack) {
-      // 还没问过 / 用户拒绝 / 取消 / 应答不合 schema —— 四种情况处理方式相同:发出请求。
-      // (真正被拒绝时客户端不会再回调这里,不会死循环)
-      return buildHumanRequest(message);
-    }
+    const outcome = readHumanAck(responses);
+    // ⚠️ 只有"从没问过"才发问。
+    // 第一版把"拒绝/取消"也当成"该发问",于是用户一点拒绝就无限重问,
+    // 撞上 SDK 的 maxRounds(8)后报
+    //   Multi-round-trip request 'tools/call' still required input after 8 rounds
+    // 用户视角是"点了拒绝然后卡住,最后一个看不懂的错"。别改回去。
+    if (outcome.state === 'ask') return buildHumanRequest(message);
+    if (outcome.state === 'refused') return text({ success: false, error: outcome.reason });
+    const ack = outcome.ack;
     // 顺手把当前标签页状态带回去:人工操作后页面多半已经变了(登录跳转/新开窗口),
     // 让调用方少一次 list_tabs 往返就能知道现在在哪
     const tabs = await tools.listTabs();
