@@ -96,7 +96,13 @@ export function endpointPath(service: string): string {
     const user = (process.env['USERNAME'] ?? 'user').replace(/[^A-Za-z0-9_-]/g, '');
     return `\\\\.\\pipe\\localmcp-${user}-${service}`;
   }
-  const base = process.env['XDG_RUNTIME_DIR'] ?? os.tmpdir();
+  // ⚠️ XDG_RUNTIME_DIR **设了不等于目录在**:`/run/user/<uid>` 由 logind 在用户登录时创建,
+  // 未开 linger 的机器上开机那一刻它并不存在。而本服务常由 pm2 的 system service 拉起
+  // (`pm2 resurrect` 会把当初保存的 XDG_RUNTIME_DIR 一并还原),于是开机自启时
+  // listen 直接 ENOENT —— pipe 腿失败只打日志、HTTP 腿照常起,进程显示 online,
+  // 表现成「重启机器后所有 stdio 客户端都连不上」。存在性判掉这一类。
+  const xdg = process.env['XDG_RUNTIME_DIR'];
+  const base = xdg && fs.existsSync(xdg) ? xdg : os.tmpdir();
   return path.join(base, `localmcp-${process.getuid?.() ?? 0}-${service}.sock`);
 }
 
@@ -121,18 +127,6 @@ export function startPipeLeg(opts: PipeLegOptions): { close: () => void; endpoin
   let sharedGen = 0;
   let sharedId = `pipe-shared-${opts.service}-${sharedGen}`;
   let liveConns = 0;
-
-  // unix socket 是文件,进程被 SIGKILL 后会留下死文件,下次 listen 直接 EADDRINUSE。
-  // 但**不能无脑删** —— 那会把另一个正在跑的实例踢下线。先探活:连得上说明有人在用,
-  // 连不上(ECONNREFUSED)才是死文件,可以安全删。
-  if (process.platform !== 'win32' && fs.existsSync(endpoint)) {
-    try {
-      const probe = net.connect(endpoint);
-      probe.on('error', () => { try { fs.unlinkSync(endpoint); } catch { /* 已被别人清掉 */ } });
-      probe.on('connect', () => { probe.destroy(); });
-      probe.setTimeout(300, () => probe.destroy());
-    } catch { /* 探活失败不阻断启动,交给下面的 listen 报错 */ }
-  }
 
   const srv = net.createServer((socket) => {
     if (shared && liveConns === 0) {
@@ -183,8 +177,54 @@ export function startPipeLeg(opts: PipeLegOptions): { close: () => void; endpoin
     socket.on('error', () => { /* close 事件随后会到,统一在那里清理 */ });
   });
 
-  srv.on('error', (e) => console.error('[Pipe] 监听错误:', e));
-  srv.listen(endpoint, () => console.log(`[Pipe] 监听 ${endpoint}`));
+  // unix socket 是文件,进程被 SIGKILL(或重启时旧进程收尾晚于新进程 listen)会留下死文件,
+  // 下次 listen 直接 EADDRINUSE。但**不能无脑删** —— 那会把另一个正在跑的实例踢下线。
+  //
+  // ⚠️ 原来的写法是「listen 之前异步探活、连不上就删」,但 `net.connect` 的回调要等下一个
+  // tick,而 `srv.listen()` 紧跟着同步执行 —— 探活还没回来就已经撞上旧文件。
+  // **重启场景必现**:2026-08-31 本机升级实测,pm2 restart 后 EADDRINUSE,
+  // 而 pipe 腿失败只打日志、HTTP 腿照常起,进程显示 online,表现成
+  // 「服务在跑,但所有 stdio 客户端连不上」—— 极难查。
+  //
+  // 改成:撞到 EADDRINUSE 再探活。连得上 = 真有实例在跑,让位并说清楚;
+  // 连不上 = 死文件,删掉重试一次。顺带把「文件不存在但仍 EADDRINUSE」等情况留给第二次报错。
+  // 回调写在 `on('listening')` 而不是 `srv.listen(path, cb)`:后者每调一次就挂一个 once 监听器,
+  // 第一次 bind 失败时那个监听器并不会被摘掉,重试成功后会把「监听」打印两遍。
+  let retried = false;
+  srv.on('listening', () => console.log(`[Pipe] 监听 ${endpoint}`));
+  const listen = () => srv.listen(endpoint);
+
+  srv.on('error', (e) => {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code !== 'EADDRINUSE' || process.platform === 'win32' || retried) {
+      console.error('[Pipe] 监听错误:', e);
+      return;
+    }
+    retried = true;
+    let settled = false;
+    const reclaim = () => {
+      if (settled) return;
+      settled = true;
+      try { fs.unlinkSync(endpoint); } catch { /* 已被别人清掉 */ }
+      listen();
+    };
+    let probe: net.Socket;
+    try {
+      probe = net.connect(endpoint);
+    } catch {
+      reclaim();
+      return;
+    }
+    probe.on('error', reclaim);                       // 连不上 = 死文件
+    probe.on('connect', () => {                        // 连得上 = 另一个实例还活着
+      settled = true;
+      probe.destroy();
+      console.error(`[Pipe] ${endpoint} 已被另一个实例占用,本进程不启 pipe 腿(HTTP 腿不受影响)`);
+    });
+    probe.setTimeout(300, () => { probe.destroy(); reclaim(); });
+  });
+
+  listen();
 
   return {
     endpoint,

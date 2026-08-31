@@ -21,22 +21,51 @@
  */
 
 import net from 'node:net';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
 const service = process.argv[2] ?? 'headless';
 
-/** 必须与 src/pipe.ts 的 endpointPath 保持一致 —— 改一处必须改两处 */
-function endpointPath(svc) {
+/**
+ * 候选端点路径。第一条与 src/pipe.ts 的 endpointPath 一致(服务端就按它建 socket);
+ * 后面几条是**客户端拿不到 XDG_RUNTIME_DIR 时**的兜底。
+ *
+ * ⚠️ 为什么必须兜底:MCP 客户端 spawn stdio 服务器时普遍**只透传一小撮环境变量**
+ * (SDK 的 getDefaultEnvironment 就是 HOME/PATH/SHELL/USER 那几个;实测 Codex 的
+ * VSCode 扩展只给 8 个;本仓自己的 test/smoke-*.mjs 也没传)。
+ * 而服务端跑在 pm2/登录会话里,XDG_RUNTIME_DIR **是有的** ——
+ * 于是服务端建在 /run/user/1000/,shim 却去 /tmp 找,ENOENT,**永远连不上**。
+ * 这不是配置问题:两边算路径的输入本来就不一样。
+ *
+ * `/run/user/<uid>` 在任何 systemd Linux 上都等价于 XDG_RUNTIME_DIR,可以直接推出来,
+ * 不需要客户端配合传环境变量。(2026-08-31 实测于 Linux + Codex/Claude Code。)
+ */
+function endpointCandidates(svc) {
   if (process.platform === 'win32') {
     const user = (process.env.USERNAME ?? 'user').replace(/[^A-Za-z0-9_-]/g, '');
-    return String.raw`\\.\pipe\localmcp-` + `${user}-${svc}`;
+    return [String.raw`\\.\pipe\localmcp-` + `${user}-${svc}`];
   }
-  const base = process.env.XDG_RUNTIME_DIR ?? os.tmpdir();
-  return path.join(base, `localmcp-${process.getuid?.() ?? 0}-${svc}.sock`);
+  const uid = process.getuid?.() ?? 0;
+  const bases = [
+    process.env.XDG_RUNTIME_DIR,
+    process.platform === 'linux' ? `/run/user/${uid}` : undefined,
+    os.tmpdir(),
+    '/tmp',
+  ].filter(Boolean);
+  const seen = new Set();
+  return bases
+    .map((b) => path.join(b, `localmcp-${uid}-${svc}.sock`))
+    .filter((p) => (seen.has(p) ? false : (seen.add(p), true)));
 }
 
-const endpoint = endpointPath(service);
+const candidates = endpointCandidates(service);
+// 命名管道没有「文件存在」这一说,Windows 直接用第一条;
+// unix 挑真实存在的那条,都不存在时仍用第一条,好让报错信息指向服务端该建的位置。
+const endpoint =
+  process.platform === 'win32'
+    ? candidates[0]
+    : (candidates.find((p) => { try { return fs.statSync(p).isSocket(); } catch { return false; } }) ?? candidates[0]);
 const sock = net.connect(endpoint);
 
 // Nagle 会把小的 JSON-RPC 消息攒着,给交互式调用凭空加延迟

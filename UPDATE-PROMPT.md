@@ -203,5 +203,24 @@ npm run test:smoke:db     # 数据库 15 个工具 + 只读护栏回归(需先�
   会让 A 窗口后续的 SQL 全跑到生产库上,**浏览器串台最多拿错数据,数据库串台可能写错库**
 - 登录态(cookie)**始终共享**,与上面两个开关无关 —— 登录一次全部通用
 
+**pipe 传输的三个坑已修**(2026-08-31,Linux 实机升级时暴露,全部表现为「服务 online 却连不上」):
+
+- **socket 路径两边算不到一起**:服务端跑在 pm2/登录会话里有 `XDG_RUNTIME_DIR`,建在
+  `/run/user/<uid>/`;而客户端 spawn stdio 服务器时**普遍只透传一小撮环境变量**
+  (MCP SDK 的 `getDefaultEnvironment` 就那几个,实测 Codex 的 VSCode 扩展只给 8 个,
+  本仓自己的 `test/smoke-*.mjs` 也没传),shim 算出来是 `/tmp/`,ENOENT,**永远连不上**。
+  shim 现在按 `XDG_RUNTIME_DIR → /run/user/<uid> → tmpdir → /tmp` 逐个找真实存在的 socket,
+  不再要求客户端配合传环境变量。
+- **重启必现 EADDRINUSE**:清理死 socket 的探活是异步的,`listen()` 却同步紧跟着执行,
+  探活还没回来就撞上旧文件。改成撞到 EADDRINUSE 再探活:连得上=真有实例在跑就让位,
+  连不上=死文件,删掉重试一次。
+- **`XDG_RUNTIME_DIR` 设了不等于目录在**:`/run/user/<uid>` 由 logind 在用户登录时创建,
+  没开 linger 的机器开机那一刻它并不存在,而 `pm2 resurrect` 会把它照原样还原 ——
+  开机自启的服务 listen 直接 ENOENT。现在多判一次目录存在,不存在就退到 tmpdir。
+  想让 socket 稳定落在 0700 的 `/run/user/<uid>`(而不是世界可连的 `/tmp`),
+  在跑 pm2 的机器上补两件事:`loginctl enable-linger <用户>`,
+  以及给 pm2 的 systemd 单元加 `Environment=XDG_RUNTIME_DIR=/run/user/<uid>`
+  (pm2 的 dump 只存 ecosystem 里显式写的 env,不存继承来的)。
+
 **稳定性**:浏览器窗口被关/崩溃 → 下次调工具约 1 秒自动重开;服务进程挂 → PM2 重启;
 整机重启 → 开机自启恢复。以前**关一个标签页就可能把整个服务连同浏览器和登录态干掉**,已修。
