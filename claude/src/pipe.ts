@@ -112,7 +112,14 @@ export function startPipeLeg(opts: PipeLegOptions): { close: () => void; endpoin
   // 共享模式下,所有连接落到同一个 sessionId。
   // 但**不能一关窗口就回收** —— 那会把其它窗口正在用的标签页一起关掉。
   // 用引用计数:最后一条连接断开时才回收。
-  const SHARED_ID = `pipe-shared-${opts.service}`;
+  // ⚠️ 共享 id 必须带**代际编号**,不能是固定值。
+  // BrowserManager 在回收会话时会立一个"墓碑"(retired 集合),防止在途工具调用
+  // 把已回收的会话状态建回来。固定 id 的后果是:最后一个窗口关掉 → 回收 → 立墓碑,
+  // 下次再连用同一个 id 会被墓碑直接拒掉,报 "MCP session ... already closed",
+  // **而且此后永远连不上**,只能重启服务。(这就是第一版的真实故障。)
+  // 每轮(refcount 0→1)换一个新 id 即可,墓碑机制原样保留。
+  let sharedGen = 0;
+  let sharedId = `pipe-shared-${opts.service}-${sharedGen}`;
   let liveConns = 0;
 
   // unix socket 是文件,进程被 SIGKILL 后会留下死文件,下次 listen 直接 EADDRINUSE。
@@ -128,7 +135,12 @@ export function startPipeLeg(opts: PipeLegOptions): { close: () => void; endpoin
   }
 
   const srv = net.createServer((socket) => {
-    const sessionId = shared ? SHARED_ID : `pipe-${randomUUID()}`;
+    if (shared && liveConns === 0) {
+      // 新一轮共享会话:换代,绕开上一轮留下的墓碑
+      sharedGen++;
+      sharedId = `pipe-shared-${opts.service}-${sharedGen}`;
+    }
+    const sessionId = shared ? sharedId : `pipe-${randomUUID()}`;
     liveConns++;
     // Nagle 会把小的 JSON-RPC 消息攒着等,给交互式调用凭空加延迟
     socket.setNoDelay(true);
