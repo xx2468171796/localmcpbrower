@@ -20,7 +20,7 @@ import { z } from 'zod';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { BoundedEventStore } from './eventStore.js';
 import { getBrowserManager } from './browser.js';
-import { mcpCtx, STDIO_SESSION_ID } from './context.js';
+import { mcpCtx, STDIO_SESSION_ID, type ProgressReporter } from './context.js';
 import * as tools from './tools.js';
 import type { HealthCheckResult } from './types.js';
 import {
@@ -182,9 +182,38 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
     { instructions: SERVER_INSTRUCTIONS }
   );
 
+  /**
+   * 从 MCP 请求上下文里取出进度上报器。
+   *
+   * 客户端要进度时会在请求的 `_meta.progressToken` 里带一个令牌;没带就说明它不关心,
+   * 此时返回 undefined,reportProgress() 自动 no-op(不白白构造通知)。
+   *
+   * 通知走 `ctx.mcpReq.notify` 而不是全局 server.notification —— 前者是**请求级**的,
+   * 传输层才能把这条进度和当初那个 tools/call 关联起来;用全局的会丢失关联。
+   */
+  const progressOf = (ctx: unknown): ProgressReporter | undefined => {
+    const req = (ctx as { mcpReq?: {
+      _meta?: { progressToken?: string | number };
+      notify?: (n: { method: string; params?: Record<string, unknown> }) => Promise<void>;
+    } } | undefined)?.mcpReq;
+    const progressToken = req?._meta?.progressToken;
+    const notify = req?.notify;
+    if (progressToken === undefined || typeof notify !== 'function') return undefined;
+    return (progress, total, message) => {
+      // 故意不 await:进度是旁路,不能拖慢主流程,更不能因为它失败而让工具失败
+      void notify({
+        method: 'notifications/progress',
+        params: { progressToken, progress, ...(total !== undefined ? { total } : {}), ...(message ? { message } : {}) },
+      }).catch(() => { /* 连接可能已断 —— 静默 */ });
+    };
+  };
+
   const wrap = <T extends ToolHandler>(fn: T): T =>
     ((...args: unknown[]) =>
-      mcpCtx.run({ sessionId }, () => (fn as unknown as (...a: unknown[]) => unknown)(...args))) as unknown as T;
+      mcpCtx.run(
+        { sessionId, progress: progressOf(args[1]) },
+        () => (fn as unknown as (...a: unknown[]) => unknown)(...args),
+      )) as unknown as T;
 
   // === Navigation ===
   server.registerTool('navigate', {

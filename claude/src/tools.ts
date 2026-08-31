@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import { fileURLToPath } from 'node:url';
 import type { Frame, Page, Route } from 'patchright';
 import { getBrowserManager } from './browser.js';
+import { reportProgress } from './context.js';
 import { SNAPSHOT_WALKER_FN, EGO_HELPER_SRC } from './injected.js';
 import {
   NavigateSchema, ClickSchema, TypeSchema, ScreenshotSchema,
@@ -801,6 +802,7 @@ export async function batchFetch(input: unknown): Promise<ToolResult<{ results: 
     const { urls, waitFor, extractSelector, delay } = parsed.data;
     const page = await getBrowserManager().getPage();
     const results: Array<{ url: string; title?: string; content?: string; success: boolean; error?: string }> = [];
+    let fetched = 0;
 
     for (const url of urls) {
       try {
@@ -817,6 +819,7 @@ export async function batchFetch(input: unknown): Promise<ToolResult<{ results: 
           })()`).then(v => v as string).catch(() => undefined);
         }
         results.push({ url, title, content, success: true });
+        reportProgress(++fetched, urls.length, `已抓 ${fetched}/${urls.length}: ${url}`);
       } catch (err) {
         results.push({ url, success: false, error: err instanceof Error ? err.message : String(err) });
       }
@@ -863,6 +866,7 @@ export async function crawlPages(input: unknown): Promise<ToolResult<{ items: Ar
       })()`);
 
       allItems.push(...(items as Array<Record<string, string>>));
+      reportProgress(pageCount, maxPages, `已爬 ${pageCount}/${maxPages} 页,累计 ${allItems.length} 条`);
 
       // 找下一页
       const hasNext = await page.$(nextPageSelector).then(el => !!el).catch(() => false);
