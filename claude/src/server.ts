@@ -24,6 +24,7 @@ import { mcpCtx, STDIO_SESSION_ID, type ProgressReporter } from './context.js';
 import * as tools from './tools.js';
 import { killPortProcess } from './portkill.js';
 import { startPipeLeg } from './pipe.js';
+import { buildHumanRequest, readHumanAck } from './elicit.js';
 import type { HealthCheckResult } from './types.js';
 import {
   NavigateSchema, ClickSchema, TypeSchema, ScreenshotSchema,
@@ -487,6 +488,51 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
     outputSchema: ResultEnvelope,
     annotations: { title: '关闭工作区', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => structured(await tools.spaceClose(args))));
+
+  // === 人工接管 ===
+  //
+  // 有头浏览器(3213)存在的**唯一**理由就是让人过验证码 / 登录。在此之前全仓 0 处使用
+  // elicitation:撞到登录墙只能返回失败,再靠 AI 在聊天里让用户去登录、登完回来说一声 ——
+  // 一次人工接管要三轮对话,而且 AI 常在等待期间自作主张去干别的。
+  //
+  // 做成**显式工具**而不是自动检测登录墙:登录墙没有可靠特征,靠 URL/表单/文案猜误判率高,
+  // 而误判是双向代价 —— 该弹不弹(用户干等)、不该弹乱弹(打断自动化,比不弹更烦)。
+  // 判断交给模型(它读得到页面内容,比正则强),机制交给协议。
+  //
+  // 写法是 2026 纪元的返回式 inputRequired();SDK 自带 legacy shim 会在 2025 线客户端上
+  // 转成真实的服务端→客户端请求,所以这一份代码两条腿都能用,不需要按纪元分叉。
+  server.registerTool('request_human', {
+    title: '请人工接管',
+    description:
+      '暂停并请用户在【可见的浏览器窗口】里手动处理,处理完自动继续。'
+      + '用于:需要扫码/短信验证码登录、图形验证码、风控二次确认、需要人工选择的页面。'
+      + '⚠️ 仅在有头浏览器(browser-headed)下有意义;无头模式下用户看不到窗口。'
+      + '调用前先把页面导航到需要处理的那一步,消息里写清楚要用户做什么。',
+    inputSchema: z.object({
+      message: z.string().min(1).max(500)
+        .describe('给用户看的说明,写清楚要他在浏览器里做什么,例如「请在已打开的窗口中扫码登录抖店,完成后确认」'),
+    }),
+    annotations: {
+      title: '请人工接管', readOnlyHint: false, destructiveHint: false,
+      idempotentHint: false, openWorldHint: true,
+    } satisfies ToolAnnotations,
+  }, wrap(async (args: unknown, ctx: unknown) => {
+    const { message } = args as { message: string };
+    const responses = (ctx as { mcpReq?: { inputResponses?: unknown } } | undefined)?.mcpReq?.inputResponses;
+    const ack = readHumanAck(responses);
+    if (!ack) {
+      // 还没问过 / 用户拒绝 / 取消 / 应答不合 schema —— 四种情况处理方式相同:发出请求。
+      // (真正被拒绝时客户端不会再回调这里,不会死循环)
+      return buildHumanRequest(message);
+    }
+    // 顺手把当前标签页状态带回去:人工操作后页面多半已经变了(登录跳转/新开窗口),
+    // 让调用方少一次 list_tabs 往返就能知道现在在哪
+    const tabs = await tools.listTabs();
+    return text({
+      success: true,
+      data: { done: ack.done, note: ack.note ?? null, page: tabs.success ? tabs.data : null },
+    });
+  }));
 
   // === Network intercept ===
   server.registerTool('intercept_requests', {
