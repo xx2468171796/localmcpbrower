@@ -1,217 +1,135 @@
-# MCP SDK v2 + 协议 2026-07-28 迁移方案
+# MCP SDK v2 迁移记录与待办
 
-> 分支 `feat/mcp-v2`。**目标:纯新协议(`2026-07-28`),不保留旧线。**
-> 本文所有结论都标了**验证方式**;没实测的一律写「未验证」。
+> 状态:**已上线并在本机日常使用**(2026-08-31)。分支已并入 master。
+> 本文所有结论都标了验证方式;没实测的一律写「未验证」。
 > 面向:维护这个仓的人,以及其它机器上照着升级的 AI。
 
 ---
 
-## 0. 结论先行
-
-| 阶段 | 状态 |
-|---|---|
-| 一、迁到 SDK v2、清空 v1 | ✅ 已完成并实测 |
-| 二、长任务进度通知 | ✅ 已完成并实测 |
-| 三、切纯新协议 `2026-07-28` + 上下文句柄 | 🚧 进行中 |
-| 四、跨平台(Windows / Linux / macOS) | 🚧 进行中 |
-| 五、elicitation(人工过验证码/登录) | 待做 |
-
----
-
-## 1. ⚠️ 一次判断失误的记录(**必读,别再犯**)
-
-本方案初版写着「切 `2026-07-28` 收益为 0,因为没有客户端支持」。**这个结论是错的**,
-而且错法很有代表性,值得留下来:
-
-### 错在哪
-
-我写了一个手搓的 MCP 探针服务器去测 Claude Code 会请求哪个协议版本。它只实现了
-`initialize`,**没有实现 `server/discover`**。抓到的日志是:
-
-```
-1. server/discover     ← MCP-Protocol-Version: 2026-07-28
-2. initialize          ← 2025-11-25
-结果: Failed to connect — Version negotiation probe timed out after 5000ms
-```
-
-我看到第 2 行「客户端要的是 2025-11-25」就下了结论。**真相是第 1 行**:
-客户端**先用新协议发 `server/discover` 探测**,我的探针不应答 → 5 秒超时 → 才回落旧协议。
-**是我的探针不合格,不是客户端不支持。**
-
-### 正确的验证方式
-
-用**真 SDK** 起一个 `legacy: 'reject'`(纯新协议、显式拒绝旧线)的服务器,再让客户端连:
-
-| 验证 | 结果 |
-|---|---|
-| Claude Code 2.1.251 连纯新协议服务器 | ✅ **Connected**(实测 2 次) |
-| 同一服务器收到 `2025-11-25` 的 initialize | ❌ `-32022 Unsupported protocol version`,`supported:["2026-07-28"]` |
-| v2 官方客户端**默认**配置 | ❌ 被拒(默认走旧线) |
-| v2 官方客户端 `versionNegotiation:{mode:{pin:'2026-07-28'}}` | ✅ 通 |
-| Codex 0.142.4 二进制 | 含 `2026-07-28` ×22、`server/discover` ×14(**强信号,未实连验证**) |
-
-### 教训
-
-**测协议协商,不能用手搓的半成品服务器当参照物。** 半成品的沉默会被读成
-「对方不支持」,而实际是「我方没接住」。要测就用官方 SDK 起真服务器。
-
----
-
-## 2. 关键事实(全部实测或有出处)
-
-| 事实 | 来源 |
-|---|---|
-| 最新已发布协议修订 = **`2026-07-28`** | GitHub spec 仓 `schema/` 目录;更新的只有 `draft`(未发布) |
-| SDK v2.0.0 于 2026-07-27 发布,拆成 `core`/`server`/`client`/`node` + `express`/`hono`/`fastify` 适配器 | npm + GitHub releases |
-| **升 v2 ≠ 换协议**:"Nothing in v2 puts a 2026-07-28 byte on the wire by default" | [官方 2026-07-28 支持指南](https://ts.sdk.modelcontextprotocol.io/v2/migration/support-2026-07-28) |
-| v1 **不是** EOL,v1/v2 共存 | [官方 v2 升级指南](https://ts.sdk.modelcontextprotocol.io/v2/migration/upgrade-to-v2.html) |
-| `2026-07-28` **移除协议级 session**,需跨调用状态者改用显式 handle | 同上 + spec changelog |
-| **`CLIENT_INFO_META_KEY` 不能当身份用** | SDK 源码原文:"self-reported…**servers should not rely on it for behavior or security decisions**" |
-
----
-
-## 3. 阶段一:迁到 v2、清空 v1 ✅
-
-提交 `b222636` / `c8063d5`
-
-1. 官方 codemod:`npx @modelcontextprotocol/codemod@2.0.0 v1-to-v2 .`
-2. 手工修 52 处:`inputSchema`/`outputSchema` 由**裸 shape** 改为 Standard Schema 对象
-3. `ResultEnvelope` 由裸对象改成 `z.object()`
-
-> **排错提示(踩过)**:v2 里若看到「`ZodObject` 不能赋给 `ZodRawShape`」,
-> **别去改 `inputSchema`** —— 真凶多半是 `outputSchema` 不是 Standard Schema,
-> 导致 `registerTool` 现代重载匹配失败、TS 回退到旧重载后报出**指向反了**的错。
-
-**验收(实测)**:`tsc` 0 错误 · v1 零残留(源码/lock/node_modules) · 构建通过 ·
-`/health` 200 · **44 个工具与 v1 完全一致** · `navigate`/`get_page_content` 真实可用 ·
-参数校验失败自动变 `isError: true`(新规范要求,v2 白送)。
-
----
-
-## 4. 阶段二:长任务进度通知 ✅
-
-提交 `c632397`
-
-`crawl_pages`(maxPages 上限 50)、`batch_fetch`(多 URL 串行)原本是黑盒。
-
-实现**沿用本仓既有的 AsyncLocalStorage 思路**,44 个工具函数签名一个没改:
-- `context.ts` 加 `ProgressReporter` + `reportProgress()`,无上下文时静默 no-op
-- `server.ts` 的 `wrap` 从 `ctx.mcpReq._meta.progressToken` 构造上报器塞进 ALS
-- 走**请求级** `ctx.mcpReq.notify` 而非全局 notification —— 前者传输层才能把进度关联回那次 `tools/call`
-- 故意不 await、失败静默:进度是旁路,绝不能拖慢主流程或让工具失败
-
-**验收(实测)**:带 `_meta.progressToken` 调 `batch_fetch` 三个 URL,
-流式读 POST 响应,收到 3 条 `notifications/progress`(`progress`/`total`/`message` 齐全),最终结果正常。
-
----
-
-## 5. 阶段三:切纯新协议 + 上下文句柄 🚧
-
-### 5.1 入口改造
-
-```ts
-// 现在
-transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator, eventStore, ... })
-
-// 目标:纯新协议,显式拒绝旧线
-const handler = createMcpHandler(() => buildServer(), { legacy: 'reject' })
-const nodeHandler = toNodeHandler(handler)
-```
-
-### 5.2 会话隔离 → 显式句柄
-
-新协议没有 session,`currentSessionId()` 会永远返回同一个值 → **所有客户端挤在同一个页面上**。
-官方唯一正解是显式 handle 当工具参数。
-
-**已实现**(`schemas.ts`):
-- `ContextField` —— 可选字符串,字符集受限,带详细 `describe` 供 AI 理解
-- `withContext(schema)` —— 在**注册处**统一套一层,不逐个改 44 个 schema 定义
-- `ContextOnlySchema` —— 给无自有参数的工具(`go_back`/`list_tabs` 等)用
-
-**设计取舍:`context` 做成可选而非必填。**
-不传就落到共享默认上下文,单窗口用户完全无感(等价于旧协议下只有一个会话的行为),
-不会因为漏传参数就报错。需要并行/多账号隔离时用 `space_new` 取名字再带上。
-该值**只做隔离键**,不参与任何权限判断 —— 它是便利,不是安全边界。
-
-**验收(实测)**:不传通过 · 传合法值通过 · 非法字符被拒 · 原有校验仍生效 ·
-JSON Schema 里 `required` 不含 `context` 且 `properties` 含它(AI 看得见)。
-
-### 5.3 待改清单
-
-| 项 | 处理 |
-|---|---|
-| `wrap` | 从 `args[0].context` 取值塞进 ALS(**深层 47 处调用一行不动**) |
-| 44 个工具注册 | `inputSchema: withContext(XxxSchema)` |
-| `transports` Map / `SESSION_TTL` / `MAX_SESSIONS` / `releaseSession` / `cleanupSessions` | 整套删除 |
-| `eventStore.ts`(浏览器包 + 数据库包各一份) | 删除 —— 新协议移除了断线重放 |
-| `app.get('/mcp')` / `app.delete('/mcp')` | 删除 —— 旧协议的会话操作,新协议下返回 405 |
-| DNS rebinding 防护 | 换成官方 `localhostHostValidation()` / `originValidation()` |
-
----
-
-## 6. 阶段四:跨平台(Windows / Linux / macOS)🚧
-
-**当前缺口**:`killPortProcess` 是**纯 Windows 实现**(`netstat -ano` + `taskkill /F /T`),
-`if (process.platform === 'win32')` 之外什么都不做 → Linux/macOS 上端口被占时清不掉。
-
-> ⚠️ **Windows 那份实现不许简化。** 原实现用 `netstat -ano | findstr :3211` —— `findstr` 是
-> **子串匹配**,`:3211` 会命中 `:32110`,于是 `taskkill /F /T` 掉一个**完全无关**的进程连同整棵进程树。
-> 现在是按列解析 + 三重校验(协议列以 TCP 开头 / 端口字段严格相等 / 状态为 LISTENING),
-> 还处理了 IPv6 `[::1]:3215` 与非英文 Windows 的本地化表头。**只许抽到平台分支里,不许改逻辑。**
-
-其余平台相关点(已有处理,重构时保留):
-- 浏览器启动参数按平台分支(`browser.ts`)
-- `mcp.mjs` 里 `npm`/`npx`/`pm2` 的 `.cmd` 后缀与 cmd.exe 引号处理
-- 开机自启:Windows 走「启动」文件夹 + `pm2 resurrect`
-- **有头浏览器不能注册成 Windows 系统服务** —— Session 0 里窗口不可见,人工接管就失去意义
-
----
-
-## 7. 阶段五:elicitation(待做)
-
-有头浏览器(3213)存在的唯一理由就是**让人工过验证码/登录**。现状:全仓 **0 处**使用,
-撞到登录墙只能返回失败,靠 AI 在聊天里让用户去登录、登完再告诉 AI 继续。
-
-新协议下用返回式写法:
-```ts
-return inputRequired({
-  inputRequests: { login: inputRequired.elicit({
-    message: '目标站点要求登录,请在已打开的浏览器窗口完成登录后确认',
-    requestedSchema: { type: 'object', properties: { done: { type: 'boolean' } }, required: ['done'] },
-  }) },
-});
-// 重入:const done = acceptedContent(ctx.mcpReq.inputResponses, 'login', SCHEMA)
-```
-
----
-
-## 8. 全机群推广
-
-1. 合入默认分支前**先在本机灰度**:切服务、跑一天真实使用
-2. 更新 `UPDATE-PROMPT.md`:v2 必须**重装 node_modules**,不能只 `git pull`
-3. 通过 `panel-agent` 白名单更新推送
-4. **回滚**:v1/v2 包名不同,`git revert` + `npm i` + `npm run build` 即可退回
-
-⚠️ **推广前必须确认**:纯新协议后,**所有客户端都必须支持 `2026-07-28`**。
-Claude Code 2.1.251 已实测通过;**Codex 仅有二进制强信号,未实连验证** —— 推广前务必补验。
-
----
-
-## 9. 待拍板 / 未验证清单
+## 0. 现在是什么状态
 
 | 项 | 状态 |
 |---|---|
-| Codex 实连纯新协议服务器 | **未验证**(仅二进制信号) |
-| `mcp.mjs` 的 install/update 在 v2 + 纯新协议下是否正常 | **未验证** |
-| `mcp-database` 包迁移后真实连库 | **未验证**(仅编译通过) |
-| 有头浏览器(3213)在新架构下完整验证 | **未验证** |
-| 进度通知在纯新协议(非旧线)下是否照常工作 | **未验证** |
-| `@types/jsdom` 28 与 jsdom 29 版本错配 | 未处理 |
+| SDK | **纯 v2.0.0**,v1 零残留(源码 / lock / node_modules) |
+| 协议(日常实际) | **`2025-11-25`** —— 客户端在 stdio 上不探测新协议 |
+| 协议(服务端能力) | 新旧双线都支持,客户端钉死 `2026-07-28` 也能连(实测) |
+| 传输 | pipe(named pipe / unix socket)+ HTTP 并存 |
+| 工具数 | **46**(原 44 + `request_human` + `wait_for_human`) |
+| 三个服务 | headless 3215 / headed 3213 / database 3214,均已切新版 |
+
+⚠️ **别把"服务端支持新协议"说成"在用新协议"。** 实测:默认连接协商到
+`2025-11-25`;只有显式 `versionNegotiation: { pin: '2026-07-28' }` 才走新线。
+
+---
+
+## 1. 待办(按可动工条件排序)
+
+### 1.1 Tasks —— **阻塞中,触发条件明确**
+
+**触发条件:SDK v2 出服务端 task API。** 在那之前不要动手。
+
+现状(2026-08-31 核实):
+
+| 包 | task 相关导出 |
+|---|---|
+| `core` | 只有 17 个 **Schema**(线路格式定义) |
+| `server` | 只有 `RELATED_TASK_META_KEY`、`isTaskAugmentedRequestParams` |
+| `client` | 同上 |
+
+**没有** `createTask`、没有 task store、`ServerOptions` 里没有 tasks 配置。
+`TaskMetadata` 类型上直接标着 `@deprecated … **with no SDK runtime**;
+kept importable for interoperability only`;
+类型注释里另写明 `execution.taskSupport` / `capabilities.tasks` 属于 2026 wire 的
+**已删除字段集** —— 2025 那套 task 词汇在新协议里被删了,新的还没落到 SDK。
+
+现在做等于**手搓一套只有我们自己遵守的实现**(自管生命周期、自己响应
+`tasks/get|result|list`、自己发 `notifications/tasks/status`),
+官方支持一出来大概率推翻重写,且没有第二个实现能与之互操作。
+
+**价值**:长任务(`crawl_pages` 最多 50 页 / `batch_fetch` / `discover_urls`)
+脱离连接、断线可恢复、随时查进度。目前已有的**进度通知**覆盖了大部分体感,
+缺的是"断了还能捡回来"。
+
+**怎么判断可以动工**:
+```bash
+node --input-type=module -e 'import * as s from "@modelcontextprotocol/server";
+  console.log(Object.keys(s).filter(x=>/task/i.test(x)).join(", "))'
+# 出现 createTask / TaskStore / 类似的**运行时** API,而不只是那两个常量,才算可做
+```
+
+### 1.2 订阅流 / cache hints —— 同上
+
+`ServerOptions` 里同样没有对应服务端配置。等 SDK。
+
+### 1.3 其它
+
+| 项 | 说明 |
+|---|---|
+| macOS 实机验证 | 跨平台代码的解析层用真实 Linux 输出验过,**macOS 无实机** |
+| kill 路径实机验证 | 只验了"找谁在监听"这一半;kill 分支未在真实系统执行过(验证机跑着在用的服务) |
+| 其它机器推广 | `UPDATE-PROMPT.md` 需更新:v2 **必须重装 node_modules**,不能只 `git pull` |
+| `@types/jsdom` | 28 与 jsdom 29 版本错配,未处理 |
+| HTTP 腿是否保留 | **建议保留**:named pipe 只能本机用,跨机共享(`HOST` + `MCP_AUTH_TOKEN`)只有 HTTP 这一条路,而"跨机是既定终局"写在 server.ts 里 |
+
+---
+
+## 2. 这次实际拿到了什么
+
+### 2.1 修好了三个一直存在、但没人发现的缺陷
+
+| 缺陷 | 影响 |
+|---|---|
+| **反爬指纹伪装整段从未执行** | `navigator.webdriver` 直接暴露、`window.chrome` 不存在、plugins 为空 —— 爬公网基本被当机器人。**不是本次迁移引入的,一直如此** |
+| **`get_console_logs` 恒返回空** | 同一根因(注入通道失效) |
+| **`snapshot` 的 `deep:true` 静默 no-op** | 与 `deep:false` 输出逐字节相同,调用方以为"这页确实没有隐藏可点元素" |
+
+根因都在 patchright 1.62.2 下 `addInitScript` **不执行**。四条通道逐条实测,
+只有「route 拦 HTML 响应注 `<script>`」可用。详见 `claude/src/inject.ts`。
+
+### 2.2 补上了本来就该有、却一处没用的能力
+
+- **长任务进度通知**(`crawl_pages` / `batch_fetch`)—— 2025 线就支持,原来全仓 0 处使用
+- **参数校验失败返回 `isError`** —— v2 自带,符合 2026-07-28 规范
+
+### 2.3 跨平台
+
+`killPortProcess` 原本是纯 Windows 实现,Linux/macOS 上端口被占时清不掉。
+现三平台各有实现 + 4 个可测的纯解析函数。Windows 那份**逐字节保留**
+(它挡着一次真实事故:`findstr :3211` 子串匹配会误杀 `:32110` 的无关进程)。
+
+### 2.4 人工接管
+
+- `wait_for_human`:**不弹窗**,盯页面变化(URL 变 / 元素出现 / 元素消失)。
+  在 `bypassPermissions` 下**照常工作**
+- `request_human`:走 elicitation。⚠️ 实测 `bypassPermissions` 下会被客户端
+  **自动 decline 且界面无任何提示**,故本机不可用;保留供其它客户端/权限模式使用
+
+### 2.5 架构
+
+会话身份从"协议 session"换成"OS socket",为 2026-07-28 删除协议级 session 做好了准备,
+且**新旧协议下都成立**。浏览器默认共享、数据库默认隔离(`switch_db` 串台会写错库)。
+
+---
+
+## 3. 踩过的坑(重写时别再犯)
+
+1. **`page.evaluate` 跑在隔离世界** —— 判断"注入脚本有没有执行"必须走 DOM(跨世界共享),
+   用 `page.evaluate` 读主世界的 `window.X` 会把"执行了"误判成"没执行"。
+2. **测协议协商不能用手搓的半成品服务器** —— 半成品不应答 `server/discover`,
+   客户端超时回落旧协议,会被误读成"客户端不支持新协议"。要用官方 SDK 起真服务器。
+3. **同一客户端在不同传输上协议行为不同** —— Claude Code 走 HTTP 会探测新协议,
+   走 stdio 不探测。HTTP 上验过的结论不能套到 stdio。
+4. **共享会话 id 必须带代际** —— `BrowserManager` 回收时会立墓碑防止在途调用复活会话;
+   固定 id 会导致"最后一个窗口关闭后永远连不上"。
+5. **elicitation 的"没问过"和"被拒绝"必须分开** —— 混为一谈会无限重问,
+   撞 `maxRounds`(8)后报一个用户看不懂的错。
+6. **数据库包有独立 tsconfig**,主包 `npm run build` **不会**带上它,切版本要分别构建。
+7. **v2 里报「`ZodObject` 不能赋给 `ZodRawShape`」时,先查 `outputSchema`** ——
+   真凶多半是它不是 Standard Schema,导致现代重载匹配失败、TS 回退后报出指向反了的错。
 
 ---
 
 ## 变更记录
 
-- 2026-08-31 二版:**纠正初版的错误结论**(见 §1)。目标改为纯新协议 `2026-07-28`,不保留旧线。
-  阶段一、二完成并实测;阶段三、四进行中。
-- 2026-08-31 初版:阶段一完成。
+- 2026-08-31:v2 迁移完成并上线;修复三个既有缺陷;补进度通知、跨平台、人工接管;
+  会话身份改为 socket。Tasks 因 SDK 缺服务端 API 转入待办。
