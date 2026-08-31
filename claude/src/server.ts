@@ -23,6 +23,7 @@ import { getBrowserManager } from './browser.js';
 import { mcpCtx, STDIO_SESSION_ID, type ProgressReporter } from './context.js';
 import * as tools from './tools.js';
 import { killPortProcess } from './portkill.js';
+import { startPipeLeg } from './pipe.js';
 import type { HealthCheckResult } from './types.js';
 import {
   NavigateSchema, ClickSchema, TypeSchema, ScreenshotSchema,
@@ -42,6 +43,17 @@ import {
 const PORT = parseInt(process.env['PORT'] ?? '3211', 10);
 const startTime = Date.now();
 const SERVER_VERSION = '2.2.0';
+
+/**
+ * pipe 端点的服务名。
+ *
+ * 三个服务(有头 3213 / 数据库 3214 / 无头 3215)必须各自一个端点,
+ * 否则三份进程抢同一个管道名 —— 谁先起谁赢,后起的静默 EADDRINUSE,
+ * 表现是「某个 MCP 莫名其妙连不上」,极难查。
+ * 允许用 PIPE_SERVICE 显式覆盖,便于本地起多份做对比测试。
+ */
+const PIPE_SERVICE = (process.env['PIPE_SERVICE'] ?? '').trim()
+  || (PORT === 3213 ? 'headed' : PORT === 3214 ? 'db' : 'headless');
 
 // ============================================================
 // HTTP 安全参数
@@ -923,6 +935,28 @@ async function runHttp(): Promise<void> {
   console.log(`[Server] auth=${AUTH_TOKEN ? 'bearer' : 'off (loopback only)'} allowedHosts=${ALLOWED.hosts.join(',')}`);
   installHttpShutdown();
   listenWithRetry(app, HOST, PORT, 3);
+
+  // ── pipe 腿:协议 2026-07-28 的会话隔离出口(详见 src/pipe.ts 头部)
+  //
+  // 与 HTTP 腿**并存**是刻意的,不是过渡期的将就:
+  // HTTP 腿服务旧协议(2025 线,靠 Mcp-Session-Id 隔离),pipe 腿服务新协议
+  // (2026-07-28,靠 socket 隔离)。两条腿共用同一个 createMcpServer 和同一个
+  // BrowserManager,所以工具集、浏览器、登录态完全一致 —— 换注册方式不会换出另一套东西。
+  //
+  // 这样「拉新代码」和「改客户端注册」彻底解耦:没改注册的机器照常用 HTTP,
+  // 改了的走新协议。全机群切换期间不会出现半边不可用。
+  try {
+    const leg = startPipeLeg({
+      service: PIPE_SERVICE,
+      createServer: (sessionId) => createMcpServer(sessionId),
+      releaseSession,
+    });
+    console.log(`[Server] pipe 腿就绪(纯 2026-07-28):${leg.endpoint}`);
+    console.log(`[Server] 客户端注册:claude mcp add <名字> -- node ${process.cwd()}/bin/shim.mjs ${PIPE_SERVICE}`);
+  } catch (e) {
+    // pipe 腿起不来不该拖垮 HTTP 腿 —— 后者是当前在用的那条
+    console.error('[Server] pipe 腿启动失败(HTTP 腿不受影响):', e);
+  }
 }
 
 async function main(): Promise<void> {
