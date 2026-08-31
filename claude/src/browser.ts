@@ -26,6 +26,7 @@ import * as fs from 'fs';
 import { fileURLToPath } from 'node:url';
 import type { ConsoleLogEntry, NetworkRequestEntry, BrowserConfig } from './types.js';
 import { EGO_HELPER_SRC } from './injected.js';
+import { MAIN_WORLD_SRC, DRAIN_SRC, buildHtmlInjector } from './inject.js';
 import { currentSessionId } from './context.js';
 import { killProcessTreeSync } from './portkill.js';
 
@@ -342,65 +343,20 @@ class BrowserManager {
       }
     });
 
-    // 反爬虫指纹伪装：在每个页面执行前注入，掩盖常见的自动化检测向量
-    await context.addInitScript(() => {
-      // 1. navigator.webdriver -> undefined
-      try { delete (Navigator.prototype as { webdriver?: unknown }).webdriver; } catch { /* noop */ }
-      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-      // 2. navigator.languages
-      Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] });
-      // 3. navigator.plugins 非空伪装
-      Object.defineProperty(navigator, 'plugins', {
-        get: () => {
-          const arr = [
-            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
-            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
-            { name: 'Native Client', filename: 'internal-nacl-plugin' },
-          ];
-          (arr as unknown as { item: (i: number) => unknown }).item = (i: number) => arr[i];
-          return arr;
-        },
-      });
-      // 4. window.chrome
-      if (!(window as { chrome?: unknown }).chrome) {
-        (window as { chrome?: unknown }).chrome = { runtime: {} };
-      }
-      // 5. permissions.query 修补（notifications 返回正常状态）
-      const origQuery = navigator.permissions.query.bind(navigator.permissions);
-      navigator.permissions.query = (params: PermissionDescriptor) =>
-        params && params.name === 'notifications'
-          ? Promise.resolve({ state: Notification.permission } as PermissionStatus)
-          : origQuery(params);
-      // 6. console 劫持:转发给 Node 端(见上方 exposeBinding),同时保留原始行为。
-      // patchright 对同一文档会执行两遍 addInitScript(推测是其绕开 Runtime.enable
-      // 的双重注入机制所致),不加幂等标记会把 console 包两层、每条日志上报两次。
-      try {
-        const w = window as unknown as {
-          __mcpConsoleLog?: (type: string, text: string) => void;
-          __mcpConsolePatched?: boolean;
-        };
-        if (!w.__mcpConsolePatched) {
-          w.__mcpConsolePatched = true;
-          (['log', 'info', 'warn', 'error', 'debug'] as const).forEach((m) => {
-            const orig = console[m].bind(console);
-            console[m] = (...args: unknown[]) => {
-              try {
-                const text = args.map((a) => {
-                  if (typeof a === 'string') return a;
-                  try { return JSON.stringify(a); } catch { return String(a); }
-                }).join(' ');
-                w.__mcpConsoleLog?.(m, text);
-              } catch { /* noop */ }
-              orig(...args);
-            };
-          });
-        }
-      } catch { /* noop */ }
-    });
-
-    // __ego 一次跑完 helper:注入到该 context 所有页面,供 run_script 免手动安装即用。
-    // 幂等自安装(见 injected.ts),重复注入无副作用。
-    await context.addInitScript(EGO_HELPER_SRC);
+    // ── 反爬指纹伪装 + console 劫持:走 route 注入 HTML,而不是 addInitScript
+    //
+    // 原实现用 context.addInitScript(),实测(2026-08-31 / patchright 1.62.2)**整段从未执行**,
+    // 6 项指纹伪装全部形同虚设:navigator.webdriver 直接暴露、window.chrome 不存在、plugins 为空,
+    // 爬公网站点基本会被当成机器人。page.addInitScript 与 CDP
+    // Page.addScriptToEvaluateOnNewDocument 同样无效(下发成功但不执行)。
+    // 唯一可用的通道是拦 HTML 响应把 <script> 注进 <head> —— 详见 src/inject.ts 的实测表。
+    //
+    // ⚠️ 排错提醒:判断脚本"有没有执行"必须走 DOM(跨世界共享)。
+    // page.evaluate 跑在**隔离世界**,读不到主世界的 window.X,会把"执行了"误判成"没执行"。
+    //
+    // 装在 **context** 级:页面级 route(set_block_rules)优先匹配,放行时调 route.fallback()
+    // 就会落到这里,两者互不冲突。若改成页面级,两个 '**/*' handler 的优先级会打架。
+    await context.route('**/*', buildHtmlInjector([MAIN_WORLD_SRC, EGO_HELPER_SRC]));
 
     // 抓 chromium 子进程 pid — Playwright 内部 API 但多年稳定；失败不影响主流程
     try {
@@ -568,6 +524,39 @@ class BrowserManager {
   public getConsoleLogs(): ConsoleLogEntry[] {
     const st = this.peekSession();
     return st ? [...st.consoleLogs] : [];
+  }
+
+  /**
+   * 把页面里攒着的 console 日志取回本会话缓冲。
+   *
+   * 主世界的 console 劫持调不到 exposeBinding(实测在主世界是 undefined),
+   * 所以它把日志写进一个隐藏 DOM 节点;这里从**隔离世界**把它排空 —— DOM 跨世界共享,
+   * 这是两个世界之间唯一可靠的通道。详见 src/inject.ts。
+   *
+   * 取走即删除,重复调用不会重复上报。只扫本会话自己的页面,不会串台。
+   * 单页失败(已关闭/跨域限制)只跳过该页,不影响其它页 —— 读日志失败绝不该让工具失败。
+   */
+  public async drainPageLogs(): Promise<void> {
+    const sessionId = currentSessionId();
+    const sp = this.spaceFor(sessionId);
+    const st = sp.sessions.get(sessionId);
+    if (!st) return;
+    this.pruneClosed(st);
+    for (const p of st.pages) {
+      if (p.isClosed()) continue;
+      try {
+        const rows = (await p.evaluate(DRAIN_SRC)) as Array<{ type: string; text: string }>;
+        if (!Array.isArray(rows) || rows.length === 0) continue;
+        for (const r of rows) {
+          st.consoleLogs.push({
+            type: (r.type as ConsoleLogEntry['type']) ?? 'log',
+            text: String(r.text ?? ''),
+            timestamp: Date.now(),
+          });
+        }
+        if (st.consoleLogs.length > 2000) st.consoleLogs = st.consoleLogs.slice(-1000);
+      } catch { /* 该页读不到就跳过 */ }
+    }
   }
 
   public clearConsoleLogs(): void {

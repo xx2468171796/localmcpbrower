@@ -233,6 +233,14 @@ export async function takeScreenshot(input: unknown): Promise<ToolResult<Screens
 
 export async function getConsoleLogs(): Promise<ToolResult<ConsoleLogEntry[]>> {
   try {
+    // 先把页面里攒着的日志排空取回 —— 主世界的 console 劫持只能写 DOM,
+    // 得由这边主动来取(见 browser.ts drainPageLogs / inject.ts)
+    //
+    // ⚠️ 边界(不是 bug,别照着"修"):这里拿到的是**页面自己**的 console 输出(主世界)。
+    // execute_js / run_script 跑在 patchright 的**隔离世界**,它们内部的 console.log
+    // 用的是隔离世界那份 console,不经过主世界的劫持,因此不会出现在这里 ——
+    // 那些调用的返回值本来就直接给了调用方,不需要再走日志通道。
+    await getBrowserManager().drainPageLogs();
     return { success: true, data: getBrowserManager().getConsoleLogs() };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
@@ -695,7 +703,9 @@ export async function setBlockRules(input: unknown): Promise<ToolResult<{ active
       if (blockFonts && resourceType === 'font') { route.abort(); return; }
       if (blockAds && AD_DOMAINS.some(d => url.includes(d))) { route.abort(); return; }
       if (customPatterns.some(p => url.includes(p))) { route.abort(); return; }
-      route.continue();
+      // fallback 而非 continue:让请求继续流到 context 级的 HTML 注入 handler。
+      // 用 continue() 会直接放行到网络,注入 handler 永远收不到文档请求(指纹伪装/console 劫持全失效)。
+      route.fallback();
     };
     await getBrowserManager().setBlockRoute(handler);
 
@@ -1001,6 +1011,20 @@ export async function snapshot(input: unknown): Promise<ToolResult<{ snapshot: s
     let snap = r.truncated ? r.snapshot + '\n\n[... 已截断，可调大 maxChars 或设置 interactiveOnly:true]' : r.snapshot;
     if (deepLines.length > 0) {
       snap += '\n\n[深度扫描发现 ' + deepLines.length + ' 个事件监听可点击元素]\n' + deepLines.join('\n');
+    } else if (deep) {
+      // 深扫要了却一个都没扫到 —— **必须说出来**。
+      //
+      // 实测(2026-08-31 / patchright 1.62.2):深扫这条路目前是**恒定失效**的。
+      // 它先用 page.evaluate 把候选挂到 window.__mcpDeepCands,再用 CDP Runtime.evaluate
+      // 去取 objectId —— 但 patchright 把 page.evaluate 跑在**隔离世界**,
+      // CDP Runtime.evaluate 看的是主世界,两个世界互相看不见对方的全局变量,
+      // 于是每个候选都取不到 objectId、被 continue 掉,deepLines 永远为空。
+      //
+      // 原来这里什么都不加,`deep:true` 与 `deep:false` 输出**逐字节相同** ——
+      // 调用方以为深扫跑过了、这页确实没有隐藏可点元素,实际上它根本没生效。
+      // 静默失败比报错危险:它让人基于错误结论往下走。
+      snap += '\n\n[深度扫描未返回结果 —— 该能力在当前 patchright 版本下不可用(主世界/隔离世界不互通),'
+            + '请改用 interactiveOnly:false 的普通快照,或用 execute_js 直接定位元素]';
     }
     return { success: true, data: { snapshot: snap, refCount: r.refCount + deepRefCount, truncated: r.truncated } };
   } catch (error) {

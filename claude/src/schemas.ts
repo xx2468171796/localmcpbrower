@@ -5,7 +5,12 @@
 import { z } from 'zod';
 
 export const NavigateSchema = z.object({
-  url: z.string().url('必须是有效的 URL').describe('要打开的目标网址，必须以 http(s):// 开头')
+  url: z.string().url('必须是有效的 URL')
+    // 只认 http(s)。原来只校验 URL **语法**,于是 file:///C:/Windows/win.ini 能被打开
+    // (实测 success:true)—— 描述写着"必须以 http(s):// 开头",schema 却没落实。
+    // 这个服务只绑回环,风险不高,但描述与实现不一致本身就是坑。
+    .refine((u) => /^https?:\/\//i.test(u), { message: '只允许 http:// 或 https://' })
+    .describe('要打开的目标网址，必须以 http(s):// 开头')
 });
 
 export const ClickSchema = z.object({
@@ -210,7 +215,9 @@ export const ExtractDataSchema = z.object({
 
 /** 批量抓取多个 URL */
 export const BatchFetchSchema = z.object({
-  urls: z.array(z.url()).min(1).max(20).describe('要抓取的 URL 列表，最多 20 个'),
+  // 与 NavigateSchema 同理:z.url() 只校验语法,不限 scheme
+  urls: z.array(z.url().refine((u) => /^https?:\/\//i.test(u), { message: '只允许 http:// 或 https://' }))
+    .min(1).max(20).describe('要抓取的 URL 列表，最多 20 个'),
   waitFor: z.string().optional().describe('每个页面等待出现的选择器'),
   extractSelector: z.string().optional().describe('要提取内容的选择器，不填则返回 title+url'),
   delay: z.number().int().min(0).max(5000).default(500).describe('每次请求间隔毫秒，防止被封')
@@ -254,48 +261,3 @@ export type BatchFetchInput = z.infer<typeof BatchFetchSchema>;
 export type CrawlPagesInput = z.infer<typeof CrawlPagesSchema>;
 export type WaitAndExtractInput = z.infer<typeof WaitAndExtractSchema>;
 export type SetBlockRulesInput = z.infer<typeof SetBlockRulesSchema>;
-
-// ============================================================
-// 浏览器上下文句柄(协议 2026-07-28 起必需)
-// ============================================================
-
-/**
- * 为什么每个工具都要多一个 `context` 参数。
- *
- * 协议 2026-07-28 **移除了协议级 session**(不再有 `Mcp-Session-Id`)。
- * 而本服务最核心的能力就是会话隔离 —— 一台机一份浏览器,每个客户端窗口分到
- * 自己的标签页/屏蔽规则/登录态,互不串台。旧协议下这个隔离键直接取自 session id;
- * 新协议下**没有任何协议层线索**可用:
- *
- *   官方 `CLIENT_INFO_META_KEY` 的文档明确写着「self-reported…**servers should not
- *   rely on it for behavior or security decisions**」—— 不能拿它当身份。
- *   `requestState` 是多步输入流程(inputRequired)的续传令牌,不是长期上下文。
- *
- * 所以官方给的唯一正解是**显式 handle 当工具参数传**。这就是本字段。
- *
- * 设计取舍:
- * - **可选**而非必填。不传就落到共享的默认上下文,单窗口用户完全无感
- *   (对应旧协议下「只有一个会话」的行为),不会因为漏传参数就报错。
- * - 需要并行/多账号隔离时,用 `space_new` 拿一个名字,后续调用都带上它。
- * - 值只做隔离键用,不参与任何权限判断 —— 它是**便利**,不是**安全边界**。
- */
-export const ContextField = z
-  .string()
-  .min(1)
-  .max(128)
-  .regex(/^[A-Za-z0-9_.:-]+$/, 'context 只允许字母、数字与 _ . : - ')
-  .optional()
-  .describe('浏览器上下文句柄:同一句柄的调用共享标签页与登录态,不同句柄互相隔离。不传则用默认共享上下文。需要并行或多账号隔离时,先用 space_new 取一个名字再在后续调用里带上。');
-
-/**
- * 给工具入参 schema 挂上 `context` 字段。
- *
- * 在**注册处**统一套一层,而不是逐个改 44 个 schema 定义 ——
- * 这样上面那段设计说明只需存在一份,新增工具时也不会漏挂。
- */
-export function withContext<T extends z.ZodObject<z.ZodRawShape>>(schema: T) {
-  return schema.extend({ context: ContextField });
-}
-
-/** 无自有参数的工具(如 go_back / list_tabs)也需要 context —— 用这个 */
-export const ContextOnlySchema = z.object({ context: ContextField });

@@ -77,8 +77,19 @@ export interface HealthCheckResult {
   status: 'ok' | 'error';
   browserAlive: boolean;
   uptime: number;
-  /** MCP 传输层活跃会话数 */
+  /**
+   * HTTP 传输层的活跃会话数。
+   *
+   * ⚠️ **只统计 HTTP 腿**。pipe 腿(纯 2026-07-28)的会话由 socket 生命周期管理,
+   * 不进这个计数,所以纯 pipe 使用时它恒为 0 —— 这是正常的,不是回收有漏。
+   */
   sessions?: number;
-  /** 真正持有浏览器标签页的会话数(与 sessions 对不上即说明回收有漏) */
+  /**
+   * 真正持有浏览器标签页的会话数(两条腿合计)。
+   *
+   * ⚠️ 原注释写「与 sessions 对不上即说明回收有漏」—— 那条不变式**在 pipe 腿下永久失效**
+   * (pipe 会话不计入 sessions,必然对不上)。照旧监控会一直误报。
+   * 要判断回收有没有漏,看这个值在所有客户端断开后是否回落到 0。
+   */
   browserSessions?: number;
 }
