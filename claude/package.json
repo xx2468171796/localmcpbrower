@@ -12,7 +12,10 @@
     "pm2:start": "pm2 start ecosystem.config.cjs",
     "pm2:stop": "pm2 stop claudemcp-browser",
     "pm2:restart": "pm2 restart claudemcp-browser",
-    "pm2:logs": "pm2 logs claudemcp-browser"
+    "pm2:logs": "pm2 logs claudemcp-browser",
+    "test:smoke": "node test/smoke-browser.mjs headless",
+    "test:smoke:headed": "node test/smoke-browser.mjs headed",
+    "test:smoke:db": "node test/smoke-database.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.0.0",

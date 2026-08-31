@@ -65,7 +65,7 @@ node --input-type=module -e 'import * as s from "@modelcontextprotocol/server";
 
 | 项 | 说明 |
 |---|---|
-| macOS 实机验证 | 跨平台代码的解析层用真实 Linux 输出验过,**macOS 无实机** |
+| macOS 实机验证 | 跨平台代码的解析层用真实 Linux 输出验过,**macOS 无实机**;`npm run test:smoke` 可在 Mac 上直接复验 |
 | kill 路径实机验证 | 只验了"找谁在监听"这一半;kill 分支未在真实系统执行过(验证机跑着在用的服务) |
 | 其它机器推广 | `UPDATE-PROMPT.md` 需更新:v2 **必须重装 node_modules**,不能只 `git pull` |
 | `@types/jsdom` | 28 与 jsdom 29 版本错配,未处理 |
@@ -81,7 +81,7 @@ node --input-type=module -e 'import * as s from "@modelcontextprotocol/server";
 |---|---|
 | **反爬指纹伪装整段从未执行** | `navigator.webdriver` 直接暴露、`window.chrome` 不存在、plugins 为空 —— 爬公网基本被当机器人。**不是本次迁移引入的,一直如此** |
 | **`get_console_logs` 恒返回空** | 同一根因(注入通道失效) |
-| **`snapshot` 的 `deep:true` 静默 no-op** | 与 `deep:false` 输出逐字节相同,调用方以为"这页确实没有隐藏可点元素" |
+| **`snapshot` 的 `deep:true` 静默 no-op** | 与 `deep:false` 输出逐字节相同,调用方以为"这页确实没有隐藏可点元素"。⚠️ **功能没恢复**,改为如实报不可用 |
 
 根因都在 patchright 1.62.2 下 `addInitScript` **不执行**。四条通道逐条实测,
 只有「route 拦 HTML 响应注 `<script>`」可用。详见 `claude/src/inject.ts`。
@@ -97,14 +97,32 @@ node --input-type=module -e 'import * as s from "@modelcontextprotocol/server";
 现三平台各有实现 + 4 个可测的纯解析函数。Windows 那份**逐字节保留**
 (它挡着一次真实事故:`findstr :3211` 子串匹配会误杀 `:32110` 的无关进程)。
 
-### 2.4 人工接管
+### 2.4 数据库只读护栏(2026-08-31 实测发现,修前可真实写库)
+
+`query` / `export_csv` / `explain_query` 都标 `readOnlyHint:true` → 宿主不弹确认 →
+判错就是**静默写库**。原判断只看开头一个词,两条绕过实测有效:
+
+| 绕过写法 | 为什么能过 | 实测结果 |
+|---|---|---|
+| `SELECT 1; CREATE TEMP TABLE t(x int); INSERT INTO t VALUES (42)` | 开头是 SELECT | pg 简单查询协议**逐条执行**,42 能读回来 |
+| `WITH x AS (INSERT … RETURNING 1) SELECT * FROM x` | 开头是 WITH | 语句真去执行了(仅因表不存在而报错) |
+| 同上交给 `explain_query` | 被判只读 → 加 `ANALYZE` | **`EXPLAIN ANALYZE` 会真正执行**,等于分析着把数据删了 |
+
+现在三层:① `stripSqlNoise` 剥字符串/注释/美元引用再判断(避免 `SELECT 'delete'` 误杀)
+② 拒多语句 + 全文查写关键字(含 `into`,`SELECT … INTO 新表` 在 PG 里是建表)
+③ **引擎级只读事务兜底** `BEGIN READ ONLY` / `START TRANSACTION READ ONLY` —— 这层不依赖
+"我们把所有花样都想全了",实测 `SHOW transaction_read_only` = `on`。
+
+回归用例:`claude/test/smoke-database.mjs`,**别删**。
+
+### 2.5 人工接管
 
 - `wait_for_human`:**不弹窗**,盯页面变化(URL 变 / 元素出现 / 元素消失)。
   在 `bypassPermissions` 下**照常工作**
 - `request_human`:走 elicitation。⚠️ 实测 `bypassPermissions` 下会被客户端
   **自动 decline 且界面无任何提示**,故本机不可用;保留供其它客户端/权限模式使用
 
-### 2.5 架构
+### 2.6 架构
 
 会话身份从"协议 session"换成"OS socket",为 2026-07-28 删除协议级 session 做好了准备,
 且**新旧协议下都成立**。浏览器默认共享、数据库默认隔离(`switch_db` 串台会写错库)。
@@ -133,3 +151,8 @@ node --input-type=module -e 'import * as s from "@modelcontextprotocol/server";
 
 - 2026-08-31:v2 迁移完成并上线;修复三个既有缺陷;补进度通知、跨平台、人工接管;
   会话身份改为 socket。Tasks 因 SDK 缺服务端 API 转入待办。
+- 2026-08-31(同日,全量实测):61 个工具逐个真调一遍(浏览器 46 + 数据库 15),
+  发现并修掉**数据库只读护栏可被绕过**(见 2.4)。新增 `test/smoke-browser.mjs` /
+  `test/smoke-database.mjs` 两个冒烟测试并挂到 npm scripts,把这次的用例固化成回归。
+  另实测确认:杀掉浏览器进程后下次调用自动重开,且**重开后注入与屏蔽规则都还在**;
+  服务重启后 shim 自动重连;浏览器共享 / 数据库隔离与文档描述一致。

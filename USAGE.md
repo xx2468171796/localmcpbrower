@@ -259,12 +259,17 @@ DB_PROD_SSL=true
 ### 读写规则（必读）
 
 ```
-- query 强制只读：仅接受 SELECT/WITH/SHOW/EXPLAIN/DESCRIBE，其他语句直接报错
+- query 强制只读：仅接受 SELECT/WITH/SHOW/EXPLAIN/DESCRIBE，其他语句直接报错。
+  另外两条限制是**故意的**,别绕:① **一次只能一条 SQL**,分号拼接一律拒(数据库会逐条执行,
+  是绕过只读的口子);② 语句里任何位置出现写关键字都会被拒,包括 `WITH x AS (INSERT …) SELECT …`
+  这类**可写 CTE**。查询还会跑在**引擎级只读事务**里(`BEGIN READ ONLY`),写不进去。
+  要写就用 execute(带 destructiveHint,宿主会要求确认)
 - 写操作（INSERT/UPDATE/DELETE/DDL）必须用 execute，它带 destructiveHint，
   执行前向用户确认；execute 成功后 SELECT 缓存自动失效
 - SELECT 结果有 60 秒缓存，重复查询很快；需要强制最新数据时改写 SQL（如加注释）
   缓存按「库 + SQL + 参数」区分，切库后不会拿到上一个库的旧结果
-- explain_query 对写语句只输出执行计划、不会真执行（PG 的 ANALYZE 仅用于只读语句）
+- explain_query 对写语句只输出执行计划、不会真执行（PG 的 ANALYZE 仅用于只读语句;
+  可写 CTE 现在会被正确判成「写」,不会再被 ANALYZE 真跑一遍）。同样拒多语句
 - connect / switch_db / disconnect 只改**本会话**当前指向哪个库，不影响其他窗口；
   写操作前用 status 确认当前库，别凭上一次 switch_db 的印象直接 execute
 ```

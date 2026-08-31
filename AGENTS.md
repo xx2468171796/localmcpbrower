@@ -10,6 +10,7 @@
 | 部署时逐步执行 + 故障处置 | `AI-DEPLOY.md` |
 | 了解工具怎么配合用 | `USAGE.md` |
 | 了解协议/架构为什么这么设计、踩过哪些坑 | **`MCP-V2-PLAN.md`**(含七条踩坑清单) |
+| **验证本机装得对不对** | 跑 `npm run test:smoke`(浏览器 46 工具)+ `npm run test:smoke:db`(数据库 15 工具) |
 | Codex 专属配置与排错 | `CODEX.md` |
 | ~~`HTTP-DESIGN.md`~~ | 描述的是**已被 pipe 取代**的旧会话架构,只作历史参考 |
 
@@ -55,6 +56,11 @@ Codex 写 `~/.codex/config.toml` 时,Windows 路径**必须用 TOML 字面量字
    "最后一个窗口关掉后永远连不上"。
 6. **v2 里报「`ZodObject` 不能赋给 `ZodRawShape`」时先查 `outputSchema`** —— 真凶多半是它,
    报错指向反了。
+7. **数据库只读护栏不能只看语句开头。** `query` / `export_csv` / `explain_query` 都标着
+   `readOnlyHint:true`,宿主据此**不弹确认**,所以判错 = 静默写库。两种绕过实测有效过:
+   分号多语句(`SELECT 1; INSERT …`,pg 简单查询协议逐条执行)和可写 CTE
+   (`WITH x AS (INSERT …) SELECT …`,以 WITH 开头)。现在的做法是**引擎级只读事务兜底**
+   (`BEGIN READ ONLY`)+ 文本层拒多语句/查写关键字。回归用例在 `test/smoke-database.mjs`,别删。
 
 更完整的踩坑清单见 `MCP-V2-PLAN.md` 第 3 节。
 
@@ -64,7 +70,8 @@ Codex 写 `~/.codex/config.toml` 时,Windows 路径**必须用 TOML 字面量字
 - HTTP 腿保留:**跨机共享只有这条路**(named pipe 只能本机用)
 - 不提交 `.env` 与任何凭据(本仓 push 后会**镜像到公开的 GitHub 仓**)
 - 改了工具行为 → 更新 `USAGE.md`;改了安装/配置行为 → 更新 `UPDATE-PROMPT.md` 与 `mcp.mjs config`
-- 改完 TypeScript 记得在 `claude/` 下构建(**两个包**)
+- 改完 TypeScript 记得在 `claude/` 下构建(**两个包**),然后跑 `npm run test:smoke` + `test:smoke:db`
+- 测试脚本里**不许出现凭据**:本仓 push 后镜像到公开 GitHub。数据库测试的连接信息一律走 `.env` 预设
 
 ## 更新本机 MCP
 

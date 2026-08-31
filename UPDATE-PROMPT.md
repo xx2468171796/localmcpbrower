@@ -124,6 +124,18 @@ for (const [name, svc, want] of [['浏览器','headless',46],['有头','headed',
 **三行都是 `[OK]` 才算成功。** 若 `[FAIL]`,**不要硬切**:先 `pm2 logs --lines 50` 看原因,
 把错误告诉我。旧的 HTTP 注册还留着,随时能退回去。
 
+握手过了再跑**功能冒烟**(每个工具都真调一遍,交互类还会回读 DOM 确认真生效):
+
+```bash
+cd ~/code/localmcpbrower/claude
+npm run test:smoke        # 浏览器 46 个工具,末尾应为「覆盖 46/46 … 通过 48/48」
+npm run test:smoke:db     # 数据库 15 个工具 + 只读护栏回归(需先配 .env,见下)
+```
+
+数据库要能用,得建 `mcp-database/.env`(照 `.env.example` 抄,**已被 .gitignore,别提交**):
+没有它 `list_presets` 为空、开机不自动连库,`switch_db` 也没法用。
+连接信息找管理员要,或看 `datacenter/` 里对应机器的文档。
+
 ## 5. 绝对不要做的事(踩了要返工)
 
 - **Windows 不要注册成系统服务**(「不管用户是否登录都运行」)。必须用户级自启,
@@ -153,7 +165,9 @@ for (const [name, svc, want] of [['浏览器','headless',46],['有头','headed',
 - **反爬指纹伪装整段从未执行** —— `navigator.webdriver` 一直暴露、`window.chrome` 不存在、
   plugins 为空,**爬公网站点基本会被当成机器人**
 - `get_console_logs` 恒返回空数组 —— 页面报错完全看不到
-- `snapshot` 的 `deep:true` 静默失效 —— 与 `deep:false` 输出逐字节相同
+- `snapshot` 的 `deep:true` 静默失效 —— 与 `deep:false` 输出逐字节相同。⚠️ 这条**没修好功能**,
+  是改成**如实报告不可用**(当前 patchright 版本下主世界/隔离世界不互通,深扫描做不了);
+  以前它假装成功,调用方会误以为「这页确实没有隐藏可点元素」
 
 **新增两个工具**(44 → 46):
 
@@ -161,6 +175,20 @@ for (const [name, svc, want] of [['浏览器','headless',46],['有头','headed',
   在全自主(bypassPermissions)模式下照常工作
 - `request_human` —— 走协议 elicitation 弹窗。⚠️ 在 bypassPermissions 下会被客户端**自动拒绝**
   且界面无提示,那种模式下请用 `wait_for_human`
+
+**补上了数据库只读护栏的两个真实漏洞**(2026-08-31 本机实测发现,修前能真的写库):
+
+`query` / `export_csv` / `explain_query` 都标着 `readOnlyHint:true`,宿主据此**不弹确认**。
+而原本的判断只看语句开头一个词,于是:
+
+- `SELECT 1; CREATE TEMP TABLE t(x int); INSERT INTO t VALUES (42)` —— pg 的简单查询协议
+  **逐条执行**,建表加写入全部落地(实测 42 能读回来)
+- `WITH x AS (INSERT INTO t VALUES (1) RETURNING 1) SELECT * FROM x` —— 以 `WITH` 开头,判成只读
+- `explain_query` 更糟:它按同一个判断决定加不加 `ANALYZE`,而 **`EXPLAIN ANALYZE` 会真正执行语句**,
+  于是可写 CTE 会被"分析"着删掉数据
+
+现在改成三层:剥掉字符串/注释再判断 → 拒多语句 + 查写关键字 → **引擎级只读事务兜底**
+(`BEGIN READ ONLY` / `START TRANSACTION READ ONLY`)。回归用例在 `test/smoke-database.mjs`。
 
 **长任务有进度了**:`crawl_pages`(最多 50 页)、`batch_fetch` 现在会实时上报进度,不再是黑盒。
 

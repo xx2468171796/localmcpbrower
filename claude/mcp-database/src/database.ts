@@ -424,22 +424,144 @@ class DatabaseManager {
     this.cacheGen.set(configKey, (this.cacheGen.get(configKey) ?? 0) + 1);
   }
 
-  /** 判断语句是否只读（SELECT/WITH/SHOW/EXPLAIN/DESCRIBE 开头） */
+  // ==================== 只读判定 ====================
+  //
+  // ⚠️ 这一段曾经只有一行 `/^\s*(select|with|...)/`,实测能被两种写法直接绕过,
+  //    而 query / export_csv / explain_query 都标着 readOnlyHint:true —— 宿主据此不做确认:
+  //
+  //      SELECT 1; CREATE TEMP TABLE t(x int); INSERT INTO t VALUES (42)
+  //        → pg 的简单查询协议**逐条执行**,建表加写入全部落地(实测 42 能读回来)
+  //      WITH x AS (INSERT INTO t VALUES (1) RETURNING 1) SELECT * FROM x
+  //        → 以 WITH 开头,老正则判为只读,可写 CTE 照样写
+  //
+  // 所以现在是三层:① 剥掉字符串/注释再判断 ② 拒多语句 + 查写关键字
+  // ③ **引擎级只读事务**兜底。前两层给清晰报错,第三层保证「没想到的花样」也写不进去。
+
+  /**
+   * 剥掉字符串字面量、引号标识符与注释,只留结构性文本。
+   * 关键字和分号必须在这份文本上判断:否则 `SELECT 'delete'` 会被误杀,
+   * 而 `SELECT 1 /* ; * / ; DELETE …` 里的真分号会被漏看。
+   */
+  private stripSqlNoise(sql: string): string {
+    let out = '';
+    let i = 0;
+    while (i < sql.length) {
+      const c = sql[i]!;
+      const next = sql[i + 1];
+      if (c === '-' && next === '-') {                     // 行注释
+        while (i < sql.length && sql[i] !== '\n') i++;
+        continue;
+      }
+      if (c === '/' && next === '*') {                     // 块注释(PG 可嵌套)
+        let depth = 1;
+        i += 2;
+        while (i < sql.length && depth > 0) {
+          if (sql[i] === '/' && sql[i + 1] === '*') { depth++; i += 2; }
+          else if (sql[i] === '*' && sql[i + 1] === '/') { depth--; i += 2; }
+          else i++;
+        }
+        out += ' ';
+        continue;
+      }
+      if (c === '$') {                                     // 美元引用 $$ … $$ / $tag$ … $tag$
+        const m = /^\$([A-Za-z_]\w*)?\$/.exec(sql.slice(i));
+        if (m) {
+          const tag = m[0];
+          const end = sql.indexOf(tag, i + tag.length);
+          i = end === -1 ? sql.length : end + tag.length;
+          out += ' ';
+          continue;
+        }
+      }
+      if (c === "'" || c === '"' || c === '`') {            // 字符串 / 引号标识符,'' 为转义
+        const q = c;
+        i++;
+        while (i < sql.length) {
+          if (sql[i] === q) {
+            if (sql[i + 1] === q) { i += 2; continue; }
+            i++;
+            break;
+          }
+          i++;
+        }
+        out += ' ';
+        continue;
+      }
+      out += c;
+      i++;
+    }
+    return out;
+  }
+
+  /** 只读语句允许的开头 */
+  private static readonly RO_HEAD = /^\s*(select|with|show|explain|describe|desc|table|values)\b/i;
+
+  /**
+   * 会改数据的关键字 —— **出现在任何位置**都算写,这是拦可写 CTE 的关键。
+   * 都加了 \b,所以 `create_time` / `deleted_at` / `offset` 这类列名不会误伤。
+   * `into` 必须在列表里:`SELECT * INTO 新表 FROM …` 在 PG 里是建表。
+   */
+  private static readonly MUTATING =
+    /\b(insert|update|delete|merge|truncate|create|drop|alter|grant|revoke|call|do|copy|vacuum|reindex|refresh|import|execute|prepare|into)\b/i;
+
+  /** 返回拒绝理由;为 null 表示确实只读。 */
+  private readOnlyViolation(sql: string, tool: string): string | null {
+    const stripped = this.stripSqlNoise(sql);
+    if (stripped.replace(/;\s*$/, '').includes(';')) {
+      return `${tool} 一次只接受一条 SQL:分号拼接会被数据库逐条执行,是绕过只读限制的口子。请拆开单独调用,写操作用 execute 工具`;
+    }
+    if (!DatabaseManager.RO_HEAD.test(stripped)) {
+      return `${tool} 仅允许只读语句（SELECT/WITH/SHOW/EXPLAIN），写操作请改用 execute 工具`;
+    }
+    const m = DatabaseManager.MUTATING.exec(stripped);
+    if (m) {
+      return `${tool} 仅允许只读语句:检测到写操作关键字 ${m[1]!.toUpperCase()}（如 WITH … AS (INSERT …) 这类可写 CTE)。写操作请改用 execute 工具`;
+    }
+    return null;
+  }
+
+  /** 判断语句是否只读 */
   private isReadOnlySql(sql: string): boolean {
-    return /^\s*(select|with|show|explain|describe|desc)\b/i.test(sql);
+    return this.readOnlyViolation(sql, 'query') === null;
   }
 
   // ==================== 查询执行 ====================
 
-  private async runQuery(entry: PoolEntry, sql: string, params?: unknown[]): Promise<QueryResult> {
+  /**
+   * 在**引擎级只读事务**里执行 —— 上面的文本判断只负责给出清晰报错,
+   * 真正的保证在这里:PG `BEGIN READ ONLY` / MySQL `START TRANSACTION READ ONLY`
+   * 会让任何写入直接失败,不依赖我们把所有绕过写法都想全。
+   */
+  private async runReadOnly(entry: PoolEntry, sql: string, params?: unknown[]): Promise<QueryResult> {
     if (entry.pg) {
-      const pgResult = await entry.pg.query(sql, params);
-      return { rows: pgResult.rows, rowCount: pgResult.rowCount ?? 0, fields: pgResult.fields?.map(f => f.name) };
+      const client = await entry.pg.connect();
+      try {
+        await client.query('BEGIN READ ONLY');
+        const r = await client.query(sql, params);
+        await client.query('COMMIT');
+        // SHOW / 部分工具语句的 rowCount 是 null,直接 ?? 0 会出现「有行但 rowCount:0」
+        return { rows: r.rows, rowCount: r.rowCount ?? r.rows.length, fields: r.fields?.map(f => f.name) };
+      } catch (e) {
+        try { await client.query('ROLLBACK'); } catch { /* 连接可能已废,吞掉以免盖住真正的错 */ }
+        throw e;
+      } finally {
+        client.release();
+      }
     }
     if (entry.mysql) {
-      const [rows, fields] = await entry.mysql.execute(sql, params as any);
-      const rowArray = Array.isArray(rows) ? rows : [rows];
-      return { rows: rowArray as Record<string, unknown>[], rowCount: rowArray.length, fields: (fields as mysql.FieldPacket[])?.map(f => f.name) };
+      const conn = await entry.mysql.getConnection();
+      try {
+        await conn.query('START TRANSACTION READ ONLY');
+        const [rows, fields] = await conn.execute(sql, params as any);
+        await conn.query('COMMIT');
+        const rowArray = Array.isArray(rows) ? rows : [rows];
+        return { rows: rowArray as Record<string, unknown>[], rowCount: rowArray.length, fields: (fields as mysql.FieldPacket[])?.map(f => f.name) };
+      } catch (e) {
+        try { await conn.query('ROLLBACK'); } catch { /* 同上 */ }
+        throw e;
+      } finally {
+        conn.release();
+      }
     }
     throw new Error(BROKEN_POOL);
   }
@@ -447,10 +569,9 @@ class DatabaseManager {
   public async query(sql: string, params?: unknown[]): Promise<QueryResult> {
     const entry = await this.ensureEntry();
     // query 工具只允许只读语句，写操作必须走 execute（带 destructiveHint，宿主会要求确认）
-    if (!this.isReadOnlySql(sql)) {
-      throw new Error('query 工具仅允许只读语句（SELECT/WITH/SHOW/EXPLAIN），写操作请改用 execute 工具');
-    }
-    const isSelect = sql.trim().toLowerCase().startsWith('select');
+    const violation = this.readOnlyViolation(sql, 'query');
+    if (violation) throw new Error(violation);
+    const isSelect = /^\s*select\b/i.test(this.stripSqlNoise(sql));
     const cacheKey = this.getCacheKey(entry.key, sql, params);
     if (isSelect) {
       const cached = this.queryCache.get(cacheKey);
@@ -460,7 +581,7 @@ class DatabaseManager {
       }
     }
     const gen = this.cacheGen.get(entry.key) ?? 0;
-    const result = await this.runQuery(entry, sql, params);
+    const result = await this.runReadOnly(entry, sql, params);
     // 查询期间本库发生过写入/换池 → 这份结果已经是旧快照,直接返回但不进缓存
     if (isSelect && (this.cacheGen.get(entry.key) ?? 0) === gen) {
       this.queryCache.set(cacheKey, { result, timestamp: Date.now() });
@@ -541,11 +662,21 @@ class DatabaseManager {
   // === New: EXPLAIN query ===
   public async explainQuery(sql: string): Promise<QueryResult> {
     const entry = await this.ensureEntry();
+    // 多语句在这里格外危险:`EXPLAIN (FORMAT JSON) SELECT 1; DROP TABLE t` 会被逐条执行,
+    // 而 explain_query 标着 readOnlyHint:true,宿主不会拦。一律拒。
+    if (this.stripSqlNoise(sql).replace(/;\s*$/, '').includes(';')) {
+      throw new Error('explain_query 一次只接受一条 SQL:分号拼接会被数据库逐条执行');
+    }
     if (entry.pg) {
-      // EXPLAIN ANALYZE 会真正执行语句！对 INSERT/UPDATE/DELETE 等写语句只出计划不执行
-      const explainOpts = this.isReadOnlySql(sql) ? '(ANALYZE, BUFFERS, FORMAT JSON)' : '(FORMAT JSON)';
-      const result = await entry.pg.query(`EXPLAIN ${explainOpts} ${sql}`);
-      return { rows: result.rows, rowCount: result.rowCount ?? 0, fields: result.fields?.map(f => f.name) };
+      // EXPLAIN ANALYZE 会真正执行语句！只对确认只读的语句加 ANALYZE,
+      // 且放进只读事务里跑 —— 可写 CTE(`WITH x AS (DELETE … RETURNING …)`)以前正是从这里
+      // 被判成「只读」然后被 ANALYZE 真删掉的。
+      const readOnly = this.isReadOnlySql(sql);
+      if (readOnly) {
+        return await this.runReadOnly(entry, 'EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ' + sql);
+      }
+      const result = await entry.pg.query(`EXPLAIN (FORMAT JSON) ${sql}`);
+      return { rows: result.rows, rowCount: result.rowCount ?? result.rows.length, fields: result.fields?.map(f => f.name) };
     } else if (entry.mysql) {
       const [rows, fields] = await entry.mysql.execute(`EXPLAIN ${sql}`);
       return { rows: rows as Record<string, unknown>[], rowCount: (rows as unknown[]).length, fields: fields?.map(f => f.name) };
