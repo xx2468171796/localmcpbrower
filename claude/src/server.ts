@@ -12,13 +12,13 @@ if (STDIO) {
 }
 
 import express, { type Request, type Response, type NextFunction } from 'express';
+import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
+import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
+import { McpServer, isInitializeRequest } from "@modelcontextprotocol/server";
+import type { ToolAnnotations } from "@modelcontextprotocol/server";
 import { z } from 'zod';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { BoundedEventStore } from './eventStore.js';
-import { isInitializeRequest, type ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 import { getBrowserManager } from './browser.js';
 import { mcpCtx, STDIO_SESSION_ID } from './context.js';
 import * as tools from './tools.js';
@@ -124,7 +124,7 @@ const SERVER_INSTRUCTIONS = `本地浏览器操控 MCP。工具配合要点:
 // Session management
 const SESSION_TTL = 30 * 60 * 1000;
 const MAX_SESSIONS = 20;
-const transports: Map<string, { transport: StreamableHTTPServerTransport; lastAccess: number }> = new Map();
+const transports: Map<string, { transport: NodeStreamableHTTPServerTransport; lastAccess: number }> = new Map();
 
 /** 会话下线统一出口：关掉它名下的全部标签页并清空日志缓冲，避免死会话白占浏览器资源 */
 function releaseSession(sid: string): void {
@@ -161,11 +161,11 @@ function structured(result: unknown) {
 }
 
 // 复用的工具结果信封 outputSchema —— 对应 ToolResult<T> 形状
-const ResultEnvelope = {
+const ResultEnvelope = z.object({
   success: z.boolean(),
   data: z.unknown().optional(),
   error: z.string().optional(),
-};
+});
 
 /** 工具 handler 的最宽签名 —— 只用于 wrap 的泛型约束，不参与实际类型推导 */
 type ToolHandler = (...args: never[]) => unknown;
@@ -190,14 +190,14 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('navigate', {
     title: '打开网页',
     description: '在当前标签页跳转到指定网址并等待加载完成。爬虫标准流程的第二步（先 set_block_rules 再 navigate）。静态页跳转后可直接操作，SPA/动态页需配合 wait_for_selector。',
-    inputSchema: NavigateSchema.shape,
+    inputSchema: NavigateSchema,
     annotations: { title: '打开网页', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => text(await tools.navigate(args))));
 
   server.registerTool('set_viewport', {
     title: '设置视口',
     description: '设置浏览器窗口的宽高像素，用于测试响应式布局或模拟特定设备分辨率。',
-    inputSchema: SetViewportSchema.shape,
+    inputSchema: SetViewportSchema,
     annotations: { title: '设置视口', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => text(await tools.setViewport(args))));
 
@@ -217,63 +217,63 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('click', {
     title: '点击元素',
     description: '点击页面元素，内置三级 fallback（正常→force→JS），无需手动重试。若仍失败可改用 execute_js 直接操作 DOM。',
-    inputSchema: ClickSchema.shape,
+    inputSchema: ClickSchema,
     annotations: { title: '点击元素', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => text(await tools.click(args))));
 
   server.registerTool('type', {
     title: '输入文本',
     description: '在输入框中输入文本，内置三级 fallback（正常→force→JS）。批量填表请改用 fill_form，效率更高。',
-    inputSchema: TypeSchema.shape,
+    inputSchema: TypeSchema,
     annotations: { title: '输入文本', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => text(await tools.type(args))));
 
   server.registerTool('hover', {
     title: '悬停元素',
     description: '将鼠标悬停在元素上，用于触发 hover 菜单、提示框或懒加载内容。',
-    inputSchema: HoverSchema.shape,
+    inputSchema: HoverSchema,
     annotations: { title: '悬停元素', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => text(await tools.hover(args))));
 
   server.registerTool('scroll', {
     title: '滚动页面',
     description: '滚动页面到指定 x/y 坐标，或滚动到某元素可见处。用于触发滚动懒加载内容。',
-    inputSchema: ScrollSchema.shape,
+    inputSchema: ScrollSchema,
     annotations: { title: '滚动页面', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => text(await tools.scroll(args))));
 
   server.registerTool('select_option', {
     title: '选择下拉项',
     description: '在 select 下拉框中按 value 或可见文本选中选项。',
-    inputSchema: SelectOptionSchema.shape,
+    inputSchema: SelectOptionSchema,
     annotations: { title: '选择下拉项', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => text(await tools.selectOption(args))));
 
   server.registerTool('fill_form', {
     title: '批量填表',
     description: '一次性批量填写多个表单字段（文本框/下拉框/复选框）。需要填写 2 个以上字段时优先用本工具，避免多次调用 type。',
-    inputSchema: FillFormSchema.shape,
+    inputSchema: FillFormSchema,
     annotations: { title: '批量填表', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => text(await tools.fillForm(args))));
 
   server.registerTool('keyboard_press', {
     title: '按键',
     description: '按下键盘按键，如 Enter、Tab、Escape、方向键。用于提交表单或键盘导航。',
-    inputSchema: KeyboardPressSchema.shape,
+    inputSchema: KeyboardPressSchema,
     annotations: { title: '按键', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => text(await tools.keyboardPress(args))));
 
   server.registerTool('drag_and_drop', {
     title: '拖拽元素',
     description: '将源元素拖拽到目标元素位置，用于排序、看板移动等交互。',
-    inputSchema: DragAndDropSchema.shape,
+    inputSchema: DragAndDropSchema,
     annotations: { title: '拖拽元素', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => text(await tools.dragAndDrop(args))));
 
   server.registerTool('file_upload', {
     title: '上传文件',
     description: '向 input[type=file] 元素上传本地文件，需提供文件的本地绝对路径。',
-    inputSchema: FileUploadSchema.shape,
+    inputSchema: FileUploadSchema,
     annotations: { title: '上传文件', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => text(await tools.fileUpload(args))));
 
@@ -281,7 +281,7 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('take_screenshot', {
     title: '页面截图',
     description: '截取当前页面并返回 base64 图片。截图较慢（约 1 秒），仅在需要视觉验证、调试定位或返回图片给用户时使用。读取页面内容请改用 get_page_content 或 extract_data，更快。',
-    inputSchema: ScreenshotSchema.shape,
+    inputSchema: ScreenshotSchema,
     annotations: { title: '页面截图', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => {
     const result = await tools.takeScreenshot(args);
@@ -312,21 +312,21 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('execute_js', {
     title: '执行 JS',
     description: '在页面上下文执行自定义 JavaScript 并返回结果。当 click/type 三级 fallback 仍失败、或需要复杂 DOM 操作时使用。提取链接请优先用 extract_links。',
-    inputSchema: ExecuteJsSchema.shape,
+    inputSchema: ExecuteJsSchema,
     annotations: { title: '执行 JS', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => text(await tools.executeJs(args))));
 
   server.registerTool('run_script', {
     title: '一次跑完脚本',
     description: '在页面里一次性执行一段 JS，脚本内可直接用 __ego 助手：__ego.snapshot()/click(selOrRef)/fill(selOrRef,val)/waitFor(sel,ms)/text(sel)/attr(sel,name)/exists(sel)/check/select/sleep/$/$$。适合「填表→点击→等待→读结果」这类多步交互，把多次 MCP 往返压成一次，显著省 token 与延迟。selOrRef 同时支持 CSS 选择器和 snapshot 的 ref（如 e5）。支持顶层 await 与 return。',
-    inputSchema: RunScriptSchema.shape,
+    inputSchema: RunScriptSchema,
     annotations: { title: '一次跑完脚本', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => text(await tools.runScript(args))));
 
   server.registerTool('wait_for_selector', {
     title: '等待元素',
     description: '等待指定元素出现/隐藏。SPA/React/Vue 等动态页面在 navigate 后应先等待关键元素再操作，避免拿到空数据。静态页面无需调用。',
-    inputSchema: WaitForSelectorSchema.shape,
+    inputSchema: WaitForSelectorSchema,
     annotations: { title: '等待元素', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => text(await tools.waitForSelector(args))));
 
@@ -334,7 +334,7 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('get_element_text', {
     title: '获取元素文本',
     description: '获取单个元素的文本内容。提取列表/表格等多条数据时请改用 extract_data，避免多次调用。',
-    inputSchema: GetElementTextSchema.shape,
+    inputSchema: GetElementTextSchema,
     outputSchema: ResultEnvelope,
     annotations: { title: '获取元素文本', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => structured(await tools.getElementText(args))));
@@ -342,7 +342,7 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('get_element_attribute', {
     title: '获取元素属性',
     description: '获取单个元素的指定属性值，如 href、src、data-* 等。',
-    inputSchema: GetElementAttributeSchema.shape,
+    inputSchema: GetElementAttributeSchema,
     outputSchema: ResultEnvelope,
     annotations: { title: '获取元素属性', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => structured(await tools.getElementAttribute(args))));
@@ -350,7 +350,7 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('get_page_content', {
     title: '获取页面内容',
     description: '获取页面 HTML 或纯文本内容，可用 selector 限定范围。读取简单页面内容的首选，比 take_screenshot 更快更省。',
-    inputSchema: GetPageContentSchema.shape,
+    inputSchema: GetPageContentSchema,
     outputSchema: ResultEnvelope,
     annotations: { title: '获取页面内容', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => structured(await tools.getPageContent(args))));
@@ -358,7 +358,7 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('get_cookies', {
     title: '获取 Cookie',
     description: '获取当前页面的 Cookie，可按名称过滤。用于检查登录态或调试会话。',
-    inputSchema: GetCookiesSchema.shape,
+    inputSchema: GetCookiesSchema,
     outputSchema: ResultEnvelope,
     annotations: { title: '获取 Cookie', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => structured(await tools.getCookies(args))));
@@ -366,7 +366,7 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('set_cookies', {
     title: '设置 Cookie',
     description: '向浏览器写入 Cookie，常用于注入登录态后再访问需要鉴权的页面。',
-    inputSchema: SetCookiesSchema.shape,
+    inputSchema: SetCookiesSchema,
     annotations: { title: '设置 Cookie', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => text(await tools.setCookies(args))));
 
@@ -374,14 +374,14 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('pdf_export', {
     title: '导出 PDF',
     description: '将当前页面导出为 PDF 文件并保存到指定路径。',
-    inputSchema: PdfExportSchema.shape,
+    inputSchema: PdfExportSchema,
     annotations: { title: '导出 PDF', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => text(await tools.pdfExport(args))));
 
   server.registerTool('generate_page_report', {
     title: '页面分析报告',
     description: '生成页面结构分析报告（链接/表单/图片清单），用于快速了解页面整体结构、规划爬虫选择器。',
-    inputSchema: PageReportSchema.shape,
+    inputSchema: PageReportSchema,
     outputSchema: ResultEnvelope,
     annotations: { title: '页面分析报告', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => structured(await tools.generatePageReport(args))));
@@ -396,21 +396,21 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('new_tab', {
     title: '新建标签页',
     description: '打开一个新标签页（可指定网址）。需要同时保持多个页面时用多标签页，比反复 navigate 更快。',
-    inputSchema: NewTabSchema.shape,
+    inputSchema: NewTabSchema,
     annotations: { title: '新建标签页', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => text(await tools.newTab(args))));
 
   server.registerTool('switch_tab', {
     title: '切换标签页',
     description: '按索引切换当前活动标签页，后续操作都作用于该标签页。',
-    inputSchema: TabIndexSchema.shape,
+    inputSchema: TabIndexSchema,
     annotations: { title: '切换标签页', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => text(await tools.switchTab(args))));
 
   server.registerTool('close_tab', {
     title: '关闭标签页',
     description: '按索引关闭指定标签页，释放资源。',
-    inputSchema: TabIndexSchema.shape,
+    inputSchema: TabIndexSchema,
     annotations: { title: '关闭标签页', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => text(await tools.closeTab(args))));
 
@@ -425,7 +425,7 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('space_new', {
     title: '新建工作区',
     description: '新建并切换到一个隔离工作区，拥有独立的 userDataDir（cookie/登录态与其它工作区完全隔离）。用于并行跑多任务或同站多账号，互不污染。已存在同名则直接切过去。',
-    inputSchema: SpaceNameSchema.shape,
+    inputSchema: SpaceNameSchema,
     outputSchema: ResultEnvelope,
     annotations: { title: '新建工作区', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => structured(await tools.spaceNew(args))));
@@ -433,7 +433,7 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('space_switch', {
     title: '切换工作区',
     description: '切换当前活跃工作区，后续所有浏览器工具都作用于该工作区的页面。目标工作区须已由 space_new 创建。',
-    inputSchema: SpaceNameSchema.shape,
+    inputSchema: SpaceNameSchema,
     outputSchema: ResultEnvelope,
     annotations: { title: '切换工作区', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => structured(await tools.spaceSwitch(args))));
@@ -441,7 +441,7 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('space_close', {
     title: '关闭工作区',
     description: '关闭并销毁一个工作区，释放其浏览器进程（default 不可关）。若关闭的是当前工作区，自动回落到 default。',
-    inputSchema: SpaceNameSchema.shape,
+    inputSchema: SpaceNameSchema,
     outputSchema: ResultEnvelope,
     annotations: { title: '关闭工作区', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => structured(await tools.spaceClose(args))));
@@ -450,7 +450,7 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('intercept_requests', {
     title: '拦截请求',
     description: '按 URL 模式拦截/记录/修改网络请求。需要按规则屏蔽图片/广告加速爬取时，优先用更简单的 set_block_rules。',
-    inputSchema: InterceptRequestsSchema.shape,
+    inputSchema: InterceptRequestsSchema,
     annotations: { title: '拦截请求', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => text(await tools.interceptRequests(args))));
 
@@ -460,14 +460,14 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
     // 语义已从 context 级收敛为**会话级**（挂本会话每张标签页，不再挂 BrowserContext），
     // description 必须同步说明作用域，否则 AI 会以为它能影响别的会话/整个浏览器。
     description: '爬虫加速：屏蔽图片/广告/字体请求，爬取数据前第一步调用，速度提升 3-5 倍。标准爬虫流程的起点。作用于本会话（本会话当前及之后新开的标签页），不影响其他会话。',
-    inputSchema: SetBlockRulesSchema.shape,
+    inputSchema: SetBlockRulesSchema,
     annotations: { title: '爬虫加速屏蔽', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => text(await tools.setBlockRules(args))));
 
   server.registerTool('extract_links', {
     title: '提取链接',
     description: '提取页面所有链接，支持范围限定和 URL 关键词过滤。比手写 execute_js querySelectorAll 更可靠。批量抓取详情页前先用它收集链接。',
-    inputSchema: ExtractLinksSchema.shape,
+    inputSchema: ExtractLinksSchema,
     outputSchema: ResultEnvelope,
     annotations: { title: '提取链接', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => structured(await tools.extractLinks(args))));
@@ -475,7 +475,7 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('extract_data', {
     title: '提取结构化数据',
     description: '按 CSS 选择器批量提取结构化数据（列表/表格），支持多字段映射。提取多条数据的首选，胜过多次 get_element_text。动态/Ajax 页面请改用 wait_and_extract，否则可能拿到空数据。',
-    inputSchema: ExtractDataSchema.shape,
+    inputSchema: ExtractDataSchema,
     outputSchema: ResultEnvelope,
     annotations: { title: '提取结构化数据', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => structured(await tools.extractData(args))));
@@ -483,7 +483,7 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('wait_and_extract', {
     title: '等待并提取',
     description: '等待动态内容加载完成后再提取，适合 SPA/懒加载/Ajax 页面。waitSelector 设为数据容器，避免直接 extract_data 拿到空数据。',
-    inputSchema: WaitAndExtractSchema.shape,
+    inputSchema: WaitAndExtractSchema,
     outputSchema: ResultEnvelope,
     annotations: { title: '等待并提取', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => structured(await tools.waitAndExtract(args))));
@@ -491,7 +491,7 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('batch_fetch', {
     title: '批量抓取 URL',
     description: '批量抓取多个不同 URL（最多 20 个），支持内容提取和请求间隔。胜过循环 navigate + get_page_content。建议 delay 设 500-1000ms 防封号。',
-    inputSchema: BatchFetchSchema.shape,
+    inputSchema: BatchFetchSchema,
     outputSchema: ResultEnvelope,
     annotations: { title: '批量抓取 URL', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => structured(await tools.batchFetch(args))));
@@ -499,7 +499,7 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('crawl_pages', {
     title: '自动翻页爬取',
     description: '自动分页爬取：自动点击下一页并汇总所有数据，内置翻页等待。胜过手动循环 click + extract_data。建议 delay 设 800-1500ms 防封号。',
-    inputSchema: CrawlPagesSchema.shape,
+    inputSchema: CrawlPagesSchema,
     outputSchema: ResultEnvelope,
     annotations: { title: '自动翻页爬取', readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => structured(await tools.crawlPages(args))));
@@ -508,7 +508,7 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('snapshot', {
     title: '页面无障碍快照',
     description: '返回当前页面的无障碍树（accessibility tree）大纲，每个可交互元素带有 ref 编号（如 e5）。相比 take_screenshot 截图，token 消耗极低，是了解页面结构、定位元素的首选。现已能识别框架无语义可点击元素（cursor:pointer / tabindex>=0 / 扩展 role 等无标签 div）。可选 deep 参数：开启后用 CDP 事件监听深度扫描，找出仅靠 addEventListener 绑定 click 的元素（较慢，默认关闭）。标准工作流：先 snapshot 获取大纲 → 读取目标元素的 ref → 用 click/type/hover 传 ref 参数操作（无需写 CSS 选择器）。注意：ref 仅在页面未重新渲染前有效；SPA/动态页面如交互失败,请重新调用 snapshot 获取最新 ref。',
-    inputSchema: SnapshotSchema.shape,
+    inputSchema: SnapshotSchema,
     outputSchema: ResultEnvelope,
     annotations: { title: '页面无障碍快照', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => structured(await tools.snapshot(args))));
@@ -516,7 +516,7 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('discover_urls', {
     title: '站点 URL 发现',
     description: '站点 URL 发现,爬取大站前先用它探明所有页面地址(走 sitemap.xml + robots.txt + 页面链接),不抓正文,速度快。',
-    inputSchema: DiscoverUrlsSchema.shape,
+    inputSchema: DiscoverUrlsSchema,
     outputSchema: ResultEnvelope,
     annotations: { title: '站点 URL 发现', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => structured(await tools.discoverUrls(args))));
@@ -524,7 +524,7 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('extract_article', {
     title: '提取正文',
     description: '提取当前页面的主正文内容并转为干净的 Markdown，自动剥离导航栏/广告/页脚等样板。适合新闻、博客、文档类页面的内容采集，比 get_page_content 更精炼省 token。若页面不是文章则返回失败。',
-    inputSchema: ExtractArticleSchema.shape,
+    inputSchema: ExtractArticleSchema,
     outputSchema: ResultEnvelope,
     annotations: { title: '提取正文', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => structured(await tools.extractArticle(args))));
@@ -609,7 +609,7 @@ function createApp(): express.Application {
       const sessionId = req.headers['mcp-session-id'] as string | undefined;
       const isInit = isInitializeRequest(req.body);
       console.log(`[MCP] POST sid=${sessionId ? sessionId.slice(0, 8) + '...' : 'none'} init=${isInit} method=${req.body?.method ?? '?'} sessions=${transports.size}`);
-      let transport: StreamableHTTPServerTransport;
+      let transport: NodeStreamableHTTPServerTransport;
 
       if (sessionId && transports.has(sessionId)) {
         // Known session
@@ -629,7 +629,7 @@ function createApp(): express.Application {
         // 会话 ID 自己先生成：McpServer 要在 initialize 处理前就建好，
         // 提前定下 ID 才能让 44 个 handler 闭包捕获到正确的 sessionId。
         const newSessionId = randomUUID();
-        transport = new StreamableHTTPServerTransport({
+        transport = new NodeStreamableHTTPServerTransport({
           sessionIdGenerator: () => newSessionId,
           eventStore,
           // DNS rebinding 防护：拦住「恶意页面把域名解析到 127.0.0.1 后直连本服务」，

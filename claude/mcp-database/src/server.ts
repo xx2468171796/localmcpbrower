@@ -14,18 +14,18 @@ if (STDIO) {
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
+import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
+import { McpServer, isInitializeRequest } from "@modelcontextprotocol/server";
+import type { ToolAnnotations } from "@modelcontextprotocol/server";
+
 // 从本文件所在目录定位 .env(dist/server.js → ../.env):stdio 启动时 cwd 常不是本目录,
 // 不能靠 dotenv 默认从 cwd 找,否则预设/默认库全读不到(配了等于没配)。
 // quiet: 关掉 dotenv 17 往 stderr 打的注入日志/推广 tip,保持日志干净
 dotenv.config({ path: resolve(dirname(fileURLToPath(import.meta.url)), '../.env'), quiet: true });
 import express from 'express';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { BoundedEventStore } from './eventStore.js';
-import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
-import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 import { getDatabaseManager, getDefaultConfig } from './database.js';
 import { mcpCtx, STDIO_SESSION_ID } from './context.js';
 import * as tools from './tools.js';
@@ -129,7 +129,7 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('connect', {
     title: '连接数据库',
     description: '使用主机/端口/账号密码直接连接 PostgreSQL 或 MySQL 数据库。当尚未连接、或需要连接到 .env 预设之外的数据库时使用。仅改变当前会话指向的库，不影响其他窗口。',
-    inputSchema: ConnectSchema.shape,
+    inputSchema: ConnectSchema,
     annotations: CONN,
   }, wrap(async (args: unknown) => text(await tools.connect(args))));
 
@@ -154,7 +154,7 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('switch_db', {
     title: '切换预设库',
     description: '通过别名快速切换到 .env 中预设的数据库（如 PROD/TEST）。无需重新输入连接信息时使用，别名可由 list_presets 获取。仅改变当前会话指向的库，不影响其他窗口。',
-    inputSchema: SwitchDbSchema.shape,
+    inputSchema: SwitchDbSchema,
     annotations: CONN,
   }, wrap(async (args: unknown) => text(await tools.switchDb(args))));
 
@@ -162,14 +162,14 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('query', {
     title: '执行查询',
     description: '执行只读 SELECT 查询并返回结果行。仅用于读取数据；如需写入请改用 execute。结果会被短时缓存。',
-    inputSchema: QuerySchema.shape,
+    inputSchema: QuerySchema,
     annotations: RO,
   }, wrap(async (args: unknown) => text(await tools.query(args))));
 
   server.registerTool('execute', {
     title: '执行写入语句',
     description: '执行 INSERT/UPDATE/DELETE 等写操作语句。注意：会修改数据库数据，具有破坏性，使用前请确认当前会话连接的是哪个库（status）。只读查询请用 query。',
-    inputSchema: ExecuteSchema.shape,
+    inputSchema: ExecuteSchema,
     annotations: WRITE,
   }, wrap(async (args: unknown) => text(await tools.execute(args))));
 
@@ -177,14 +177,14 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('list_tables', {
     title: '列出表',
     description: '列出数据库中所有表和视图。探索数据库结构、不知道有哪些表时使用。',
-    inputSchema: ListTablesSchema.shape,
+    inputSchema: ListTablesSchema,
     annotations: RO,
   }, wrap(async (args: unknown) => text(await tools.listTables(args))));
 
   server.registerTool('describe_table', {
     title: '查看表结构',
     description: '获取指定表的列定义（字段名、类型、是否可空、主键、默认值）。编写查询或了解表结构时使用。',
-    inputSchema: DescribeTableSchema.shape,
+    inputSchema: DescribeTableSchema,
     annotations: RO,
   }, wrap(async (args: unknown) => text(await tools.describeTable(args))));
 
@@ -198,35 +198,35 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('explain_query', {
     title: '分析执行计划',
     description: '对 SQL 运行 EXPLAIN 并返回执行计划。用于性能调优、排查慢查询、判断是否走索引。',
-    inputSchema: ExplainQuerySchema.shape,
+    inputSchema: ExplainQuerySchema,
     annotations: RO,
   }, wrap(async (args: unknown) => text(await tools.explainQuery(args))));
 
   server.registerTool('table_indexes', {
     title: '查看表索引',
     description: '查看指定表的所有索引（名称、列、是否唯一、是否主键、索引类型）。优化查询或排查索引缺失时使用。',
-    inputSchema: TableIndexesSchema.shape,
+    inputSchema: TableIndexesSchema,
     annotations: RO,
   }, wrap(async (args: unknown) => text(await tools.getTableIndexes(args))));
 
   server.registerTool('table_relations', {
     title: '查看表外键',
     description: '查看指定表的外键关系（关联的表与列）。理解表之间的关联、构造 JOIN 查询时使用。',
-    inputSchema: TableRelationsSchema.shape,
+    inputSchema: TableRelationsSchema,
     annotations: RO,
   }, wrap(async (args: unknown) => text(await tools.getTableRelations(args))));
 
   server.registerTool('table_stats', {
     title: '查看表统计',
     description: '查看库中所有表的行数估算与磁盘占用（总大小、数据大小、索引大小）。评估数据规模或排查空间占用时使用。',
-    inputSchema: TableStatsSchema.shape,
+    inputSchema: TableStatsSchema,
     annotations: RO,
   }, wrap(async (args: unknown) => text(await tools.getTableStats(args))));
 
   server.registerTool('export_csv', {
     title: '导出CSV',
     description: '执行 SQL 查询并将结果导出为 CSV 文本。需要将查询结果保存或交付为 CSV 时使用。',
-    inputSchema: ExportCsvSchema.shape,
+    inputSchema: ExportCsvSchema,
     annotations: RO,
   }, wrap(async (args: unknown) => text(await tools.exportCsv(args))));
 
@@ -246,7 +246,7 @@ const SESSION_TTL = envInt('MCP_SESSION_TTL_MS', 30 * 60 * 1000);
 // 清理周期不能长于 TTL 的一半,否则把 TTL 调小了也等不到回收
 const SESSION_SWEEP_MS = Math.max(1000, Math.min(5 * 60 * 1000, Math.floor(SESSION_TTL / 2)));
 const MAX_SESSIONS = 20;
-const transports: Map<string, { transport: StreamableHTTPServerTransport; lastAccess: number }> = new Map();
+const transports: Map<string, { transport: NodeStreamableHTTPServerTransport; lastAccess: number }> = new Map();
 
 // 无会话直连伪会话的最后使用时间(0 = 从未使用)。
 // 它不走 initialize/DELETE,没有任何 SDK 生命周期钩子,不自己回收的话
@@ -448,7 +448,7 @@ function createApp(): express.Application {
   app.post('/mcp', async (req, res) => {
     try {
       const sessionId = readSessionId(req);
-      let transport: StreamableHTTPServerTransport;
+      let transport: NodeStreamableHTTPServerTransport;
 
       const known = sessionId ? transports.get(sessionId) : undefined;
       if (known) {
@@ -472,7 +472,7 @@ function createApp(): express.Application {
         // 而 onsessioninitialized 回调发生在 handleRequest 期间,太晚 —— 所以自己先生成,
         // 再让 sessionIdGenerator 原样返回,两边拿到的是同一个 id。
         const newSessionId = randomUUID();
-        transport = new StreamableHTTPServerTransport({
+        transport = new NodeStreamableHTTPServerTransport({
           sessionIdGenerator: () => newSessionId,
           eventStore,
           enableDnsRebindingProtection: true,

@@ -7,8 +7,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type { EventStore, EventId, StreamId } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
+import type { EventStore, EventId, StreamId, JSONRPCMessage } from "@modelcontextprotocol/server";
 
 const MAX_EVENTS = 1000;
 
