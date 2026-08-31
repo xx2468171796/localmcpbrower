@@ -34,7 +34,11 @@ import {
   ExplainQuerySchema, TableIndexesSchema, TableRelationsSchema, TableStatsSchema, ExportCsvSchema
 } from './schemas.js';
 
+import { startPipeLeg } from './pipe.js';
 const PORT = parseInt(process.env['PORT'] ?? '3212', 10);
+
+/** pipe 端点服务名 —— 与浏览器包的两个端点区分开,三份服务各占一个管道 */
+const PIPE_SERVICE = (process.env['PIPE_SERVICE'] ?? '').trim() || 'db';
 // 默认只听回环:HTTP 端口等于把「按会话切库、可写生产库」的能力暴露出去,
 // 跨机共享必须显式设 HOST,并同时配 MCP_AUTH_TOKEN(见下方 fail-fast)
 const HOST = process.env['HOST'] ?? '127.0.0.1';
@@ -640,6 +644,20 @@ async function runHttp(): Promise<void> {
   };
   process.on('SIGINT', () => { void shutdown('SIGINT'); });
   process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
+
+  // ── pipe 腿:纯 2026-07-28。与浏览器包同构(见 src/pipe.ts 头部)。
+  // 数据库这边一条 socket = 一个窗口 = 一份**独立的当前库指针**;
+  // 否则 A 窗口 switch_db('prod') 会把 B 窗口一起拖走 —— 那是数据事故,不是体验问题。
+  try {
+    const leg = startPipeLeg({
+      service: PIPE_SERVICE,
+      createServer: (sessionId) => createMcpServer(sessionId),
+      releaseSession: (sid) => dropSession(sid, 'pipe 断开'),
+    });
+    console.log(`[Server] pipe 腿就绪(纯 2026-07-28):${leg.endpoint}`);
+  } catch (e) {
+    console.error('[Server] pipe 腿启动失败(HTTP 腿不受影响):', e);
+  }
 }
 
 async function main(): Promise<void> {
