@@ -31,6 +31,7 @@ const NPM = IS_WIN ? 'npm.cmd' : 'npm';
 const NPX = IS_WIN ? 'npx.cmd' : 'npx';
 const PM2 = IS_WIN ? 'pm2.cmd' : 'pm2';
 
+const SHIM_PATH = join(ROOT, 'bin', 'shim.mjs');
 const BROWSER_SERVER = join(ROOT, 'dist', 'server.js');
 const DB_SERVER = join(DB_DIR, 'dist', 'server.js');
 
@@ -490,10 +491,26 @@ function cmdConfig() {
     log('  ⚠  尚未构建，请先运行:  node mcp.mjs install\n');
   }
 
-  log('\n── 方式 A: HTTP 常驻服务 (推荐)');
+  log('\n── 常驻服务 + 客户端接入方式');
   log('  一个浏览器给所有窗口共用: 省内存、登录态共用一份、可实时观察并人工接管;');
-  log('  每个客户端会话自动分到自己的标签页 / 自己的数据库指针，互不打架。');
+  log('  浏览器默认共享标签页(任何窗口都能接管别的窗口开的页);数据库默认隔离当前库指针。');
   log('  1) 启动服务:  node mcp.mjs start');
+  log('');
+  log('  ★ 推荐:走 shim(stdio 转发到常驻进程的 named pipe / unix socket)');
+  log('    一条 socket = 一个客户端窗口,会话生命周期由内核保证,窗口关掉即刻回收。');
+  log('    浏览器默认共享标签页(设 PIPE_ISOLATED=1 切隔离);数据库默认隔离当前库指针。');
+  log(`    claude mcp add browser        -s user -- node "${SHIM_PATH}" headless`);
+  log(`    claude mcp add browser-headed -s user -- node "${SHIM_PATH}" headed`);
+  log(`    claude mcp add database       -s user -- node "${SHIM_PATH}" db`);
+  log('');
+  log('    Codex 写 ~/.codex/config.toml —— Windows 路径必须用 TOML 字面量字符串(单引号),');
+  log('    用双引号的话反斜杠会被当转义符,node.exe 路径直接废掉:');
+  log('    [mcp_servers.browser]');
+  log(`    command = '${process.execPath}'`);
+  log(`    args = ['${SHIM_PATH}', 'headless']`);
+  log('    type = "stdio"');
+  log('');
+  log('  2) 或退回 HTTP 端点(跨机共享只有这条路 —— named pipe 只能本机用):');
   log('  2) 注册端点 (在任意目录执行一次，默认写用户级 user scope):');
   // URL 同样按 ecosystem 里的实际 HOST/PORT 生成:HOST 被改成具体网卡地址时,
   // 印一条 127.0.0.1 的注册命令等于让人照着配一个连不上的端点。
@@ -516,7 +533,7 @@ function cmdConfig() {
   log('      少了第 3 条，SDK 的 DNS rebinding 校验会一律回 403 Invalid Host header。');
   log('      客户端条目再加:  "headers": { "Authorization": "Bearer <token>" }');
 
-  log('\n── 方式 B: stdio 原生模式 (备用: 不想跑常驻服务、或服务不可达时兜底)');
+  log('\n── 兜底: stdio 直连(不跑常驻服务时用;每个窗口各起一个进程、各开一个浏览器)');
   log('  每个客户端窗口各拉一个进程、各开一个浏览器，行为与旧版完全一致。');
   log(`    claude mcp add browser -- node "${BROWSER_SERVER}" --stdio`);
   log(`    claude mcp add database -e MCP_TRANSPORT=stdio -- node "${DB_SERVER}" --stdio`);

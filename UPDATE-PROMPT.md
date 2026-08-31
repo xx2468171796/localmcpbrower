@@ -5,14 +5,28 @@
 
 ---
 
-请把这台机器的**浏览器 MCP 与数据库 MCP** 安装/升级到最新版,并以 **HTTP 常驻**形态运行。**全自主做完,别反复问我**;做完用大白话给我一张「装了啥 / 升了啥 + 我该注意啥」清单。
+请把这台机器的**浏览器 MCP 与数据库 MCP** 升级到最新版(MCP SDK v2 + pipe 传输)。
+**全自主做完,别反复问我**;做完用大白话给我一张「装了啥 / 升了啥 / 我该注意啥」清单。
 
-> 💻 **先判断本机是 Windows / macOS / Linux,命令按系统适配**(Windows 用 PowerShell 等价写法:`~` → `$env:USERPROFILE`,无 `chmod`)。`node` / `git` / `pm2` 三端通用,**别照抄不适配**。
-> 前置:Node ≥ 20;没有 pm2 就 `npm i -g pm2`。
+> 💻 **先判断本机是 Windows / macOS / Linux,命令按系统适配**(Windows 用 PowerShell 等价写法:
+> `~` → `$env:USERPROFILE`,无 `chmod`)。`node` / `git` / `pm2` 三端通用,**别照抄不适配**。
+> 前置:**Node 24**(公司标准栈最低版本);没有 pm2 就 `npm i -g pm2`。
 
-## 1. 从 Gitea 拉代码
+## ⚠️ 这次是大版本升级,三个坑先说在前面
 
-仓库:`http://192.168.110.246:3001/xuan/localmcpbrower.git`(凭据用公司发我的 Gitea 账号)
+**① 必须重装依赖,不能只 `git pull`。**
+本次从 `@modelcontextprotocol/sdk` v1 换成了 `@modelcontextprotocol/{core,server,client,node,express}` v2,
+**包名全变了**。旧 `node_modules` 留着会让构建拿到过期依赖。
+
+**② 两个包要分别构建。**
+`mcp-database` 有**自己的 tsconfig**,主包 `npm run build` **不会**带上它。
+只构建主包的话,数据库服务跑的还是旧 dist —— 表现是「浏览器好了,数据库连不上」,很难查。
+
+**③ 注册方式变了:HTTP → stdio + shim。**
+旧的 `claude mcp add --transport http ... :3215/mcp` 仍然能用(HTTP 腿保留着),
+但**新的会话管理走 pipe**,要按下面第 3 步重新注册才拿得到。
+
+## 1. 拉代码
 
 ```bash
 # 没有就克隆
@@ -21,38 +35,62 @@ git clone http://192.168.110.246:3001/xuan/localmcpbrower.git ~/code/localmcpbro
 cd ~/code/localmcpbrower && git pull --ff-only
 ```
 
-## 2. 照仓库自带的部署手册做
-
-拉下来后**先读 `~/code/localmcpbrower/AI-DEPLOY.md`** —— 那是给 AI 执行的完整 Runbook(每步带自检、含不可违背的约束、故障处置表),按它做即可。核心就三条命令:
+## 2. 重装 + 构建(**两个包都要**)
 
 ```bash
 cd ~/code/localmcpbrower/claude
-node mcp.mjs install          # 装依赖 + 下载 Chromium + 构建
-node mcp.mjs start            # 拉起 PM2 常驻服务
-node mcp.mjs autostart --apply  # 配开机自启(平台自适应)
+
+# ① 清掉 v1 残留 —— 这一步不能省
+rm -rf node_modules package-lock.json
+npm install
+
+# ② 主包(浏览器)
+npm run build
+
+# ③ 数据库包 —— 独立 tsconfig,必须单独来
+cd mcp-database && npm install && npm run build && cd ..
+
+# ④ 确认 v1 已清干净(应该只列出 client/core/express/node/server)
+ls node_modules/@modelcontextprotocol
 ```
 
-> **Linux 无图形界面**时有头浏览器会自动降级为无头并告警,不会启动失败;只想跑无头用 `node mcp.mjs start headless`。
+首次安装(这台机从没装过)还要下载 Chromium:
+
+```bash
+node mcp.mjs install
+```
+
 > **仅 Linux** 若缺系统库,按提示让我本人在终端补一次(要 sudo,只此一次):
 > `cd ~/code/localmcpbrower/claude && sudo npx patchright install-deps chromium`
+> **Linux 无图形界面**时有头浏览器会自动降级为无头并告警,不会启动失败。
 
-## 3. 注册到客户端
-
-```bash
-node mcp.mjs config     # 打印适配本机的注册命令,照它执行
-```
-
-等价于:
+## 3. 起服务 + 注册客户端
 
 ```bash
-claude mcp add --transport http browser  http://127.0.0.1:3215/mcp -s user
-claude mcp add --transport http database http://127.0.0.1:3214/mcp -s user
-# Codex:
-codex mcp add browser  --url http://127.0.0.1:3215/mcp
-codex mcp add database --url http://127.0.0.1:3214/mcp
+node mcp.mjs start              # PM2 拉起三个服务
+node mcp.mjs autostart --apply  # 开机自启(平台自适应)
 ```
 
-**若这台机器以前是 stdio 形态**:上面的 `mcp add` 会覆盖同名旧条目;确认新条目是 `http` 型即可,不用手动删。
+注册**改用 shim**(把绝对路径换成本机真实路径):
+
+```bash
+# Claude Code
+claude mcp remove browser -s user; claude mcp remove browser-headed -s user; claude mcp remove database -s user
+claude mcp add browser        -s user -- node <绝对路径>/claude/bin/shim.mjs headless
+claude mcp add browser-headed -s user -- node <绝对路径>/claude/bin/shim.mjs headed
+claude mcp add database       -s user -- node <绝对路径>/claude/bin/shim.mjs db
+```
+
+Codex 改 `~/.codex/config.toml`(⚠️ Windows 路径用 **TOML 字面量字符串**,即单引号,
+否则 `"D:\nodejs\node.exe"` 里的 `\n` 会被当成换行):
+
+```toml
+[mcp_servers.browser]
+command = 'D:\nodejs\node.exe'
+args = ['C:\...\claude\bin\shim.mjs', 'headless']
+type = "stdio"
+startup_timeout_sec = 30
+```
 
 ## 4. 校验(必须做,别只看命令有没有报错)
 
@@ -60,63 +98,82 @@ codex mcp add database --url http://127.0.0.1:3214/mcp
 cd ~/code/localmcpbrower/claude && node mcp.mjs status
 ```
 
-期望 `claudemcp-headless`(3215)与 `claudemcp-database`(3214)均为 **online**。
+期望 `claudemcp-browser`(3213)/ `claudemcp-headless`(3215)/ `claudemcp-database`(3214)均 **online**,
+且日志里每个服务都有一行 `[Pipe] 监听 ...`。
 
-再做一次真实握手校验(比看进程状态可靠,能确认工具数):
+再做真实握手校验(比看进程状态可靠,能确认工具数):
 
 ```bash
-node -e "
-for (const [n,p,want] of [['浏览器',3215,44],['数据库',3214,15]]) {
-  const base=\`http://127.0.0.1:\${p}/mcp\`;
-  const h={'Content-Type':'application/json',Accept:'application/json, text/event-stream'};
-  const parse=async r=>{const ct=r.headers.get('content-type')||'';const b=await r.text();
-    if(ct.includes('event-stream')){const d=b.split('\n').filter(l=>l.startsWith('data:')).pop();return d?JSON.parse(d.slice(5)):null;}
-    return JSON.parse(b);};
-  try{
-    const r=await fetch(base,{method:'POST',headers:h,body:JSON.stringify({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-06-18',capabilities:{},clientInfo:{name:'probe',version:'1'}}})});
-    const sid=r.headers.get('mcp-session-id'); const m=await parse(r);
-    const h2={...h,'mcp-session-id':sid};
-    await fetch(base,{method:'POST',headers:h2,body:JSON.stringify({jsonrpc:'2.0',method:'notifications/initialized',params:{}})});
-    const r2=await fetch(base,{method:'POST',headers:h2,body:JSON.stringify({jsonrpc:'2.0',id:2,method:'tools/list',params:{}})});
-    const c=((await parse(r2))?.result?.tools||[]).length;
-    console.log(\`\${c===want?'[OK]':'[FAIL]'} \${n} :\${p} v\${m?.result?.serverInfo?.version} 工具 \${c}/\${want}\`);
-    await fetch(base,{method:'DELETE',headers:h2});
-  }catch(e){console.log(\`[FAIL] \${n} :\${p} -> \${e.message}\`);}
-}"
+cd ~/code/localmcpbrower/claude && node -e "
+(async () => {
+const { Client } = await import('@modelcontextprotocol/client');
+const { StdioClientTransport } = await import('@modelcontextprotocol/client/stdio');
+const SHIM = process.cwd() + '/bin/shim.mjs';
+for (const [name, svc, want] of [['浏览器','headless',46],['有头','headed',46],['数据库','db',15]]) {
+  try {
+    const c = new Client({name:'probe',version:'1'}, {capabilities:{elicitation:{}}});
+    await c.connect(new StdioClientTransport({command: process.execPath, args:[SHIM, svc]}));
+    const n = (await c.listTools()).tools.length;
+    console.log((n===want?'[OK]  ':'[FAIL]') + ' ' + name + ' ' + svc + ' 工具 ' + n + '/' + want);
+    await c.close();
+  } catch (e) { console.log('[FAIL] ' + name + ' -> ' + (e.message||e)); }
+}
+})();"
 ```
 
-**两行都是 `[OK]` 才算成功。** 若是 `[FAIL]`,**不要硬切**:先 `pm2 logs --lines 50` 看原因;仍搞不定就退回 stdio 形态保证可用(`node mcp.mjs config` 里有 stdio 写法),把错误告诉我。
+**三行都是 `[OK]` 才算成功。** 若 `[FAIL]`,**不要硬切**:先 `pm2 logs --lines 50` 看原因,
+把错误告诉我。旧的 HTTP 注册还留着,随时能退回去。
 
 ## 5. 绝对不要做的事(踩了要返工)
 
-- **Windows 不要注册成系统服务**(「不管用户是否登录都运行」)。必须用户级自启,否则进程落在 Session 0,有头浏览器窗口永久不可见。`node mcp.mjs autostart --apply` 已正确处理,别自作主张改。
-- **不要绑 `0.0.0.0`**。默认只绑 `127.0.0.1`。浏览器里存着我已登录的公司系统会话,裸端口等于把控制权交出去。确需跨机必须同时配 `MCP_AUTH_TOKEN` 与 `MCP_ALLOWED_HOSTS`,少一个要么不安全要么连不上(SDK 有 DNS rebinding 防护,只改 HOST 会一律 403)。
+- **Windows 不要注册成系统服务**(「不管用户是否登录都运行」)。必须用户级自启,
+  否则进程落在 Session 0,有头浏览器窗口永久不可见。`node mcp.mjs autostart --apply` 已正确处理。
+- **不要绑 `0.0.0.0`**。默认只绑 `127.0.0.1`。浏览器里存着已登录的公司系统会话,
+  裸端口等于把控制权交出去。确需跨机必须同时配 `MCP_AUTH_TOKEN` 与 `MCP_ALLOWED_HOSTS`,
+  少一个要么不安全要么连不上(SDK 有 DNS rebinding 防护,只改 HOST 会一律 403)。
 - **不要改有头/无头各自的 `USER_DATA_DIR`**。两个服务共用一份 profile 会抢锁,必有一个起不来。
-- **改了 PM2 配置后不要 `pm2 restart <进程名>`**,那样复用缓存的旧环境变量、改动不生效;用 `node mcp.mjs restart`。
+- **不要把 pipe 腿的 `legacy` 改成 `'reject'`**。看着像"只收新协议更干净",实则
+  **客户端在 stdio 上不探测新协议**,改了会让所有工具直接连不上(`-32022`)。
+- **改了 PM2 配置后不要 `pm2 restart <进程名>`**,那样复用缓存的旧环境变量;用 `node mcp.mjs restart`。
 
-## 6. 有头浏览器(可选,默认不开)
+## 6. 收尾
 
-需要**看着 AI 操作**或**自己接管登录/过验证码**时再开(它会弹出可见窗口):
-
-```bash
-cd ~/code/localmcpbrower/claude && node mcp.mjs start headed
-claude mcp add --transport http browser-headed http://127.0.0.1:3213/mcp -s user
-```
-
-## 7. 收尾
-
-**提醒我**:Claude Code 里输入 `/mcp` 重连(或重开窗口)、Codex 重启,新工具才生效。然后给我那张大白话清单。
+**提醒我**:Claude Code 里输入 `/mcp` 重连(或重开窗口)、Codex 重启,新工具才生效。
+然后给我那张大白话清单。
 
 ---
 
 ## 附:这次改了什么(讲给我听时用得上)
 
-**以前**:每开一个 AI 窗口就单独拉一套进程 + 一份浏览器(实测单窗口约 366 MB,峰值同时跑过 26 个进程);浏览器数据按当前项目目录存放,**换个项目就得重新登录一次**。
+**协议与 SDK**:换到 MCP SDK v2,v1 完全移除。服务端**新旧协议双线都支持**;
+日常实际仍走 `2025-11-25`(客户端在 stdio 上不探测新协议),**客户端哪天升级会自动走新的,不用再改**。
 
-**现在**:一台机器一份浏览器,所有窗口共用。登录一次全部通用。每个窗口自动分到**自己的标签页**,互不抢占。窗口开得越多省得越明显。
+**修好了三个一直坏着、但不报错的东西**(不是本次迁移引入的,是一直如此):
 
-**要隔离时**:多账号互不干扰用 `space_new` 开独立工作区(cookie/登录态完全分开)。
+- **反爬指纹伪装整段从未执行** —— `navigator.webdriver` 一直暴露、`window.chrome` 不存在、
+  plugins 为空,**爬公网站点基本会被当成机器人**
+- `get_console_logs` 恒返回空数组 —— 页面报错完全看不到
+- `snapshot` 的 `deep:true` 静默失效 —— 与 `deep:false` 输出逐字节相同
 
-**数据库同理**:各窗口「当前连的是哪个库」互相独立 —— 以前是共用的,存在「以为在测试库、其实在生产库」的风险。
+**新增两个工具**(44 → 46):
 
-**服务开机自启**,重启电脑自动恢复。
+- `wait_for_human` —— 阻塞等人在可见窗口里扫码/过验证码,靠盯页面变化判断完成,**不弹窗**,
+  在全自主(bypassPermissions)模式下照常工作
+- `request_human` —— 走协议 elicitation 弹窗。⚠️ 在 bypassPermissions 下会被客户端**自动拒绝**
+  且界面无提示,那种模式下请用 `wait_for_human`
+
+**长任务有进度了**:`crawl_pages`(最多 50 页)、`batch_fetch` 现在会实时上报进度,不再是黑盒。
+
+**跨平台**:`killPortProcess` 原本是纯 Windows 实现,Linux/macOS 上端口被占清不掉,现已三平台各有实现。
+
+**会话行为**(与上一版不同,注意):
+
+- **浏览器默认共享** —— 所有窗口看到同一批标签页,任何窗口都能接管别的窗口开的页面;
+  有头浏览器里**人手动打开**的页面 AI 也直接可见。要各窗口互不干扰设 `PIPE_ISOLATED=1`
+- **数据库默认隔离** —— 各窗口「当前连的是哪个库」互相独立。
+  这里不跟浏览器一致是刻意的:共享的话 B 窗口一句 `switch_db('prod')`
+  会让 A 窗口后续的 SQL 全跑到生产库上,**浏览器串台最多拿错数据,数据库串台可能写错库**
+- 登录态(cookie)**始终共享**,与上面两个开关无关 —— 登录一次全部通用
+
+**稳定性**:浏览器窗口被关/崩溃 → 下次调工具约 1 秒自动重开;服务进程挂 → PM2 重启;
+整机重启 → 开机自启恢复。以前**关一个标签页就可能把整个服务连同浏览器和登录态干掉**,已修。
