@@ -261,3 +261,12 @@ export type BatchFetchInput = z.infer<typeof BatchFetchSchema>;
 export type CrawlPagesInput = z.infer<typeof CrawlPagesSchema>;
 export type WaitAndExtractInput = z.infer<typeof WaitAndExtractSchema>;
 export type SetBlockRulesInput = z.infer<typeof SetBlockRulesSchema>;
+
+/** wait_for_human:等人工在可见窗口里处理完(登录/验证码),靠盯页面变化判定 */
+export const WaitForHumanSchema = z.object({
+  appears: z.string().min(1).optional().describe('等这个 CSS 选择器出现'),
+  disappears: z.string().min(1).optional().describe('等这个 CSS 选择器消失'),
+  urlChanges: z.boolean().default(false).describe('等网址发生变化'),
+  timeoutSec: z.number().int().min(5).max(1800).default(180).describe('最长等待秒数'),
+}).refine((v) => !!(v.appears || v.disappears || v.urlChanges),
+  { message: 'appears / disappears / urlChanges 至少要给一个' });

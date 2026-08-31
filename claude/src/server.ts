@@ -38,7 +38,7 @@ import {
   ExtractLinksSchema, ExtractDataSchema, BatchFetchSchema,
   CrawlPagesSchema, WaitAndExtractSchema, SetBlockRulesSchema,
   SnapshotSchema, ExtractArticleSchema, DiscoverUrlsSchema,
-  RunScriptSchema, SpaceNameSchema
+  RunScriptSchema, SpaceNameSchema, WaitForHumanSchema
 } from './schemas.js';
 
 const PORT = parseInt(process.env['PORT'] ?? '3211', 10);
@@ -537,6 +537,47 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
     });
   }));
 
+
+  // === 等人工在窗口里处理完 ===
+  //
+  // 为什么不是用 elicitation(request_human 已经做了那条路)。
+  //
+  // 实测(2026-08-31,Claude Code 2.1.251):在 **bypassPermissions** 权限模式下,
+  // 服务端发起的 elicitation 会被客户端**自动 decline,用户界面上什么都不出现** ——
+  // 用户视角是"我没点过任何东西,它却说我拒绝了"。
+  // 而 bypassPermissions 恰恰是本机的常态(全自主、不弹 yes),
+  // 官方相关 issue 也已关闭为 not planned。
+  // 结论:**在这台机的配置下,elicitation 这条路走不通**,不是调参能解决的。
+  //
+  // 于是换一条不需要客户端配合的路:**有头浏览器窗口就在人面前,标签页又是共享的**,
+  // 那就直接在服务端**盯着页面变化**。AI 先在对话里说明要做什么,
+  // 然后调用本工具阻塞等待,人在窗口里登录/过验证码,条件一满足就自动继续。
+  // 不弹任何窗、不依赖任何客户端能力。
+  server.registerTool('wait_for_human', {
+    title: '等人工在窗口里处理完',
+    description:
+      '阻塞等待,直到人在【可见的浏览器窗口】里完成操作(扫码登录、短信验证码、图形验证码、风控确认等)。'
+      + '判定方式三选一:等某个元素出现(appears)、等某个元素消失(disappears)、或等网址变化(urlChanges)。'
+      + '⚠️ 调用前先在对话里把要做的事告诉用户,再调本工具等待。'
+      + '与 request_human 的区别:本工具**不弹窗**,靠盯页面变化判断,'
+      + '因此在 bypassPermissions(全自主)模式下**照样有效** —— 那种模式下弹窗会被自动拒绝。',
+    inputSchema: z.object({
+      appears: z.string().min(1).optional()
+        .describe('等这个 CSS 选择器出现,例如登录成功后才有的头像 ".user-avatar"'),
+      disappears: z.string().min(1).optional()
+        .describe('等这个 CSS 选择器消失,例如二维码 ".qrcode" 消失即代表已扫码'),
+      urlChanges: z.boolean().default(false)
+        .describe('等网址发生变化(登录后跳转最常见)。与 appears/disappears 可同时给,任一满足即返回'),
+      timeoutSec: z.number().int().min(5).max(1800).default(180)
+        .describe('最长等待秒数,默认 180。人工操作要留够时间,别设太短'),
+    }).refine((v) => !!(v.appears || v.disappears || v.urlChanges),
+      { message: 'appears / disappears / urlChanges 至少要给一个,否则无法判断人工何时完成' }),
+    outputSchema: ResultEnvelope,
+    annotations: {
+      title: '等人工在窗口里处理完', readOnlyHint: true, destructiveHint: false,
+      idempotentHint: false, openWorldHint: true,
+    } satisfies ToolAnnotations,
+  }, wrap(async (args: unknown) => structured(await tools.waitForHuman(args))));
   // === Network intercept ===
   server.registerTool('intercept_requests', {
     title: '拦截请求',

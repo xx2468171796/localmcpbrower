@@ -19,7 +19,7 @@ import {
   ExtractLinksSchema, ExtractDataSchema, BatchFetchSchema,
   CrawlPagesSchema, WaitAndExtractSchema, SetBlockRulesSchema,
   SnapshotSchema, ExtractArticleSchema, DiscoverUrlsSchema,
-  RunScriptSchema, SpaceNameSchema
+  RunScriptSchema, SpaceNameSchema, WaitForHumanSchema
 } from './schemas.js';
 import { Readability } from '@mozilla/readability';
 import { Defuddle } from 'defuddle/node';
@@ -1277,6 +1277,68 @@ export async function spaceClose(input: unknown): Promise<ToolResult<{ closed: b
     if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
     const res = await getBrowserManager().closeSpace(parsed.data.name);
     return { success: true, data: res };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * 等人工在可见窗口里处理完(扫码登录 / 验证码 / 风控确认)。
+ *
+ * 为什么不用 elicitation:实测在 bypassPermissions 权限模式下,服务端发起的
+ * elicitation 会被客户端**自动 decline 且界面上什么都不显示** —— 用户根本没机会响应。
+ * 而 bypassPermissions 是本机常态。所以这里改成**盯页面变化**:
+ * 人在窗口里操作,页面自然会变(跳转 / 二维码消失 / 出现头像),据此判定完成。
+ * 不弹窗、不依赖任何客户端能力。
+ *
+ * 轮询而不是用 waitForSelector 的原因:要同时支持"出现/消失/网址变化"三种判据,
+ * 且**人可能中途换标签页**(登录常开新窗口),所以每轮都重新取当前活跃页。
+ */
+export async function waitForHuman(input: unknown): Promise<ToolResult<{
+  reason: string; elapsedSec: number; url: string; title: string;
+}>> {
+  try {
+    const parsed = WaitForHumanSchema.safeParse(input);
+    if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
+    const { appears, disappears, urlChanges, timeoutSec } = parsed.data;
+
+    const bm = getBrowserManager();
+    const startUrl = await bm.getPage().then(p => p.url()).catch(() => '');
+    const deadline = Date.now() + timeoutSec * 1000;
+    const POLL_MS = 700;   // 够快让人无感,又不至于把 CPU 打满
+
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, POLL_MS));
+      // 每轮重取:人工登录常常跳到新标签页,盯着旧 page 会永远等不到
+      const page = await bm.getPage().catch(() => null);
+      if (!page || page.isClosed()) continue;
+
+      const url = page.url();
+      if (urlChanges && url && url !== startUrl) {
+        return { success: true, data: { reason: `网址已变化:${startUrl} → ${url}`,
+          elapsedSec: Math.round((timeoutSec * 1000 - (deadline - Date.now())) / 1000),
+          url, title: await page.title().catch(() => '') } };
+      }
+      if (appears) {
+        const hit = await page.$(appears).then(el => !!el).catch(() => false);
+        if (hit) return { success: true, data: { reason: `元素已出现:${appears}`,
+          elapsedSec: Math.round((timeoutSec * 1000 - (deadline - Date.now())) / 1000),
+          url, title: await page.title().catch(() => '') } };
+      }
+      if (disappears) {
+        const gone = await page.$(disappears).then(el => !el).catch(() => false);
+        if (gone) return { success: true, data: { reason: `元素已消失:${disappears}`,
+          elapsedSec: Math.round((timeoutSec * 1000 - (deadline - Date.now())) / 1000),
+          url, title: await page.title().catch(() => '') } };
+      }
+    }
+
+    const page = await bm.getPage().catch(() => null);
+    const url = page && !page.isClosed() ? page.url() : '';
+    // 超时是**正常结局**之一(人没来得及处理),如实返回而不是抛异常 ——
+    // 调用方据此决定是再等一轮还是放弃
+    return { success: false,
+      error: `等待 ${timeoutSec}s 后人工操作仍未完成(当前网址:${url || '未知'})。可加大 timeoutSec 再等,或确认判定条件是否写对。` };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
