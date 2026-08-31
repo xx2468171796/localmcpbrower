@@ -111,7 +111,19 @@ export function startPipeLeg(opts: PipeLegOptions): { close: () => void; endpoin
     let handle: { close?: () => void } | undefined;
     try {
       handle = serveStdio(() => opts.createServer(sessionId), {
-        legacy: 'reject',                                     // 纯新协议,旧线显式拒绝
+        // 纪元策略。默认 'serve' —— 同一条连接上新旧两个纪元都服务。
+        //
+        // ⚠️ 别想当然改成 'reject'。实测(2026-08-31,Claude Code 2.1.251):
+        // 同一个客户端走 **HTTP** 时会先发 server/discover 探测、能说 2026-07-28;
+        // 但走 **stdio** 时直接发 initialize(2025-11-25)、**不探测**。
+        // 而会话隔离恰恰只能走 stdio(shim 这条路)。
+        // 于是 'reject' 会让所有工具直接连不上:
+        //   -32022 Unsupported protocol version: 2025-11-25
+        //
+        // 关键在于:**隔离靠的是 socket,与协议纪元无关** —— 用 'serve' 一分不少。
+        // 等客户端在 stdio 上也开始探测,同一份代码自动升到 2026-07-28,无需改动。
+        // 想强制只收新协议(例如验证某个客户端是否已升级),设 PIPE_LEGACY=reject。
+        legacy: (process.env['PIPE_LEGACY'] === 'reject' ? 'reject' : 'serve'),
         transport: new StdioServerTransport(socket, socket),  // 官方支持:自带 transport
         onerror: (e) => console.error(`[Pipe] ${sessionId.slice(0, 13)} ${e?.message ?? e}`),
       }) as { close?: () => void };
