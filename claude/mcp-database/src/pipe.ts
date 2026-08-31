@@ -62,6 +62,23 @@ export interface PipeLegOptions {
   createServer: (sessionId: string) => McpServer;
   /** 连接断开时回收该会话占用的资源(关标签页、清日志缓冲) */
   releaseSession: (sessionId: string) => void;
+  /**
+   * 是否**共享**会话:所有连接落到同一个 sessionId,看到同一批标签页。
+   *
+   * ⚠️ 先澄清一个常见误解:**登录态(cookie)本来就是共享的**,与这个开关无关 ——
+   * 它存在浏览器 context 里,所有会话共用。实测:A 会话写的 cookie,B 会话读得到。
+   * 这个开关只决定**标签页列表 / console 与网络日志缓冲 / 屏蔽规则**要不要分开。
+   *
+   * 共享(true)的好处:任何窗口都能看到并接管其它窗口开的页面;
+   * 有头浏览器里**人手动打开**的页面,AI 也能直接看到,不用自己再导航一次。
+   *
+   * 隔离(false)的好处:防**并行使用时的静默串台** —— A 正在读的页面被 B 的 navigate
+   * 换走,A 拿到的是错数据**而且不会报错**。数据库尤其致命:B 一句 switch_db('prod')
+   * 会让 A 后续的 SQL 全跑到生产库上。
+   *
+   * 因此默认值按包区分:浏览器包共享(方便接管),数据库包隔离(防写错库)。
+   */
+  shared?: boolean;
 }
 
 /**
@@ -90,6 +107,13 @@ export function endpointPath(service: string): string {
  */
 export function startPipeLeg(opts: PipeLegOptions): { close: () => void; endpoint: string } {
   const endpoint = endpointPath(opts.service);
+  const shared = opts.shared ?? false;
+
+  // 共享模式下,所有连接落到同一个 sessionId。
+  // 但**不能一关窗口就回收** —— 那会把其它窗口正在用的标签页一起关掉。
+  // 用引用计数:最后一条连接断开时才回收。
+  const SHARED_ID = `pipe-shared-${opts.service}`;
+  let liveConns = 0;
 
   // unix socket 是文件,进程被 SIGKILL 后会留下死文件,下次 listen 直接 EADDRINUSE。
   // 但**不能无脑删** —— 那会把另一个正在跑的实例踢下线。先探活:连得上说明有人在用,
@@ -104,7 +128,8 @@ export function startPipeLeg(opts: PipeLegOptions): { close: () => void; endpoin
   }
 
   const srv = net.createServer((socket) => {
-    const sessionId = `pipe-${randomUUID()}`;
+    const sessionId = shared ? SHARED_ID : `pipe-${randomUUID()}`;
+    liveConns++;
     // Nagle 会把小的 JSON-RPC 消息攒着等,给交互式调用凭空加延迟
     socket.setNoDelay(true);
 
@@ -135,8 +160,11 @@ export function startPipeLeg(opts: PipeLegOptions): { close: () => void; endpoin
 
     const cleanup = () => {
       try { handle?.close?.(); } catch { /* 已关 */ }
-      // 版本探测连接从不调工具,releaseSession 对它是空操作 —— 惰性创建保证了这点
-      opts.releaseSession(sessionId);
+      liveConns = Math.max(0, liveConns - 1);
+      // 共享模式:只有最后一条连接断开才回收,否则关一个窗口会连累其它窗口的标签页。
+      // 隔离模式:每条连接各自回收。
+      // 两种模式下,版本探测连接都不调工具,releaseSession 对它是空操作(惰性创建保证)。
+      if (!shared || liveConns === 0) opts.releaseSession(sessionId);
     };
     socket.once('close', cleanup);
     // socket 错误不该冒泡成 unhandled 'error' 把进程带走

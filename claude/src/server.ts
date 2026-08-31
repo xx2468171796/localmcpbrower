@@ -996,6 +996,16 @@ async function runHttp(): Promise<void> {
       service: PIPE_SERVICE,
       createServer: (sessionId) => createMcpServer(sessionId),
       releaseSession,
+      // 浏览器**默认共享**:所有窗口看到同一批标签页,任何窗口都能接管别的窗口开的页面;
+      // 有头浏览器里人手动打开的页面 AI 也直接可见,不用自己再导航一次。
+      //
+      // (澄清一个常见误解:**登录态本来就跨会话共享**,与这个开关无关 ——
+      //  cookie 存在浏览器 context 里,实测 A 会话写的 B 会话读得到。
+      //  这个开关只管标签页列表 / console 与网络日志缓冲 / 屏蔽规则。)
+      //
+      // 并行跑多个窗口、怕互相抢页面时设 PIPE_ISOLATED=1 切回隔离:
+      // 共享模式下 A 正在读的页面会被 B 的 navigate 换走,A 拿到错数据**且不报错**。
+      shared: process.env['PIPE_ISOLATED'] !== '1',
     });
     console.log(`[Server] pipe 腿就绪(纯 2026-07-28):${leg.endpoint}`);
     console.log(`[Server] 客户端注册:claude mcp add <名字> -- node ${process.cwd()}/bin/shim.mjs ${PIPE_SERVICE}`);

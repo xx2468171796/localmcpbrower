@@ -653,6 +653,11 @@ async function runHttp(): Promise<void> {
       service: PIPE_SERVICE,
       createServer: (sessionId) => createMcpServer(sessionId),
       releaseSession: (sid) => dropSession(sid, 'pipe 断开'),
+      // 数据库**默认隔离**,与浏览器包相反,是刻意的:
+      // 共享的话 B 窗口一句 switch_db('prod') 会让 A 窗口后续的 SQL 全跑到生产库上 ——
+      // 浏览器串台最多拿错数据,数据库串台可能**写错库**。
+      // 确实想共享当前库指针时设 PIPE_SHARED=1,但请先想清楚上面那句。
+      shared: process.env["PIPE_SHARED"] === "1",
     });
     console.log(`[Server] pipe 腿就绪(纯 2026-07-28):${leg.endpoint}`);
   } catch (e) {
