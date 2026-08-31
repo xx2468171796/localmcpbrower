@@ -22,6 +22,7 @@ import { BoundedEventStore } from './eventStore.js';
 import { getBrowserManager } from './browser.js';
 import { mcpCtx, STDIO_SESSION_ID, type ProgressReporter } from './context.js';
 import * as tools from './tools.js';
+import { killPortProcess } from './portkill.js';
 import type { HealthCheckResult } from './types.js';
 import {
   NavigateSchema, ClickSchema, TypeSchema, ScreenshotSchema,
@@ -823,77 +824,6 @@ function installProcessGuards(): void {
     console.error('[Server] unhandledRejection:', reason);
     process.exit(1);
   });
-}
-
-/**
- * 从 `netstat -ano` 的输出里**精确**挑出监听 `port` 的 PID。
- *
- * 原实现是 `netstat -ano | findstr :${port}` —— findstr 是**子串匹配**：
- * 有人监听 127.0.0.1:32110 时 `findstr :3211` 照样命中该行，行尾正则把它的 PID 抠出来，
- * 于是 killPortProcess(3211) 会 `taskkill /F /T` 掉一个**完全无关**的进程连同它整棵进程树。
- * 端口越短命中面越大（:80 能命中 :8080/:8000/:1080…），/T 又把误杀半径放大到子进程树。
- *
- * 这里改成按列解析，同时要求三件事全部成立才收下这个 PID：
- *   1) 协议列以 TCP 开头（兼容部分 Windows 把 IPv6 行标成 TCPv6；
- *      UDP 行只有 4 列、没有状态列，被下面的列数/状态判断天然挡掉）
- *   2) 本地地址的**端口字段**严格等于 port —— 取最后一个 ':' 之后的部分做数值比较，
- *      IPv6 的 `[::1]:3215` / `[::]:3215` 同样正确（不会被 `::` 里的冒号带偏）
- *   3) 状态是 LISTENING —— 否则一条源端口恰好是 3215 的**出站连接**也会被当成占用者杀掉
- *
- * 不加 `-p TCP` 过滤：实测 Windows 的 `netstat -ano -p TCP` 只出 IPv4 行，
- * 绑在 `[::1]` / `[::]` 上的监听会整个看不见 —— 那样端口被 IPv6 占用时清不掉，
- * 反而比原实现更糟。全量取回来在这里自己判协议列。
- *
- * 非英文 Windows 的 netstat 只本地化表头，状态值仍是 ASCII 的 LISTENING；
- * 表头乱码行过不了「第一列以 TCP 开头」这关，被自然跳过。
- */
-function parseWindowsListenerPids(netstatOutput: string, port: number): Set<string> {
-  const pids = new Set<string>();
-  for (const line of netstatOutput.split(/\r?\n/)) {
-    const cols = line.trim().split(/\s+/);
-    // 期望列序: Proto | Local Address | Foreign Address | State | PID
-    if (cols.length < 5) continue;
-    const [proto, local, , state, pid] = cols;
-    if (!proto?.toUpperCase().startsWith('TCP')) continue;
-    if (state?.toUpperCase() !== 'LISTENING') continue;
-    if (!local || !pid || !/^\d+$/.test(pid)) continue;
-    const sep = local.lastIndexOf(':');
-    if (sep < 0) continue;
-    if (Number(local.slice(sep + 1)) !== port) continue;
-    pids.add(pid);
-  }
-  return pids;
-}
-
-async function killPortProcess(port: number): Promise<void> {
-  // 端口先做整数校验再进 shell 命令：既挡住命令注入，也顺手挡住 NaN 拼出的畸形命令
-  if (!Number.isInteger(port) || port < 1 || port > 65535) return;
-  try {
-    const { execSync } = await import('child_process');
-    if (process.platform === 'win32') {
-      // 不再用 findstr 预筛（子串匹配会把 :32110 当成 :3211），整份输出交给精确解析。
-      // 取全量表就有了旧实现没有的失败模式：连接数极多的机器（数万条 TIME_WAIT）会超过
-      // execSync 默认 1 MiB 的 maxBuffer 抛 ENOBUFS，端口清理直接失效 —— 显式放宽到 16 MiB。
-      const output = execSync('netstat -ano', { encoding: 'utf-8', timeout: 5000, maxBuffer: 16 * 1024 * 1024 });
-      for (const pid of parseWindowsListenerPids(output, port)) {
-        if (pid === String(process.pid)) continue;
-        // /T 连同**子进程树**一起杀：旧 server 被 TerminateProcess 硬杀时它的 exit 钩子
-        // 一个都不会跑，不带 /T 就要靠 chromium 自己发现 CDP 管道断开才退出；
-        // 浏览器卡住（模态框 / 渲染进程无响应）时就会留下持有 profile 锁的孤儿。
-        // 前提是 PID 挑得准 —— 挑错了 /T 会把误杀面从一个进程放大到一整棵树。
-        try { execSync(`taskkill /F /T /PID ${pid}`, { timeout: 5000 }); } catch {}
-      }
-    } else {
-      // lsof 的 -i tcp:PORT 是按端口号精确匹配（不是子串），再加 -sTCP:LISTEN
-      // 排除「源端口恰好等于 port 的出站连接」，与 Windows 分支语义对齐。
-      const output = execSync(`lsof -ti tcp:${port} -sTCP:LISTEN`, { encoding: 'utf-8', timeout: 5000 });
-      for (const pid of output.trim().split('\n')) {
-        if (pid && /^\d+$/.test(pid.trim()) && pid.trim() !== String(process.pid)) {
-          try { execSync(`kill -9 ${pid.trim()}`, { timeout: 5000 }); } catch {}
-        }
-      }
-    }
-  } catch {}
 }
 
 /** stdio 传输入口：供 Claude Code 原生 MCP 客户端使用

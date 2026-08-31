@@ -27,6 +27,7 @@ import { fileURLToPath } from 'node:url';
 import type { ConsoleLogEntry, NetworkRequestEntry, BrowserConfig } from './types.js';
 import { EGO_HELPER_SRC } from './injected.js';
 import { currentSessionId } from './context.js';
+import { killProcessTreeSync } from './portkill.js';
 
 const IS_LINUX = process.platform === 'linux';
 const IS_MAC = process.platform === 'darwin';
@@ -470,17 +471,22 @@ class BrowserManager {
     return this.spaceFor(currentSessionId()).chromiumPid;
   }
 
-  /** 同步 SIGKILL 所有 space 的 chromium 子进程 — 用于 process.on('exit') / 超时兜底，无 await */
+  /**
+   * 同步杀掉所有 space 的 chromium **进程树** — 用于 process.on('exit') / 超时兜底,无 await。
+   *
+   * 原来这里是 `process.kill(pid, 'SIGKILL')`,只干掉浏览器主进程一个。chromium 会 fork 出
+   * renderer / GPU / network / zygote 一大串子进程,主进程被硬杀后它们不保证跟着走 ——
+   * 活下来的孤儿仍然握着 userDataDir 的 profile 锁,下次启动直接失败。这个钩子存在的
+   * 全部意义就是「别留孤儿」,只杀一个进程等于没做干净。
+   * 现在统一交给 portkill 的跨平台实现(Windows: taskkill /F /T;POSIX: 杀进程组),
+   * 三平台语义一致。幂等:pid 先置空再杀,重复调用不会重复发信号,也永远不抛异常。
+   */
   public killChromiumSync(): void {
     for (const sp of this.spaces.values()) {
       const pid = sp.chromiumPid;
       sp.chromiumPid = null;
       if (!pid) continue;
-      try {
-        process.kill(pid, 'SIGKILL');
-      } catch {
-        // 已死或无权限，无所谓
-      }
+      killProcessTreeSync(pid);
     }
   }
 
