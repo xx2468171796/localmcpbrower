@@ -1,3 +1,15 @@
+> ⚠️ **本文描述的是已被取代的旧架构,只作历史参考,别照着做。**
+>
+> 文中的会话隔离建立在 **HTTP 传输的 `Mcp-Session-Id`** 之上。协议 `2026-07-28` 移除了协议级 session,
+> 现在的实现改为 **pipe 传输(named pipe / unix socket),一条 socket = 一个客户端窗口**,
+> 由内核保证唯一性与生命周期,新旧协议下都成立。
+>
+> 另外**默认语义也变了**:浏览器标签页现在**默认共享**(文中写的是隔离),数据库仍默认隔离。
+>
+> 当前架构见 `claude/src/pipe.ts` 头部与 `MCP-V2-PLAN.md`;接入方式见 `UPDATE-PROMPT.md`。
+> HTTP 腿本身**仍然保留**并可用 —— 跨机共享只有这条路(named pipe 只能本机用)。
+
+---
 # 全面适配 HTTP —— 设计方案 (v3.0.0)
 
 > 目标:把浏览器 MCP 从「每个客户端窗口拉一个 stdio 进程」改造成「一个常驻 HTTP 服务,多客户端共享一个浏览器」。
@@ -180,7 +192,7 @@ PM2 已安装(本机 7.0.1)。
 
 客户端注册从 stdio 改为:
 ```jsonc
-"browser": { "type": "http", "url": "http://127.0.0.1:3215/mcp" }
+"browser": { "command": "node", "args": ["<仓库路径>/claude/bin/shim.mjs", "headless"] },
 ```
 
 ---

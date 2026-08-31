@@ -24,7 +24,7 @@ node mcp.mjs autostart      # 开机自启指引（--apply 落地）
 - 数据库 `http://127.0.0.1:3214/mcp`
 
 **会话隔离（多窗口并行时的关键语义）：**
-- 每个客户端会话**自动分到自己的标签页**，console / 网络记录、`set_block_rules` 的拦截规则
+- **浏览器标签页默认共享**(设 PIPE_ISOLATED=1 切隔离)，console / 网络记录、`set_block_rules` 的拦截规则
   也是各自独立的；`list_tabs` / `switch_tab` / `close_tab` 只看得到、也只动得了本会话的标签页。
 - 每个会话有**自己的数据库指针**：`switch_db` / `connect` / `disconnect` 只改本会话指向哪个库，
   不会把别的窗口带走；连接池按库共享。
@@ -291,7 +291,13 @@ DB_PROD_SSL=true
 
 ---
 
-## 五、完整工具清单（浏览器 MCP，44个）
+## 五、完整工具清单（浏览器 MCP，46 个）
+
+### 人工接管（2 个,新增）
+| 工具 | 参数 | 说明 |
+|------|------|------|
+| `wait_for_human` | appears? / disappears? / urlChanges? / timeoutSec? | **阻塞等人在可见窗口里操作完**(扫码登录、短信/图形验证码、风控确认)。判据三选一可组合:等元素出现 / 等元素消失 / 等网址变化。**不弹窗**,靠盯页面变化判断,因此在全自主(bypassPermissions)模式下**照常工作**。用法:先在对话里告诉用户要做什么,再调本工具等待 |
+| `request_human` | message | 走协议 elicitation 主动弹窗问用户。⚠️ **在 bypassPermissions 模式下会被客户端自动拒绝且界面无任何提示** —— 那种模式请改用 `wait_for_human`。保留供其它客户端/权限模式使用 |
 
 ### 基础操作（14个）
 | 工具 | 参数 | 说明 |

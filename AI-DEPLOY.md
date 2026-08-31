@@ -89,9 +89,9 @@ node mcp.mjs config      # 打印适配本机的注册命令
 **Claude Code**:
 
 ```bash
-claude mcp add --transport http browser        http://127.0.0.1:3215/mcp
-claude mcp add --transport http browser-headed http://127.0.0.1:3213/mcp
-claude mcp add --transport http database       http://127.0.0.1:3214/mcp
+claude mcp add browser -s user -- node <仓库路径>/claude/bin/shim.mjs headless
+claude mcp add browser-headed -s user -- node <仓库路径>/claude/bin/shim.mjs headed
+claude mcp add database -s user -- node <仓库路径>/claude/bin/shim.mjs db
 ```
 
 或直接写配置(`~/.claude.json` 的 `mcpServers`,或项目级 `.mcp.json`):
@@ -99,9 +99,9 @@ claude mcp add --transport http database       http://127.0.0.1:3214/mcp
 ```jsonc
 {
   "mcpServers": {
-    "browser":        { "type": "http", "url": "http://127.0.0.1:3215/mcp" },
-    "browser-headed": { "type": "http", "url": "http://127.0.0.1:3213/mcp" },
-    "database":       { "type": "http", "url": "http://127.0.0.1:3214/mcp" }
+    "browser": { "command": "node", "args": ["<仓库路径>/claude/bin/shim.mjs", "headless"] },
+    "browser-headed": { "command": "node", "args": ["<仓库路径>/claude/bin/shim.mjs", "headed"] },
+    "database": { "command": "node", "args": ["<仓库路径>/claude/bin/shim.mjs", "db"] },
   }
 }
 ```

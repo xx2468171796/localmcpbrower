@@ -82,9 +82,9 @@ node mcp.mjs config
 打印本机专属的注册命令，复制执行即可：
 
 ```bash
-claude mcp add --transport http browser        http://127.0.0.1:3215/mcp
-claude mcp add --transport http browser-headed http://127.0.0.1:3213/mcp
-claude mcp add --transport http database       http://127.0.0.1:3214/mcp
+claude mcp add browser -s user -- node <仓库路径>/claude/bin/shim.mjs headless
+claude mcp add browser-headed -s user -- node <仓库路径>/claude/bin/shim.mjs headed
+claude mcp add database -s user -- node <仓库路径>/claude/bin/shim.mjs db
 ```
 
 或写进项目根目录 `.mcp.json`（模板：`<安装目录>/.mcp.http.example.json`）：
@@ -92,9 +92,9 @@ claude mcp add --transport http database       http://127.0.0.1:3214/mcp
 ```json
 {
   "mcpServers": {
-    "browser":        { "type": "http", "url": "http://127.0.0.1:3215/mcp" },
-    "browser-headed": { "type": "http", "url": "http://127.0.0.1:3213/mcp" },
-    "database":       { "type": "http", "url": "http://127.0.0.1:3214/mcp" }
+    "browser": { "command": "node", "args": ["<仓库路径>/claude/bin/shim.mjs", "headless"] },
+    "browser-headed": { "command": "node", "args": ["<仓库路径>/claude/bin/shim.mjs", "headed"] },
+    "database": { "command": "node", "args": ["<仓库路径>/claude/bin/shim.mjs", "db"] },
   }
 }
 ```
@@ -325,8 +325,8 @@ HTTP（推荐，模板见 `<安装目录>/.mcp.http.example.json`）：
 ```json
 {
   "mcpServers": {
-    "browser":  { "type": "http", "url": "http://127.0.0.1:3215/mcp" },
-    "database": { "type": "http", "url": "http://127.0.0.1:3214/mcp" }
+    "browser": { "command": "node", "args": ["<仓库路径>/claude/bin/shim.mjs", "headless"] },
+    "database": { "command": "node", "args": ["<仓库路径>/claude/bin/shim.mjs", "db"] },
   }
 }
 ```
@@ -348,7 +348,7 @@ stdio（备用，模板见 `<安装目录>/.mcp.json.example`）：
 
 ```bash
 codex mcp add browser -- node <安装目录>/dist/server.js --stdio
-codex mcp add database --env MCP_TRANSPORT=stdio -- node <安装目录>/mcp-database/dist/server.js --stdio
+codex mcp add database --env MCP_TRANSPORT=stdio -- node <安装目录> <仓库路径>/claude/bin/shim.mjs db
 ```
 
 或直接编辑 `~/.codex/config.toml`：
@@ -363,7 +363,7 @@ startup_timeout_sec = 30
 
 [mcp_servers.database]
 command = "node"
-args = ["<安装目录>/mcp-database/dist/server.js", "--stdio"]
+args = ['<仓库路径>/claude/bin/shim.mjs', 'db']
 type = "stdio"
 cwd = "<安装目录>/mcp-database"
 startup_timeout_sec = 30
@@ -382,7 +382,7 @@ MCP_TRANSPORT = "stdio"
 
 | 客户端 | 配置文件 | 格式 | 添加命令 |
 |--------|----------|------|----------|
-| Claude Code | `~/.claude.json` / 项目 `.mcp.json` | JSON | `claude mcp add --transport http` |
+| Claude Code | `~/.claude.json` / 项目 `.mcp.json` | JSON | `claude mcp add <名> -- node <路径>/claude/bin/shim.mjs <服务>` |
 | Codex CLI | `~/.codex/config.toml` | TOML | `codex mcp add` |
 | Cursor | `.cursor/mcp.json` | JSON | 手动编辑 |
 | Windsurf / Cline 等 | 各自的 MCP 配置文件 | JSON | 手动编辑 |

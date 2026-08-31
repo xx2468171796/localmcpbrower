@@ -36,14 +36,14 @@ Recommended global config:
 ```toml
 [mcp_servers.browser]
 command = "node"
-args = ["/ABSOLUTE/PATH/TO/localmcpbrower/claude/dist/server.js", "--stdio"]
+args = ['<仓库路径>/claude/bin/shim.mjs', 'headless']
 type = "stdio"
 cwd = "/ABSOLUTE/PATH/TO/localmcpbrower/claude"
 startup_timeout_sec = 30
 
 [mcp_servers.database]
 command = "node"
-args = ["/ABSOLUTE/PATH/TO/localmcpbrower/claude/mcp-database/dist/server.js", "--stdio"]
+args = ['<仓库路径>/claude/bin/shim.mjs', 'db']
 type = "stdio"
 cwd = "/ABSOLUTE/PATH/TO/localmcpbrower/claude/mcp-database"
 startup_timeout_sec = 30
@@ -65,8 +65,8 @@ On macOS Homebrew installs, this is often `/opt/homebrew/bin/node` on Apple Sili
 You can also register servers with `codex mcp add`:
 
 ```bash
-codex mcp add browser -- node /ABSOLUTE/PATH/TO/localmcpbrower/claude/dist/server.js --stdio
-codex mcp add database --env MCP_TRANSPORT=stdio -- node /ABSOLUTE/PATH/TO/localmcpbrower/claude/mcp-database/dist/server.js --stdio
+codex mcp add browser -- node  <仓库路径>/claude/bin/shim.mjs headless
+codex mcp add database --env MCP_TRANSPORT=stdio -- node  <仓库路径>/claude/bin/shim.mjs db
 ```
 
 If your Codex version supports `cwd` only through config files, prefer editing `~/.codex/config.toml` so the database server reliably reads `claude/mcp-database/.env`.

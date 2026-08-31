@@ -1,70 +1,82 @@
-# Codex Instructions
+# AI 工作指引(Claude Code / Codex 通用)
 
-## Purpose
+本仓提供两个本地 MCP:**浏览器操控**与**数据库访问**。
 
-This repository provides local MCP servers for browser automation and database access. When Codex works in this repo, keep the project usable by both Claude Code and Codex CLI.
+> 这份是**索引**,别一上来通读全部文档(共 100KB+)。按下表只读需要的那份。
 
-## Preferred MCP Usage
+| 你要做什么 | 读哪份 |
+|---|---|
+| 在**别的机器**上安装/升级 | **`UPDATE-PROMPT.md`** —— 唯一权威,整段贴给那台机的 AI 即可 |
+| 部署时逐步执行 + 故障处置 | `AI-DEPLOY.md` |
+| 了解工具怎么配合用 | `USAGE.md` |
+| 了解协议/架构为什么这么设计、踩过哪些坑 | **`MCP-V2-PLAN.md`**(含七条踩坑清单) |
+| Codex 专属配置与排错 | `CODEX.md` |
+| ~~`HTTP-DESIGN.md`~~ | 描述的是**已被 pipe 取代**的旧会话架构,只作历史参考 |
 
-When these tools are visible in the current Codex session, use them directly:
+## 当前形态(2026-08-31)
 
-- `mcp__browser__*` for local browser automation, screenshots, scraping, cookies, network/console inspection, PDF export, accessibility snapshots, and QA workflows.
-- `mcp__database__*` for PostgreSQL/MySQL connection checks, schema inspection, SQL queries, explain plans, indexes, relations, stats, database switching, and CSV export.
-- `mcp__context7__*` for current library/framework documentation.
-- `mcp__memory__*` only when the user explicitly asks to remember or retrieve durable context.
+- **MCP SDK v2**,v1 已完全移除。服务端新旧协议双线都支持;
+  **日常实际走 `2025-11-25`** —— 客户端在 stdio 上不探测新协议,客户端升级后会自动走新的
+- 三个常驻服务(PM2):`claudemcp-headless` 3215 / `claudemcp-browser`(有头)3213 / `claudemcp-database` 3214
+- 客户端经 **`bin/shim.mjs`** 以 stdio 接入,shim 把字节转发到常驻进程的 named pipe / unix socket。
+  **一条 socket = 一个客户端窗口**
+- 工具数:浏览器 **46**、数据库 **15**
 
-If `mcp__browser__*` or `mcp__database__*` are not visible, first check the global Codex MCP configuration with:
+## 会话语义(容易搞错,先看清)
+
+| | 行为 | 切换 |
+|---|---|---|
+| **登录态 / cookie** | **始终共享**,与下面两个开关无关 | — |
+| **浏览器标签页** | **默认共享** —— 任何窗口都能接管别的窗口开的页 | `PIPE_ISOLATED=1` 切隔离 |
+| **数据库当前库指针** | **默认隔离** | `PIPE_SHARED=1` 切共享(慎用) |
+
+数据库跟浏览器**故意不一致**:共享的话 B 窗口一句 `switch_db('prod')` 会让 A 窗口后续 SQL
+全跑到生产库上 —— 浏览器串台最多拿错数据,**数据库串台可能写错库**。
+
+## 客户端注册
 
 ```bash
-codex mcp list
-codex mcp get browser
-codex mcp get database
+node claude/mcp.mjs config     # 打印适配本机的注册命令(含绝对路径),照它执行
 ```
 
-Codex loads MCP tools when a session starts, so after config changes the user may need to restart Codex or open a new session.
+Codex 写 `~/.codex/config.toml` 时,Windows 路径**必须用 TOML 字面量字符串(单引号)**:
+双引号会把 `"D:\nodejs\node.exe"` 里的 `\n` 当成换行,路径直接废掉。
 
-## Codex Setup Canonical Docs
+## 改代码前必须知道的
 
-Use `CODEX.md` as the Codex-specific setup and troubleshooting guide.
+1. **`page.evaluate` 跑在隔离世界。** 判断注入脚本有没有执行**必须走 DOM**(跨世界共享),
+   用 `page.evaluate` 读主世界的 `window.X` 会把"执行了"误判成"没执行"。
+2. **`addInitScript` 在 patchright 1.62.2 下不执行**(context 级和 page 级都不执行,
+   CDP `addScriptToEvaluateOnNewDocument` 也不执行)。唯一可用通道是 route 拦 HTML 注 `<script>`,
+   见 `claude/src/inject.ts`。
+3. **数据库包有独立 `tsconfig`**,主包 `npm run build` **不带它**,必须分别构建。
+4. **别把 pipe 腿的 `legacy` 改成 `'reject'`** —— 客户端在 stdio 上不探测新协议,改了全部连不上。
+5. **共享会话 id 必须带代际** —— `BrowserManager` 回收时会立墓碑,固定 id 会导致
+   "最后一个窗口关掉后永远连不上"。
+6. **v2 里报「`ZodObject` 不能赋给 `ZodRawShape`」时先查 `outputSchema`** —— 真凶多半是它,
+   报错指向反了。
 
-For global Codex registration, prefer stdio mode:
+更完整的踩坑清单见 `MCP-V2-PLAN.md` 第 3 节。
 
-```toml
-[mcp_servers.browser]
-command = "<absolute-node-path-or-node>"
-args = ["<absolute-path>/claude/dist/server.js", "--stdio"]
-type = "stdio"
-cwd = "<absolute-path>/claude"
-startup_timeout_sec = 30
+## 开发约束
 
-[mcp_servers.database]
-command = "<absolute-node-path-or-node>"
-args = ["<absolute-path>/claude/mcp-database/dist/server.js", "--stdio"]
-type = "stdio"
-cwd = "<absolute-path>/claude/mcp-database"
-startup_timeout_sec = 30
+- **stdio 一等公民**:不依赖 PM2 或端口也要能跑(`node dist/server.js --stdio`)
+- HTTP 腿保留:**跨机共享只有这条路**(named pipe 只能本机用)
+- 不提交 `.env` 与任何凭据(本仓 push 后会**镜像到公开的 GitHub 仓**)
+- 改了工具行为 → 更新 `USAGE.md`;改了安装/配置行为 → 更新 `UPDATE-PROMPT.md` 与 `mcp.mjs config`
+- 改完 TypeScript 记得在 `claude/` 下构建(**两个包**)
 
-[mcp_servers.database.env]
-MCP_TRANSPORT = "stdio"
-```
+## 更新本机 MCP
 
-Use an absolute Node path when the Codex shell environment does not include `node` in `PATH`.
-
-## Development Rules
-
-- Keep stdio mode first-class. It should not require PM2 or ports.
-- Keep HTTP/PM2 mode working as an optional long-running deployment path.
-- Do not commit local `.env` files or secrets.
-- When changing tool behavior, update `USAGE.md`.
-- When changing install/config behavior, update `DEPLOY.md`, `claude/README.md`, and `CODEX.md` if applicable.
-- After TypeScript changes, run the relevant build command under `claude/`.
-
-## Updating the Local MCP Servers
-
-When the user asks to update the local MCP browser/database servers (e.g. "更新本地 MCP" / "update the local MCP servers"), run:
+用户说"更新本地 MCP"时:
 
 ```bash
 node claude/mcp.mjs update
 ```
 
-This pulls the latest repo changes (`git pull --ff-only`), reinstalls dependencies in both packages, verifies the Patchright Chromium binary, rebuilds `dist/`, and restarts any running PM2 services. It aborts safely if the working tree has uncommitted changes — ask the user to commit or stash first. stdio-mode servers pick up the new build on the next session (or after `/mcp` reconnect in Claude Code).
+它会 `git pull --ff-only`、重装两个包的依赖、校验 Chromium、重建 `dist/`、重启在跑的 PM2 服务。
+工作区有未提交改动会安全中止 —— 让用户先提交或 stash。
+完事提醒用户:Claude Code 输入 `/mcp` 重连,Codex 重启。
+
+⚠️ 从 **v1 升到 v2** 时 `mcp.mjs update` 不够,必须先 `rm -rf node_modules package-lock.json`
+再装 —— 包名整个换了,旧目录会让构建拿到过期依赖。详见 `UPDATE-PROMPT.md`。

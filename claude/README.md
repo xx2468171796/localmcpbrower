@@ -5,7 +5,7 @@
 基于 Patchright (Playwright 反检测分支) + Express 5 + MCP SDK，同时支持两种传输方式：
 
 - **HTTP（Streamable HTTP）常驻模式 — 推荐**。三个长驻服务，所有客户端窗口共用一份 Chromium、
-  一份登录态、一套数据库连接池；每个会话自动分到自己的标签页与自己的数据库指针，互不干扰。
+  一份登录态、一套数据库连接池；**浏览器标签页默认共享**(任何窗口都能接管别的窗口开的页,设 PIPE_ISOLATED=1 切隔离);**数据库当前库指针默认隔离**。登录态始终共享。
 - **stdio 原生模式 — 备用**。客户端直接拉起进程，不占端口、不需要 PM2，行为与旧版完全一致。
 
 > 三平台通用；浏览器服务在 Windows 上原生运行（Patchright Chromium for win32）。
@@ -98,9 +98,9 @@ node mcp.mjs config    # 打印本机专属命令
 ```
 
 ```bash
-claude mcp add --transport http browser        http://127.0.0.1:3215/mcp
-claude mcp add --transport http browser-headed http://127.0.0.1:3213/mcp
-claude mcp add --transport http database       http://127.0.0.1:3214/mcp
+claude mcp add browser -s user -- node <仓库路径>/claude/bin/shim.mjs headless
+claude mcp add browser-headed -s user -- node <仓库路径>/claude/bin/shim.mjs headed
+claude mcp add database -s user -- node <仓库路径>/claude/bin/shim.mjs db
 ```
 
 或写入项目根目录 `.mcp.json`（模板 `.mcp.http.example.json`）：
@@ -108,9 +108,9 @@ claude mcp add --transport http database       http://127.0.0.1:3214/mcp
 ```json
 {
   "mcpServers": {
-    "browser":        { "type": "http", "url": "http://127.0.0.1:3215/mcp" },
-    "browser-headed": { "type": "http", "url": "http://127.0.0.1:3213/mcp" },
-    "database":       { "type": "http", "url": "http://127.0.0.1:3214/mcp" }
+    "browser": { "command": "node", "args": ["<仓库路径>/claude/bin/shim.mjs", "headless"] },
+    "browser-headed": { "command": "node", "args": ["<仓库路径>/claude/bin/shim.mjs", "headed"] },
+    "database": { "command": "node", "args": ["<仓库路径>/claude/bin/shim.mjs", "db"] },
   }
 }
 ```
@@ -302,7 +302,7 @@ DB_PROD_PASSWORD=secret
 
 ---
 
-## 七、浏览器 MCP 工具（44 个）
+## 七、浏览器 MCP 工具（46 个）
 
 导航、点击、填表、截图、多标签页管理、Cookie 操作、JS 执行、
 网络拦截、PDF 导出、元素提取、页面爬取、拖拽、键盘输入、
