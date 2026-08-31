@@ -9,7 +9,7 @@
  * - fixture 自己造,不依赖外站 DOM 结构 —— 外站改版会让测试变成随机失败。
  * - 拖拽 fixture 必须给放置目标绑 dragover + preventDefault,否则浏览器默认禁止放置,
  *   drop 永远不触发,会被误读成 drag_and_drop 坏了。
- * - 不写任何凭据:本文件会随仓库镜像到公开 GitHub。
+ * - 不写任何凭据:本文件会随仓库镜像出去,且 Git 历史永久留存。
  */
 import os from 'node:os';
 import path from 'node:path';

@@ -4,7 +4,7 @@
  *   node test/smoke-database.mjs [预设别名]        # 默认 dev
  *
  * 前置:`mcp-database/.env` 里至少配一个预设(`DB_<别名>_*`),否则大部分用例会跳过。
- * **本文件不含任何凭据**(仓库会镜像到公开 GitHub),连接信息一律从预设/环境变量取。
+ * **本文件不含任何凭据**(Git 历史永久留存,清不掉),连接信息一律从预设/环境变量取。
  *
  * ⚠️ 只读护栏那一段是**回归测试,别删**。修之前这两条都能真的写进库:
  *      SELECT 1; CREATE TEMP TABLE t(x int); INSERT INTO t VALUES (42)   ← 分号多语句

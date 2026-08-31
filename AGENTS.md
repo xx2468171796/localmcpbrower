@@ -68,10 +68,11 @@ Codex 写 `~/.codex/config.toml` 时,Windows 路径**必须用 TOML 字面量字
 
 - **stdio 一等公民**:不依赖 PM2 或端口也要能跑(`node dist/server.js --stdio`)
 - HTTP 腿保留:**跨机共享只有这条路**(named pipe 只能本机用)
-- 不提交 `.env` 与任何凭据(本仓 push 后会**镜像到公开的 GitHub 仓**)
+- 不提交 `.env` 与任何凭据(本仓 push 后会**强制镜像到 GitHub 私有仓**;私有归私有,
+  但 Git 历史永久留存、仓库可见性又随时可能改,凭据一旦进去就很难真正清掉)
 - 改了工具行为 → 更新 `USAGE.md`;改了安装/配置行为 → 更新 `UPDATE-PROMPT.md` 与 `mcp.mjs config`
 - 改完 TypeScript 记得在 `claude/` 下构建(**两个包**),然后跑 `npm run test:smoke` + `test:smoke:db`
-- 测试脚本里**不许出现凭据**:本仓 push 后镜像到公开 GitHub。数据库测试的连接信息一律走 `.env` 预设
+- 测试脚本里**不许出现凭据**,数据库测试的连接信息一律走 `.env` 预设(理由同上)
 
 ## 更新本机 MCP
 
