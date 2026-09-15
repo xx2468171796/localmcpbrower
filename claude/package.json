@@ -24,19 +24,19 @@
     "@modelcontextprotocol/node": "^2.0.0",
     "@modelcontextprotocol/server": "^2.0.0",
     "@mozilla/readability": "^0.6.0",
-    "defuddle": "^0.19.1",
+    "defuddle": "^0.19.3",
     "express": "^5.2.1",
-    "jsdom": "^29.1.1",
-    "patchright": "^1.61.1",
+    "jsdom": "^30.0.1",
+    "patchright": "^1.63.0",
     "turndown": "^7.2.4",
-    "zod": "^4.4.3"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@types/express": "^5.0.0",
-    "@types/jsdom": "^28.0.3",
-    "@types/node": "^26.1.1",
+    "@types/express": "^5.0.6",
+    "@types/jsdom": "^30.0.0",
+    "@types/node": "^26.6.0",
     "@types/turndown": "^5.0.6",
-    "tsx": "^4.22.2",
+    "tsx": "^4.23.13",
     "typescript": "^7.0.2"
   },
   "engines": {
