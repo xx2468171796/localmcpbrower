@@ -717,6 +717,9 @@ function createApp(): express.Application {
   // Health
   app.get('/health', async (_req: Request, res: Response) => {
     const bm = getBrowserManager();
+    // A closed browser is recoverable; use the manager's single-flight launch.
+    // Readiness must verify the runtime, not only the Node process.
+    try { if (!bm.isAlive()) await bm.getContext(); } catch { /* report 503 below */ }
     const result: HealthCheckResult = {
       status: bm.isAlive() ? 'ok' : 'error',
       browserAlive: bm.isAlive(),
@@ -726,7 +729,7 @@ function createApp(): express.Application {
       sessions: transports.size,
       browserSessions: bm.countSessions()
     };
-    res.json(result);
+    res.status(result.browserAlive ? 200 : 503).json(result);
   });
 
   let requestCount = 0;
