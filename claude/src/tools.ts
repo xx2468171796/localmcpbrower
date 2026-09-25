@@ -423,8 +423,10 @@ export async function selectOption(input: unknown): Promise<ToolResult<{ selecte
     if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
     const { selector, value, label } = parsed.data;
     const page = await getBrowserManager().getPage();
-    if (value) { await page.selectOption(selector, { value }, { timeout: 5000 }); }
-    else if (label) { await page.selectOption(selector, { label }, { timeout: 5000 }); }
+    // 用 !== undefined 判断:value="" 是合法的空选项(常见的「请选择」),不能当成没给
+    if (value !== undefined) { await page.selectOption(selector, { value }, { timeout: 5000 }); }
+    else if (label !== undefined) { await page.selectOption(selector, { label }, { timeout: 5000 }); }
+    else return { success: false, error: 'value 或 label 至少要给一个' };   // 以前这里什么都不做却报成功
     return { success: true, data: { selected: true } };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
