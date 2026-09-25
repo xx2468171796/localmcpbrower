@@ -8,11 +8,11 @@ const urls = ['https://example.com/', 'https://example.org/', 'https://example.n
 for (const concurrency of [1, 4]) {
   const t = Date.now();
   const r = await c.callTool({ name: 'batch_fetch', arguments: { urls, delay: 500, concurrency } });
-  const d = JSON.parse(r.content[0].text);
+  const d = (r._meta?.['localmcp/result'] ?? JSON.parse(r.content[0].text));
   const ok = d.data.results.filter((x) => x.success).length;
   const order = d.data.results.every((x, i) => x.url === urls[i]);
   console.log(`concurrency=${concurrency}: ${Date.now() - t}ms, 成功 ${ok}/${urls.length}, 顺序${order ? '一致' : '错乱'}`);
 }
 const tabs = await c.callTool({ name: 'list_tabs', arguments: {} });
-console.log('结束后标签页数:', (tabs.content[0].text.match(/"index"/g) || []).length);
+console.log('结束后标签页数:', tabs._meta?.['localmcp/result']?.data?.tabs?.length ?? '?');
 await c.close();

@@ -12,6 +12,6 @@ try { await c.callTool({ name: 'batch_fetch', arguments: { urls, delay: 2000 } }
 catch (e) { console.log('客户端取消于', Date.now() - t0, 'ms:', String(e.message).slice(0, 60)); }
 await new Promise((r) => setTimeout(r, 10000));
 const r = await c.callTool({ name: 'execute_js', arguments: { script: 'location.href' } });
-const href = JSON.stringify(r.content?.[0]?.text ?? r).match(/example\.(com|org|net)\/\?\d/)?.[0];
+const href = JSON.stringify(r._meta?.['localmcp/result'] ?? r.content?.[0]?.text ?? r).match(/example\.(com|org|net)\/\?\d/)?.[0];
 console.log('10 秒后页面停在', href, href && !href.endsWith('5') ? '→ 取消生效（没跑完 5 个）' : '→ 取消未生效');
 await c.close();

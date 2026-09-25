@@ -21,6 +21,7 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { BoundedEventStore } from './eventStore.js';
 import { getBrowserManager } from './browser.js';
 import { mcpCtx, STDIO_SESSION_ID, type ProgressReporter } from './context.js';
+import { formatResult, RAW_META_KEY } from './format.js';
 import * as tools from './tools.js';
 import { killPortProcess } from './portkill.js';
 import { startPipeLeg } from './pipe.js';
@@ -190,11 +191,38 @@ type ToolHandler = (...args: never[]) => unknown;
  * 都能读到「这次调用属于哪个会话」，工具函数签名一律不动（零侵入）。
  * stdio 传入默认值 → 与改造前的单会话行为完全一致。
  */
+/**
+ * 所有工具的输出排成人看得懂的文本(见 format.ts):状态行 + 耗时 + 对齐的结果,代替一行 JSON。
+ * 原始结果挂在 _meta['localmcp/result'](AI 和界面都不显示),测试和程序从那里读。
+ * 在 registerTool 这一层统一套,46 个工具的实现一行都不用动。
+ */
+function humanizeOutput(server: McpServer): void {
+  const register = server.registerTool.bind(server) as (...a: unknown[]) => unknown;
+  (server as unknown as { registerTool: (...a: unknown[]) => unknown }).registerTool = (name: unknown, config: unknown, handler: unknown) => {
+    const title = (config as { title?: string }).title ?? String(name);
+    const fn = handler as (...a: unknown[]) => Promise<{ content?: Array<{ type: string; text?: string }>; _meta?: Record<string, unknown> }>;
+    return register(name, config, async (...args: unknown[]) => {
+      const t0 = performance.now();
+      const out = await fn(...args);
+      const ms = performance.now() - t0;
+      const i = out?.content?.findIndex((c) => c.type === 'text') ?? -1;
+      if (i < 0) return out;
+      let parsed: unknown;
+      try { parsed = JSON.parse(out.content![i]!.text ?? ''); } catch { return out; }
+      if (!parsed || typeof parsed !== 'object' || typeof (parsed as { success?: unknown }).success !== 'boolean') return out;
+      const content = [...out.content!];
+      content[i] = { type: 'text', text: formatResult(title, parsed as { success: boolean; data?: unknown; error?: string }, ms) };
+      return { ...out, content, _meta: { ...(out._meta ?? {}), [RAW_META_KEY]: parsed } };
+    });
+  };
+}
+
 function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   const server = new McpServer(
     { name: 'claudemcp-browser', title: '本地浏览器操控', version: SERVER_VERSION },
     { instructions: SERVER_INSTRUCTIONS }
   );
+  humanizeOutput(server);
 
   /**
    * 从 MCP 请求上下文里取出进度上报器。

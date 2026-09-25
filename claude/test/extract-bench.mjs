@@ -10,7 +10,7 @@ for (const url of pages) {
   const t = Date.now();
   const r = await c.callTool({ name: 'extract_article', arguments: {} });
   const ms = Date.now() - t;
-  const d = JSON.parse(r.content[0].text);
+  const d = (r._meta?.['localmcp/result'] ?? JSON.parse(r.content[0].text));
   console.log(`${ms}ms`, d.success ? `ok ${d.data.title?.slice(0, 40)} · ${d.data.markdown.length} 字符` : `FAIL ${d.error}`);
 }
 await c.close();

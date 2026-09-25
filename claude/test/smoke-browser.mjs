@@ -31,7 +31,8 @@ async function step(name, args = {}, opts = {}) {
   try {
     const r = await c.callTool({ name, arguments: args }, undefined, { timeout: opts.timeout ?? 60000 });
     const txt = r.content?.[0]?.text ?? '';
-    let parsed; try { parsed = JSON.parse(txt); } catch { parsed = { raw: txt.slice(0, 200) }; }
+    // 输出已排成给人看的文本;原始结果在 _meta['localmcp/result']
+    let parsed = r._meta?.['localmcp/result']; if (!parsed) { try { parsed = JSON.parse(txt); } catch { parsed = { raw: txt.slice(0, 200) }; } }
     const ok = parsed?.success !== false;
     results.push({ name, ok, ms: Date.now() - t0, note: (opts.note ? opts.note(parsed) : '') || (ok ? '' : parsed.error) });
     return parsed;
