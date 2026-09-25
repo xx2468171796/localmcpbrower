@@ -2,7 +2,7 @@
 # ============================================================
 # Claude Code MCP - 安装脚本 (macOS / Linux)
 # 跨平台主入口为 node mcp.mjs install (含 Windows)；本脚本为类 Unix 原生回退
-# 安装内容: 有头浏览器MCP(3213) + 无头浏览器MCP(3215) + 数据库MCP(3214)
+# 安装内容: 有头浏览器MCP(3213) + 无头浏览器MCP(3215)
 # ============================================================
 set -e
 
@@ -89,26 +89,6 @@ step "构建浏览器 MCP"
 npm run build
 log "浏览器 MCP 构建完成"
 
-# ── 数据库 MCP ──
-step "安装数据库 MCP 依赖"
-cd "$SCRIPT_DIR/mcp-database"
-npm install
-log "数据库 MCP 依赖安装完成"
-
-step "构建数据库 MCP"
-npm run build
-log "数据库 MCP 构建完成"
-
-# ── 初始化数据库配置 ──
-if [[ ! -f ".env" ]]; then
-  if [[ -f ".env.example" ]]; then
-    cp .env.example .env
-    warn "请编辑 mcp-database/.env 填写数据库连接信息"
-  fi
-fi
-
-cd "$SCRIPT_DIR"
-
 # ── 创建日志目录 ──
 mkdir -p logs storage/user_data storage/screenshots
 
@@ -136,27 +116,19 @@ if [[ "$PLATFORM" == "macos" ]]; then
     "browser-headless": {
       "type": "http",
       "url": "http://localhost:3215/mcp"
-    },
-    "database": {
-      "type": "http",
-      "url": "http://localhost:3214/mcp"
     }
   }
 }
 EOF
   log "Claude Code MCP 配置写入: $MCP_CONFIG"
 else
-  # Linux: 只有无头浏览器 + 数据库
+  # Linux: 只有无头浏览器
   cat > "$MCP_CONFIG" << 'EOF'
 {
   "mcpServers": {
     "browser-headless": {
       "type": "http",
       "url": "http://localhost:3215/mcp"
-    },
-    "database": {
-      "type": "http",
-      "url": "http://localhost:3214/mcp"
     }
   }
 }
@@ -174,7 +146,6 @@ if [[ "$PLATFORM" == "macos" ]]; then
   echo -e "${GREEN}  有头浏览器 MCP:  port 3213 (本地 Mac 开发)${NC}"
 fi
 echo -e "${GREEN}  无头浏览器 MCP:  port 3215 (服务器 / SSH 环境)${NC}"
-echo -e "${GREEN}  数据库 MCP:      port 3214${NC}"
 echo ""
 echo -e "${GREEN}  推荐 (stdio 原生模式，无需 PM2 / 端口):${NC}"
 echo -e "${GREEN}    node mcp.mjs config        # 获取 claude mcp add 配置命令${NC}"

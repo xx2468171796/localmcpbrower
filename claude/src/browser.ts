@@ -654,6 +654,22 @@ class BrowserManager {
     return { page, index: st.activeIndex };
   }
 
+  /**
+   * 批量任务用的临时标签页:挂上本会话的屏蔽规则(openPage 负责),但不抢焦点 ——
+   * 用户 / AI 当前看的那页保持不变。用完直接 page.close(),close 事件会把它从会话里摘掉。
+   */
+  public async openWorkerTab(): Promise<Page> {
+    const sessionId = currentSessionId();
+    const sp = this.spaceFor(sessionId);
+    await this.launchSpace(sp);
+    const st = this.sessionState(sp, sessionId);
+    this.pruneClosed(st);
+    const keep = st.activeIndex;
+    const page = await this.openPage(sp, sessionId, st, false);
+    st.activeIndex = keep;
+    return page;
+  }
+
   /** 切换当前会话的活跃标签页 */
   public async activateTab(index: number): Promise<Page> {
     const pages = await this.getSessionPages();

@@ -19,7 +19,6 @@ fi
 # 端口同样可被环境变量覆盖，与 ecosystem*.cjs 里改过的 PORT 对齐
 HEADED_PORT="${HEADED_PORT:-3213}"
 HEADLESS_PORT="${HEADLESS_PORT:-3215}"
-DB_PORT="${DB_PORT:-3214}"
 # 开了 MCP_AUTH_TOKEN 时 /health 仍开放（专供探活），无需带 token
 
 check_http() {
@@ -40,17 +39,16 @@ check_http() {
 
 check_http 1 "有头浏览器 MCP" "$HEADED_PORT"   claudemcp-browser
 check_http 2 "无头浏览器 MCP" "$HEADLESS_PORT" claudemcp-headless
-check_http 3 "数据库 MCP"     "$DB_PORT"       claudemcp-database
 
 # 检查 PM2 服务状态
-echo "4. PM2 服务状态"
+echo "3. PM2 服务状态"
 echo "-----------------------------------"
-pm2 list 2>/dev/null | grep -E "claudemcp-browser|claudemcp-headless|claudemcp-database" \
+pm2 list 2>/dev/null | grep -E "claudemcp-browser|claudemcp-headless" \
   || echo "⚠️  未找到 PM2 中的 MCP 服务 (stdio 模式下属正常)"
 echo ""
 
 # 检查配置文件
-echo "5. Claude Code 配置检查"
+echo "4. Claude Code 配置检查"
 echo "-----------------------------------"
 if [ -f ~/.config/claude-code/mcp.json ]; then
     echo "✅ 全局 HTTP 配置存在: ~/.config/claude-code/mcp.json"

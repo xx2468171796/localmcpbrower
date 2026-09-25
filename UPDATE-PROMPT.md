@@ -5,24 +5,22 @@
 
 ---
 
-请把这台机器的**浏览器 MCP 与数据库 MCP** 升级到最新版(MCP SDK v2 + pipe 传输)。
+请把这台机器的**浏览器 MCP** 升级到最新版(MCP SDK v2 + pipe 传输)。
+
+> 数据库 MCP 已于 2026-09-25 撤下,库一律用堡垒机 baolei MCP 的 `db_*`(历史版本见 git 历史)。
 **全自主做完,别反复问我**;做完用大白话给我一张「装了啥 / 升了啥 / 我该注意啥」清单。
 
 > 💻 **先判断本机是 Windows / macOS / Linux,命令按系统适配**(Windows 用 PowerShell 等价写法:
 > `~` → `$env:USERPROFILE`,无 `chmod`)。`node` / `git` / `pm2` 三端通用,**别照抄不适配**。
 > 前置:**Node 24**(公司标准栈最低版本);没有 pm2 就 `npm i -g pm2`。
 
-## ⚠️ 这次是大版本升级,三个坑先说在前面
+## ⚠️ 这次是大版本升级,两个坑先说在前面
 
 **① 必须重装依赖,不能只 `git pull`。**
 本次从 `@modelcontextprotocol/sdk` v1 换成了 `@modelcontextprotocol/{core,server,client,node,express}` v2,
 **包名全变了**。旧 `node_modules` 留着会让构建拿到过期依赖。
 
-**② 两个包要分别构建。**
-`mcp-database` 有**自己的 tsconfig**,主包 `npm run build` **不会**带上它。
-只构建主包的话,数据库服务跑的还是旧 dist —— 表现是「浏览器好了,数据库连不上」,很难查。
-
-**③ 注册方式变了:HTTP → stdio + shim。**
+**② 注册方式变了:HTTP → stdio + shim。**
 旧的 `claude mcp add --transport http ... :3215/mcp` 仍然能用(HTTP 腿保留着),
 但**新的会话管理走 pipe**,要按下面第 3 步重新注册才拿得到。
 
@@ -47,10 +45,7 @@ npm install
 # ② 主包(浏览器)
 npm run build
 
-# ③ 数据库包 —— 独立 tsconfig,必须单独来
-cd mcp-database && npm install && npm run build && cd ..
-
-# ④ 确认 v1 已清干净(应该只列出 client/core/express/node/server)
+# ③ 确认 v1 已清干净(应该只列出 client/core/express/node/server)
 ls node_modules/@modelcontextprotocol
 ```
 
@@ -67,7 +62,7 @@ node mcp.mjs install
 ## 3. 起服务 + 注册客户端
 
 ```bash
-node mcp.mjs start              # PM2 拉起三个服务
+node mcp.mjs start              # PM2 拉起两个服务
 node mcp.mjs autostart --apply  # 开机自启(平台自适应)
 ```
 
@@ -75,10 +70,9 @@ node mcp.mjs autostart --apply  # 开机自启(平台自适应)
 
 ```bash
 # Claude Code
-claude mcp remove browser -s user; claude mcp remove browser-headed -s user; claude mcp remove database -s user
+claude mcp remove browser -s user; claude mcp remove browser-headed -s user
 claude mcp add browser        -s user -- node <绝对路径>/claude/bin/shim.mjs headless
 claude mcp add browser-headed -s user -- node <绝对路径>/claude/bin/shim.mjs headed
-claude mcp add database       -s user -- node <绝对路径>/claude/bin/shim.mjs db
 ```
 
 Codex 改 `~/.codex/config.toml`(⚠️ Windows 路径用 **TOML 字面量字符串**,即单引号,
@@ -98,7 +92,7 @@ startup_timeout_sec = 30
 cd ~/code/localmcpbrower/claude && node mcp.mjs status
 ```
 
-期望 `claudemcp-browser`(3213)/ `claudemcp-headless`(3215)/ `claudemcp-database`(3214)均 **online**,
+期望 `claudemcp-browser`(3213)/ `claudemcp-headless`(3215)均 **online**,
 且日志里每个服务都有一行 `[Pipe] 监听 ...`。
 
 再做真实握手校验(比看进程状态可靠,能确认工具数):
@@ -109,7 +103,7 @@ cd ~/code/localmcpbrower/claude && node -e "
 const { Client } = await import('@modelcontextprotocol/client');
 const { StdioClientTransport } = await import('@modelcontextprotocol/client/stdio');
 const SHIM = process.cwd() + '/bin/shim.mjs';
-for (const [name, svc, want] of [['浏览器','headless',46],['有头','headed',46],['数据库','db',15]]) {
+for (const [name, svc, want] of [['浏览器','headless',46],['有头','headed',46]]) {
   try {
     const c = new Client({name:'probe',version:'1'}, {capabilities:{elicitation:{}}});
     await c.connect(new StdioClientTransport({command: process.execPath, args:[SHIM, svc]}));
@@ -121,7 +115,7 @@ for (const [name, svc, want] of [['浏览器','headless',46],['有头','headed',
 })();"
 ```
 
-**三行都是 `[OK]` 才算成功。** 若 `[FAIL]`,**不要硬切**:先 `pm2 logs --lines 50` 看原因,
+**两行都是 `[OK]` 才算成功。** 若 `[FAIL]`,**不要硬切**:先 `pm2 logs --lines 50` 看原因,
 把错误告诉我。旧的 HTTP 注册还留着,随时能退回去。
 
 握手过了再跑**功能冒烟**(每个工具都真调一遍,交互类还会回读 DOM 确认真生效):
@@ -129,12 +123,7 @@ for (const [name, svc, want] of [['浏览器','headless',46],['有头','headed',
 ```bash
 cd ~/code/localmcpbrower/claude
 npm run test:smoke        # 浏览器 46 个工具,末尾应为「覆盖 46/46 … 通过 48/48」
-npm run test:smoke:db     # 数据库 15 个工具 + 只读护栏回归(需先配 .env,见下)
 ```
-
-数据库要能用,得建 `mcp-database/.env`(照 `.env.example` 抄,**已被 .gitignore,别提交**):
-没有它 `list_presets` 为空、开机不自动连库,`switch_db` 也没法用。
-连接信息找管理员要,或看 `datacenter/` 里对应机器的文档。
 
 ## 5. 绝对不要做的事(踩了要返工)
 
@@ -176,19 +165,7 @@ npm run test:smoke:db     # 数据库 15 个工具 + 只读护栏回归(需先�
 - `request_human` —— 走协议 elicitation 弹窗。⚠️ 在 bypassPermissions 下会被客户端**自动拒绝**
   且界面无提示,那种模式下请用 `wait_for_human`
 
-**补上了数据库只读护栏的两个真实漏洞**(2026-08-31 本机实测发现,修前能真的写库):
-
-`query` / `export_csv` / `explain_query` 都标着 `readOnlyHint:true`,宿主据此**不弹确认**。
-而原本的判断只看语句开头一个词,于是:
-
-- `SELECT 1; CREATE TEMP TABLE t(x int); INSERT INTO t VALUES (42)` —— pg 的简单查询协议
-  **逐条执行**,建表加写入全部落地(实测 42 能读回来)
-- `WITH x AS (INSERT INTO t VALUES (1) RETURNING 1) SELECT * FROM x` —— 以 `WITH` 开头,判成只读
-- `explain_query` 更糟:它按同一个判断决定加不加 `ANALYZE`,而 **`EXPLAIN ANALYZE` 会真正执行语句**,
-  于是可写 CTE 会被"分析"着删掉数据
-
-现在改成三层:剥掉字符串/注释再判断 → 拒多语句 + 查写关键字 → **引擎级只读事务兜底**
-(`BEGIN READ ONLY` / `START TRANSACTION READ ONLY`)。回归用例在 `test/smoke-database.mjs`。
+> 历史记录:数据库只读护栏的相关修复属于已撤下的数据库 MCP,细节见 git 历史,此处不再展开。
 
 **长任务有进度了**:`crawl_pages`(最多 50 页)、`batch_fetch` 现在会实时上报进度,不再是黑盒。
 
@@ -198,10 +175,7 @@ npm run test:smoke:db     # 数据库 15 个工具 + 只读护栏回归(需先�
 
 - **浏览器默认共享** —— 所有窗口看到同一批标签页,任何窗口都能接管别的窗口开的页面;
   有头浏览器里**人手动打开**的页面 AI 也直接可见。要各窗口互不干扰设 `PIPE_ISOLATED=1`
-- **数据库默认隔离** —— 各窗口「当前连的是哪个库」互相独立。
-  这里不跟浏览器一致是刻意的:共享的话 B 窗口一句 `switch_db('prod')`
-  会让 A 窗口后续的 SQL 全跑到生产库上,**浏览器串台最多拿错数据,数据库串台可能写错库**
-- 登录态(cookie)**始终共享**,与上面两个开关无关 —— 登录一次全部通用
+- 登录态(cookie)**始终共享**,与上面开关无关 —— 登录一次全部通用
 
 **pipe 传输的三个坑已修**(2026-08-31,Linux 实机升级时暴露,全部表现为「服务 online 却连不上」):
 

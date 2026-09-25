@@ -5,6 +5,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import type { Frame, Page, Route } from 'patchright';
 import { getBrowserManager } from './browser.js';
 import { cancelOpt, reportProgress, throwIfCancelled } from './context.js';
@@ -25,6 +26,42 @@ import { Readability } from '@mozilla/readability';
 import { Defuddle } from 'defuddle/node';
 import { JSDOM } from 'jsdom';
 import TurndownService from 'turndown';
+
+// ── 正文提取:在页面里直接跑 defuddle 浏览器版 ──
+// 页面在浏览器里已经解析好了。老路径要把整页 HTML 序列化回 Node、再用 jsdom 解析一遍、再在 jsdom 里算样式,
+// 实测 Wikipedia 条目 1.2–1.4 秒;页内跑同一个 defuddle 只要 64–107 毫秒,产出逐字一致(2026-09-25)。
+// 也顺带避开 jsdom 30.1 起的选择器长度限制(长页面上 defuddle 会生成超长选择器)。
+type DefuddleOut = { title?: string; author?: string; description?: string; wordCount: number; content: string };
+let defuddleBundle: string | null = null;
+async function defuddleInPage(page: Page): Promise<DefuddleOut | null> {
+  // 注入一次、同一页面内复用(patchright 的隔离世界跨 evaluate 保留,导航后重新注入):先问一句在不在,省得每次都传 700KB
+  const loaded = await page.evaluate('typeof self.Defuddle !== "undefined"');
+  if (!loaded) {
+    defuddleBundle ??= fs.readFileSync(createRequire(import.meta.url).resolve('defuddle/full'), 'utf8');
+    await page.evaluate(defuddleBundle);
+  }
+  // 在副本上跑:defuddle 会删节点清洗,不能改动用户正在看的页面
+  return page.evaluate(`(() => {
+    const D = self.Defuddle.default || self.Defuddle;
+    const r = new D(document.cloneNode(true), { url: location.href, markdown: true }).parse();
+    return { title: r.title, author: r.author, description: r.description, wordCount: r.wordCount, content: r.content };
+  })()`) as Promise<DefuddleOut | null>;
+}
+
+function articleResult(r: DefuddleOut) {
+  const text = r.content.replace(/\s+/g, ' ').trim();
+  return {
+    success: true as const,
+    data: {
+      title: r.title ?? '',
+      byline: r.author || null,
+      excerpt: r.description || null,
+      length: r.wordCount,
+      markdown: r.content,
+      textPreview: text.slice(0, 300),
+    },
+  };
+}
 import type {
   ToolResult, NavigateResult, ClickResult, TypeResult,
   ScreenshotResult, ExecuteJsResult, ConsoleLogEntry, NetworkRequestEntry
@@ -809,13 +846,12 @@ export async function batchFetch(input: unknown): Promise<ToolResult<{ results: 
   try {
     const parsed = BatchFetchSchema.safeParse(input);
     if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
-    const { urls, waitFor, extractSelector, delay } = parsed.data;
-    const page = await getBrowserManager().getPage();
-    const results: Array<{ url: string; title?: string; content?: string; success: boolean; error?: string }> = [];
-    let fetched = 0;
+    const { urls, waitFor, extractSelector, delay, concurrency } = parsed.data;
+    type Result = { url: string; title?: string; content?: string; success: boolean; error?: string };
+    const bm = getBrowserManager();
+    const main = await bm.getPage();
 
-    for (const url of urls) {
-      throwIfCancelled();
+    const fetchOne = async (page: Page, url: string): Promise<Result> => {
       try {
         await page.goto(url, { ...cancelOpt(), waitUntil: 'commit', timeout: 15000 });
         if (waitFor) {
@@ -829,14 +865,32 @@ export async function batchFetch(input: unknown): Promise<ToolResult<{ results: 
             return el ? (el.textContent || '').trim() : '';
           })()`).then(v => v as string).catch(() => undefined);
         }
-        results.push({ url, title, content, success: true });
-        reportProgress(++fetched, urls.length, `已抓 ${fetched}/${urls.length}: ${url}`);
+        return { url, title, content, success: true };
       } catch (err) {
-        results.push({ url, success: false, error: err instanceof Error ? err.message : String(err) });
+        return { url, success: false, error: err instanceof Error ? err.message : String(err) };
       }
-      if (delay > 0 && urls.indexOf(url) < urls.length - 1) {
-        await new Promise(r => setTimeout(r, delay));
+    };
+
+    // 工作池:每个标签页轮流领下一个 URL;结果按原顺序放回。concurrency=1 时就是原来的逐个抓
+    const results: Result[] = new Array(urls.length);
+    let next = 0;
+    let done = 0;
+    const work = async (page: Page) => {
+      for (;;) {
+        throwIfCancelled();
+        const i = next++;
+        if (i >= urls.length) return;
+        results[i] = await fetchOne(page, urls[i]!);
+        reportProgress(++done, urls.length, `已抓 ${done}/${urls.length}: ${urls[i]}`);
+        if (delay > 0 && next < urls.length) await new Promise(r => setTimeout(r, delay));
       }
+    };
+    const extra: Page[] = [];
+    try {
+      for (let w = 1; w < Math.min(concurrency, urls.length); w++) extra.push(await bm.openWorkerTab());
+      await Promise.all([main, ...extra].map(work));
+    } finally {
+      await Promise.all(extra.map(p => p.close().catch(() => { /* 可能已被关 */ })));
     }
 
     return { success: true, data: { results } };
@@ -1050,27 +1104,17 @@ export async function extractArticle(input: unknown): Promise<ToolResult<{
       await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
     }
 
+    // 首选:页内 defuddle(Readability 的现代替代:多轮清洗、脚注/代码块标准化、直接出 Markdown)
+    const inPage = await defuddleInPage(page).catch(() => null);
+    if (inPage?.content && inPage.wordCount > 0) return articleResult(inPage);
+
+    // 页内失败(脚本被拦、页面奇特)才走老路径:整页 HTML → jsdom → defuddle / Readability
     const html = await page.content();
     const pageUrl = page.url();
-
-    // 首选 defuddle（Readability 的现代替代：多轮清洗、脚注/代码块标准化、直接出 Markdown）
     try {
       const dom = new JSDOM(html, { url: pageUrl });
       const result = await Defuddle(dom, pageUrl, { markdown: true });
-      if (result.content && result.wordCount > 0) {
-        const text = result.content.replace(/\s+/g, ' ').trim();
-        return {
-          success: true,
-          data: {
-            title: result.title ?? '',
-            byline: result.author || null,
-            excerpt: result.description || null,
-            length: result.wordCount,
-            markdown: result.content,
-            textPreview: text.slice(0, 300),
-          },
-        };
-      }
+      if (result.content && result.wordCount > 0) return articleResult(result);
     } catch { /* defuddle 失败则回退 Readability */ }
 
     // 兜底：Readability + Turndown

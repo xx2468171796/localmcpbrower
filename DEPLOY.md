@@ -3,7 +3,9 @@
 把这套 MCP 服务部署到一台新机器（Windows / macOS / Linux 通用）。
 **每台要用的机器执行一次即可**，之后所有项目自动可用。
 
-> 推荐形态是 **HTTP 常驻服务**：一台机器上跑三个长驻服务，所有 Claude Code / Codex 窗口共用。
+> 推荐形态是 **HTTP 常驻服务**：一台机器上跑两个长驻服务，所有 Claude Code / Codex 窗口共用。
+>
+> 数据库 MCP 已于 2026-09-25 撤下，库一律用堡垒机 baolei MCP 的 `db_*` 工具（历史版本见 git 历史）。
 > stdio 模式（每个窗口各拉一个进程）仍然保留，作为备用路径，行为与旧版完全一致。
 
 ---
@@ -35,7 +37,7 @@ cd localmcpbrower/claude
 node mcp.mjs install
 ```
 
-一条命令完成：浏览器 + 数据库依赖安装、Patchright Chromium 下载、TypeScript 构建。三平台行为一致。
+一条命令完成：浏览器依赖安装、Patchright Chromium 下载、TypeScript 构建。三平台行为一致。
 
 - **Linux**：以 root 运行时会自动用 `--with-deps` 装 Chromium 所需系统库（`libnss3` 等）；
   非 root 会跳过并提示你手动执行 `sudo npx patchright install-deps chromium`。
@@ -47,13 +49,12 @@ node mcp.mjs install
 node mcp.mjs start
 ```
 
-一次拉起三个 PM2 服务，并做端点健康检查：
+一次拉起两个 PM2 服务，并做端点健康检查：
 
 | 服务 | 端口 | PM2 名 | PM2 配置 | 浏览器 profile | 说明 |
 |------|------|--------|----------|----------------|------|
 | 有头浏览器 | 3213 | `claudemcp-browser` | `ecosystem.config.cjs` | `storage/user_data_headed` | 窗口可见，可实时观察 agent 操作、随时人工接管（登录 / 验证码 / 二次确认） |
 | 无头浏览器 | 3215 | `claudemcp-headless` | `ecosystem.headless.config.cjs` | `storage/user_data` | 后台运行，服务器 / SSH 环境 |
-| 数据库 | 3214 | `claudemcp-database` | `mcp-database/ecosystem.config.cjs` | — | PostgreSQL / MySQL，共享连接池 |
 
 > 两个浏览器服务的 profile **必须分开**：同一个目录被两个 Chromium 同时打开时，
 > 磁盘上的 Cookies 由最后落盘的那个覆盖，另一边的登录态会静默丢失（见下文「会话隔离」）。
@@ -65,13 +66,12 @@ node mcp.mjs start
 ```bash
 node mcp.mjs start headed      # 仅有头浏览器 (3213)
 node mcp.mjs start headless    # 仅无头浏览器 (3215)
-node mcp.mjs start db          # 仅数据库     (3214)
 node mcp.mjs stop / restart / status
 ```
 
 > 旧写法 `browser` 仍等价于 `headless`，`start.bat` 等老脚本不受影响。
 > Linux 无图形显示（无 `DISPLAY` / `WAYLAND_DISPLAY`）时，`start`（不带参数）会**自动跳过有头**，
-> 只跑无头 + 数据库，避免有头服务反复重启刷日志。
+> 只跑无头，避免有头服务反复重启刷日志。
 
 ### 4. 注册到客户端
 
@@ -84,7 +84,6 @@ node mcp.mjs config
 ```bash
 claude mcp add browser -s user -- node <仓库路径>/claude/bin/shim.mjs headless
 claude mcp add browser-headed -s user -- node <仓库路径>/claude/bin/shim.mjs headed
-claude mcp add database -s user -- node <仓库路径>/claude/bin/shim.mjs db
 ```
 
 或写进项目根目录 `.mcp.json`（模板：`<安装目录>/.mcp.http.example.json`）：
@@ -93,20 +92,19 @@ claude mcp add database -s user -- node <仓库路径>/claude/bin/shim.mjs db
 {
   "mcpServers": {
     "browser": { "command": "node", "args": ["<仓库路径>/claude/bin/shim.mjs", "headless"] },
-    "browser-headed": { "command": "node", "args": ["<仓库路径>/claude/bin/shim.mjs", "headed"] },
-    "database": { "command": "node", "args": ["<仓库路径>/claude/bin/shim.mjs", "db"] },
+    "browser-headed": { "command": "node", "args": ["<仓库路径>/claude/bin/shim.mjs", "headed"] }
   }
 }
 ```
 
 > HTTP 条目里写的是 **URL 不是路径**，可以跨机器同步；只有 stdio 条目才含本机绝对路径。
-> 桌面机通常留 `browser-headed` + `database`；服务器留 `browser`（无头）+ `database`。
+> 桌面机通常留 `browser-headed`；服务器留 `browser`（无头）。
 > 之前注册过同名 stdio 条目的话先移除：`claude mcp remove browser -s user`。
 
 ### 5. 验证
 
 ```bash
-node mcp.mjs status     # PM2 三个服务应为 online
+node mcp.mjs status     # PM2 两个服务应为 online
 claude mcp list         # 对应条目应为 ✓ Connected
 ```
 
@@ -119,7 +117,6 @@ claude mcp list         # 对应条目应为 ✓ Connected
 | 隔离级别 | 粒度 | 触发 | 效果 |
 |---|---|---|---|
 | 会话 → 标签页 | 浏览器标签页 | **自动**（连上即分配） | 每个客户端窗口有自己的标签页、自己的 console / 网络记录、自己的 `set_block_rules` 拦截规则；`list_tabs` / `switch_tab` / `close_tab` 只看得到、也只动得了自己的标签页 |
-| 会话 → 数据库指针 | 当前库 | **自动** | A 窗口 `switch_db('prod')` 不会把 B 窗口带到 prod；连接池按库共享，指针各自独立 |
 | Space → 浏览器上下文 | cookie / 登录态 | **显式** `space_new` | 需要多账号或独立登录态时才用；**同一个服务内**默认所有会话共用 `default` space，也就是**共享一份登录态** |
 | 有头服务 ↔ 无头服务 | Chromium profile | **固定** | 两个服务是两个进程、两个 Chromium，各占一份 profile —— **两份独立登录态，不互通** |
 
@@ -139,12 +136,11 @@ claude mcp list         # 对应条目应为 ✓ Connected
 
 ## 安全默认值（务必先看）
 
-浏览器里存着**已登录的公司系统会话**，数据库端点等于一条通往生产库的通道，
-所以 HTTP 端口的暴露面必须收住：
+浏览器里存着**已登录的公司系统会话**，所以 HTTP 端口的暴露面必须收住：
 
 | 项 | 默认 | 说明 |
 |---|---|---|
-| 监听地址 | `127.0.0.1` | 三个 `ecosystem*.cjs` 都显式写死 `HOST=127.0.0.1`，只有本机能连 |
+| 监听地址 | `127.0.0.1` | 两个 `ecosystem*.cjs` 都显式写死 `HOST=127.0.0.1`，只有本机能连 |
 | 鉴权 | 关闭 | 本机回环场景不需要；**绑非回环地址时必须设 `MCP_AUTH_TOKEN`** |
 | DNS rebinding 防护 | 开启 | 只接受 `127.0.0.1:<端口>` / `localhost:<端口>` / `[::1]:<端口>` 的 Host；**其它 Host 要靠 `MCP_ALLOWED_HOSTS` 显式放行**，否则 403 |
 | CORS | 收紧到本地来源 | 不再是 `*` |
@@ -159,7 +155,7 @@ claude mcp list         # 对应条目应为 ✓ Connected
 第 3 条最容易漏。MCP SDK 的 DNS rebinding 防护对请求的 `Host` 头做**全等匹配**，
 默认白名单只有 `127.0.0.1:<端口>` / `localhost:<端口>` / `[::1]:<端口>` /`<HOST>:<端口>`——
 `HOST=0.0.0.0` 时那一条是字面量 `0.0.0.0:3215`，而远端客户端发来的 Host 是 `192.168.1.10:3215`，
-对不上就直接 **403 `Invalid Host header`**（数据库 MCP 更严格，`0.0.0.0` 被显式排除在外）。
+对不上就直接 **403 `Invalid Host header`**。
 
 ```js
 // claude/ecosystem.headless.config.cjs 的 env 片段
@@ -261,7 +257,7 @@ pm2 save
 
 ### Linux 服务器（无显示）
 
-**只能跑无头**（3215）+ 数据库（3214）。`node mcp.mjs start` 会自动跳过有头。
+**只能跑无头**（3215）。`node mcp.mjs start` 会自动跳过有头。
 
 确实要在无显示机器上跑有头，需要虚拟显示：
 
@@ -276,7 +272,7 @@ node mcp.mjs start headed
 
 ### 自启校验
 
-重启机器 → 登录桌面 → `node mcp.mjs status`，三个服务应为 `online`。
+重启机器 → 登录桌面 → `node mcp.mjs status`，两个服务应为 `online`。
 
 ---
 
@@ -289,7 +285,7 @@ node mcp.mjs start headed
 | **Linux 桌面** | ✅ | ✅ | `pm2 startup`（systemd）+ `pm2 save` |
 | **Linux 服务器（无显示）** | ✅ | ❌ 需 Xvfb | `pm2 startup`（systemd） |
 
-端口三平台一致（3213 / 3214 / 3215）；所有路径按**安装目录**相对描述，不依赖当前工作目录。
+端口三平台一致（3213 / 3215）；所有路径按**安装目录**相对描述，不依赖当前工作目录。
 
 ---
 
@@ -304,7 +300,6 @@ node mcp.mjs config     # 方式 B 部分即 stdio 命令，路径为本机绝�
 
 ```bash
 claude mcp add browser -- node "<安装目录>/dist/server.js" --stdio
-claude mcp add database -e MCP_TRANSPORT=stdio -- node "<安装目录>/mcp-database/dist/server.js" --stdio
 ```
 
 > stdio 条目写的是**本机绝对路径**，不能跟着仓库同步到别的机器。
@@ -325,8 +320,7 @@ HTTP（推荐，模板见 `<安装目录>/.mcp.http.example.json`）：
 ```json
 {
   "mcpServers": {
-    "browser": { "command": "node", "args": ["<仓库路径>/claude/bin/shim.mjs", "headless"] },
-    "database": { "command": "node", "args": ["<仓库路径>/claude/bin/shim.mjs", "db"] },
+    "browser": { "command": "node", "args": ["<仓库路径>/claude/bin/shim.mjs", "headless"] }
   }
 }
 ```
@@ -336,8 +330,7 @@ stdio（备用，模板见 `<安装目录>/.mcp.json.example`）：
 ```json
 {
   "mcpServers": {
-    "browser":  { "command": "node", "args": ["<安装目录>/dist/server.js", "--stdio"] },
-    "database": { "command": "node", "args": ["<安装目录>/mcp-database/dist/server.js", "--stdio"], "env": { "MCP_TRANSPORT": "stdio" } }
+    "browser":  { "command": "node", "args": ["<安装目录>/dist/server.js", "--stdio"] }
   }
 }
 ```
@@ -348,7 +341,6 @@ stdio（备用，模板见 `<安装目录>/.mcp.json.example`）：
 
 ```bash
 codex mcp add browser -- node <安装目录>/dist/server.js --stdio
-codex mcp add database --env MCP_TRANSPORT=stdio -- node <安装目录> <仓库路径>/claude/bin/shim.mjs db
 ```
 
 或直接编辑 `~/.codex/config.toml`：
@@ -360,23 +352,13 @@ args = ["<安装目录>/dist/server.js", "--stdio"]
 type = "stdio"
 cwd = "<安装目录>"
 startup_timeout_sec = 30
-
-[mcp_servers.database]
-command = "node"
-args = ['<仓库路径>/claude/bin/shim.mjs', 'db']
-type = "stdio"
-cwd = "<安装目录>/mcp-database"
-startup_timeout_sec = 30
-
-[mcp_servers.database.env]
-MCP_TRANSPORT = "stdio"
 ```
 
 > Codex 对 http 型 MCP 条目的支持随版本变化，先用 `codex mcp add --help` 确认你的版本是否支持 URL 形式；
 > 不支持就继续用上面的 stdio 条目 —— 两种传输并存，将来随时可切。
 > 如果 Codex 的 shell 环境找不到 `node`，把 `command = "node"` 改成绝对路径（macOS Apple Silicon 常见 `/opt/homebrew/bin/node`）。
 
-更完整的 Codex 用法见 [`CODEX.md`](./CODEX.md)。项目根目录的 [`AGENTS.md`](./AGENTS.md) 会告诉 Codex 优先使用 `mcp__browser__*` 和 `mcp__database__*` 工具。
+更完整的 Codex 用法见 [`CODEX.md`](./CODEX.md)。项目根目录的 [`AGENTS.md`](./AGENTS.md) 会告诉 Codex 优先使用 `mcp__browser__*` 工具。
 
 ### 各客户端对照
 
@@ -406,21 +388,6 @@ MCP_TRANSPORT = "stdio"
 
 ---
 
-## 数据库配置（可选）
-
-数据库 MCP 可在启动时自动连库 —— 复制并编辑 `<安装目录>/mcp-database/.env`：
-
-```bash
-cp mcp-database/.env.example mcp-database/.env
-# 填入 DB_TYPE / DB_HOST / DB_PORT / DB_NAME / DB_USER / DB_PASSWORD
-```
-
-不配也行：运行时让 AI 用 `list_presets` / `connect` / `switch_db` 按需连接。
-
-> HTTP 模式下改完 `.env` 需要 `node mcp.mjs restart db` 生效。
-
----
-
 ## 升级 / 卸载
 
 ```bash
@@ -431,7 +398,6 @@ node mcp.mjs update
 node mcp.mjs stop
 claude mcp remove browser -s user
 claude mcp remove browser-headed -s user
-claude mcp remove database -s user
 ```
 
 > `update` 自带保护：本地有未提交改动会中止；非 git 仓库（复制部署）或分支无远端时
@@ -460,14 +426,13 @@ pm2 save                 # 配过自启的话刷新 dump，否则下次开机恢
 node mcp.mjs status                       # PM2 状态
 pm2 logs claudemcp-browser --lines 50     # 有头浏览器日志
 pm2 logs claudemcp-headless --lines 50
-pm2 logs claudemcp-database --lines 50
 
 curl http://127.0.0.1:3215/health         # 端点健康
 
 # 端口占用
-netstat -ano | findstr "3213 3214 3215"   # Windows
-lsof -i :3213 -i :3214 -i :3215           # macOS
-ss -tlnp | grep -E '3213|3214|3215'       # Linux
+netstat -ano | findstr "3213 3215"        # Windows
+lsof -i :3213 -i :3215                    # macOS
+ss -tlnp | grep -E '3213|3215'            # Linux
 ```
 
 | 症状 | 排查方向 |

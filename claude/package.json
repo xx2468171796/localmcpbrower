@@ -15,8 +15,9 @@
     "pm2:logs": "pm2 logs claudemcp-browser",
     "test:smoke": "node test/smoke-browser.mjs headless",
     "test:smoke:headed": "node test/smoke-browser.mjs headed",
-    "test:smoke:db": "node test/smoke-database.mjs",
-    "test:cancel": "node test/cancel-probe.mjs"
+    "test:cancel": "node test/cancel-probe.mjs",
+    "bench:extract": "node test/extract-bench.mjs",
+    "bench:batch": "node test/batch-bench.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.1.0",

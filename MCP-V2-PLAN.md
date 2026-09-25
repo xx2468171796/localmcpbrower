@@ -15,7 +15,7 @@
 | 协议(服务端能力) | 新旧双线都支持,客户端钉死 `2026-07-28` 也能连(实测) |
 | 传输 | pipe(named pipe / unix socket)+ HTTP 并存 |
 | 工具数 | **46**(原 44 + `request_human` + `wait_for_human`) |
-| 三个服务 | headless 3215 / headed 3213 / database 3214,均已切新版 |
+| 两个服务 | headless 3215 / headed 3213,均已切新版(数据库 MCP 已于 2026-09-25 撤下,见 git 历史) |
 
 ⚠️ **别把"服务端支持新协议"说成"在用新协议"。** 实测:默认连接协商到
 `2025-11-25`;只有显式 `versionNegotiation: { pin: '2026-07-28' }` 才走新线。
@@ -78,6 +78,9 @@ node --input-type=module -e 'import * as s from "@modelcontextprotocol/server";
 - **Tasks 仍阻塞**:SDK 2.1.0 的 server 包仍只有 `RELATED_TASK_META_KEY` / `isTaskAugmentedRequestParams`,没有 task 运行时。新增的只有 `SUBSCRIPTION_ID_META_KEY`(订阅开始落地的迹象),下次升级再查。
 - **取消已接上**:`ctx.mcpReq.signal` 进 `mcpCtx`;`batch_fetch` / `crawl_pages` / `discover_urls` / `wait_for_human` 每轮 `throwIfCancelled()`,各处 `page.goto` 带 `...cancelOpt()`(Playwright 1.62 起支持 signal)。验证:`npm run test:cancel`(1.5 秒取消,10 秒后页面仍停在第 1 个网址)。
 - **快照不换成 Playwright 原生**:1.63 的 `ariaSnapshot({ mode: 'ai' })` 在 Wikipedia 条目页 195KB / 1625 个 ref,我们的 `snapshot(interactiveOnly)` 约 25KB / 677 个 ref,自研实现省 token 约 8 倍;`aria-ref=eN` 定位器在 patchright 可用(68ms),留作以后备选。
+- **正文提取改在页内跑**:`extract_article` 先在页面里注入 defuddle 浏览器版(每页注入一次、在 document 副本上跑),失败才回退「整页 HTML → jsdom」。实测 1.2–1.4 秒 → 75–123 毫秒,产出一致。`npm run bench:extract`。
+- **batch_fetch 并发**:新增 `concurrency`(1–5,默认 1 行为不变),多出的临时标签页继承本会话屏蔽规则、不抢焦点、用完关闭,结果保持原顺序。8 个不同站点:串行 14.3 秒 → 并发 4 为 2.1 秒。`npm run bench:batch`。
+- **数据库 MCP 撤下**:`claude/mcp-database` 整包删除,库一律走堡垒机 `db_*`。
 - **jsdom 钉 30.0.1**:30.1.1 起选择器超过 2048 字符直接抛错,defuddle 0.19.4 在长页面(如 Wikipedia)会生成超长选择器 → `extract_article` 退化到 Readability。defuddle 修复前别升 jsdom;升级后跑 `test:smoke` 并看 `logs/*-error-*.log` 里有没有 `Selector exceeds`。
 
 ## 2. 这次实际拿到了什么

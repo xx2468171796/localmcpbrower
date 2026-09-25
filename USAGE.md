@@ -1,6 +1,8 @@
-# MCP Browser & Database 工具调用规则
+# MCP Browser 工具调用规则
 
 > 给 AI 看的调用手册。遵守这些规则可以让调用更快、更稳定、更少出错。
+>
+> 数据库 MCP 已于 2026-09-25 撤下，库一律用堡垒机 baolei MCP 的 `db_*`（历史版本见 git 历史）。
 
 ---
 
@@ -8,12 +10,11 @@
 
 ### 推荐：HTTP 常驻服务
 
-三个长驻服务由 PM2 托管，所有客户端窗口共用（一份 Chromium、一份登录态、一套数据库连接池）。
+两个长驻服务由 PM2 托管，所有客户端窗口共用（一份 Chromium、一份登录态）。
 
 ```bash
-node mcp.mjs start          # 启动全部三个服务 + 端点健康检查
+node mcp.mjs start          # 启动全部两个服务 + 端点健康检查
 node mcp.mjs status         # 查看 PM2 进程状态
-node mcp.mjs restart db     # 改了 mcp-database/.env 后重启数据库服务
 node mcp.mjs stop           # 停止
 node mcp.mjs autostart      # 开机自启指引（--apply 落地）
 ```
@@ -21,13 +22,10 @@ node mcp.mjs autostart      # 开机自启指引（--apply 落地）
 **MCP 端点（默认只绑 127.0.0.1，三平台端口一致）：**
 - 有头浏览器 `http://127.0.0.1:3213/mcp` —— 窗口可见，可实时观察、随时人工接管
 - 无头浏览器 `http://127.0.0.1:3215/mcp` —— 后台 / 服务器
-- 数据库 `http://127.0.0.1:3214/mcp`
 
 **会话隔离（多窗口并行时的关键语义）：**
 - **浏览器标签页默认共享**(设 PIPE_ISOLATED=1 切隔离)，console / 网络记录、`set_block_rules` 的拦截规则
   也是各自独立的；`list_tabs` / `switch_tab` / `close_tab` 只看得到、也只动得了本会话的标签页。
-- 每个会话有**自己的数据库指针**：`switch_db` / `connect` / `disconnect` 只改本会话指向哪个库，
-  不会把别的窗口带走；连接池按库共享。
 - **同一个服务内**默认所有会话共用 `default` 工作区，也就是**共享登录态**
   （在这个服务上登录一次，它的全部窗口可用）；需要独立 cookie / 登录态时用 `space_new`（见规则 9）。
 - **有头（3213）和无头（3215）是两个进程、两份 profile，登录态不互通**
@@ -218,85 +216,7 @@ space_close({ name: "job1" })   # 关闭并释放（default 不可关）
 
 ---
 
-## 四、数据库 MCP 调用规则
-
-### 配置数据库
-
-数据库连接信息通过 `claude/mcp-database/.env` 配置，复制示例并编辑：
-
-```bash
-cp claude/mcp-database/.env.example claude/mcp-database/.env
-```
-
-```env
-# PostgreSQL
-DB_TYPE=postgresql
-DB_HOST=127.0.0.1
-DB_PORT=5432
-DB_NAME=mydb
-DB_USER=postgres
-DB_PASSWORD=123456
-DB_SSL=false
-```
-
-### 添加多个数据库预设
-
-在同一个 `.env` 文件中按 `DB_<别名>_*` 格式追加预设，运行时用 `switch_db` 工具切换：
-
-```env
-DB_PROD_TYPE=postgresql
-DB_PROD_HOST=prod.server.com
-DB_PROD_PORT=5432
-DB_PROD_NAME=prod_db
-DB_PROD_USER=admin
-DB_PROD_PASSWORD=xxx
-DB_PROD_SSL=true
-```
-
-> stdio 模式修改 `.env` 后重新触发 MCP 即生效；HTTP 模式需 `node mcp.mjs restart db`。
-> `.env` 里的默认库只是每个会话连上来时的**初始指针**。
-
-### 读写规则（必读）
-
-```
-- query 强制只读：仅接受 SELECT/WITH/SHOW/EXPLAIN/DESCRIBE，其他语句直接报错。
-  另外两条限制是**故意的**,别绕:① **一次只能一条 SQL**,分号拼接一律拒(数据库会逐条执行,
-  是绕过只读的口子);② 语句里任何位置出现写关键字都会被拒,包括 `WITH x AS (INSERT …) SELECT …`
-  这类**可写 CTE**。查询还会跑在**引擎级只读事务**里(`BEGIN READ ONLY`),写不进去。
-  要写就用 execute(带 destructiveHint,宿主会要求确认)
-- 写操作（INSERT/UPDATE/DELETE/DDL）必须用 execute，它带 destructiveHint，
-  执行前向用户确认；execute 成功后 SELECT 缓存自动失效
-- SELECT 结果有 60 秒缓存，重复查询很快；需要强制最新数据时改写 SQL（如加注释）
-  缓存按「库 + SQL + 参数」区分，切库后不会拿到上一个库的旧结果
-- explain_query 对写语句只输出执行计划、不会真执行（PG 的 ANALYZE 仅用于只读语句;
-  可写 CTE 现在会被正确判成「写」,不会再被 ANALYZE 真跑一遍）。同样拒多语句
-- connect / switch_db / disconnect 只改**本会话**当前指向哪个库，不影响其他窗口；
-  写操作前用 status 确认当前库，别凭上一次 switch_db 的印象直接 execute
-```
-
-### 数据库工具（15个）
-
-| 工具 | 用途 |
-|------|------|
-| `query` | 只读查询（SELECT/WITH/SHOW/EXPLAIN），结果短时缓存 |
-| `execute` | INSERT/UPDATE/DELETE/DDL（破坏性，需确认） |
-| `list_tables` | 列出所有表 |
-| `describe_table` | 查看表结构 |
-| `list_databases` | 列出所有数据库 |
-| `explain_query` | 分析执行计划（写语句只出计划不执行） |
-| `table_indexes` | 查看索引 |
-| `table_relations` | 查看外键关系 |
-| `table_stats` | 表统计信息 |
-| `export_csv` | 导出查询结果为 CSV |
-| `connect` | 连接数据库 |
-| `disconnect` | 断开连接 |
-| `status` | 查看连接状态 |
-| `list_presets` | 列出预设数据库 |
-| `switch_db` | 切换数据库 |
-
----
-
-## 五、完整工具清单（浏览器 MCP，46 个）
+## 四、完整工具清单（浏览器 MCP，46 个）
 
 ### 人工接管（2 个,新增）
 | 工具 | 参数 | 说明 |

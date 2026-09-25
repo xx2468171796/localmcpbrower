@@ -220,7 +220,8 @@ export const BatchFetchSchema = z.object({
     .min(1).max(20).describe('要抓取的 URL 列表，最多 20 个'),
   waitFor: z.string().optional().describe('每个页面等待出现的选择器'),
   extractSelector: z.string().optional().describe('要提取内容的选择器，不填则返回 title+url'),
-  delay: z.number().int().min(0).max(5000).default(500).describe('每次请求间隔毫秒，防止被封')
+  delay: z.number().int().min(0).max(5000).default(500).describe('每个标签页两次请求的间隔毫秒，防止被封'),
+  concurrency: z.number().int().min(1).max(5).default(1).describe('同时开几个标签页并发抓取（1–5，默认 1 逐个抓）。URL 分属不同站点时开到 3–5 能快几倍；同一站点保持 1–2，防封')
 });
 
 /** 分页爬取 */

@@ -2,7 +2,9 @@
 
 > **读者是 AI 助手,不是人。** 面向人的详解见 [`DEPLOY.md`](./DEPLOY.md);本文件是**可直接执行的部署流程**,每步带可自检的预期输出。
 >
-> 本项目提供两个 MCP 服务:**浏览器 MCP(44 工具)** 与 **数据库 MCP(15 工具)**,推荐以 **HTTP 常驻**形态部署(v3 起),stdio 为备用形态。
+> 本项目提供一个 MCP 服务:**浏览器 MCP(46 工具)**,推荐以 **HTTP 常驻**形态部署(v3 起),stdio 为备用形态。
+>
+> 数据库 MCP 已于 2026-09-25 撤下,库一律用堡垒机 baolei MCP 的 `db_*`(历史版本见 git 历史)。
 
 ---
 
@@ -49,32 +51,30 @@ cd ~/code/localmcpbrower/claude
 node mcp.mjs install
 ```
 
-**验证门**:两个 `dist/server.js` 必须存在。
+**验证门**:`dist/server.js` 必须存在。
 
 ```bash
-test -f dist/server.js && test -f mcp-database/dist/server.js && echo OK
+test -f dist/server.js && echo OK
 ```
 
 失败时:`npm install` 的网络问题会自动切 npmmirror 镜像;Linux 缺系统库时按提示执行一次
 `sudo npx patchright install-deps chromium`(需要 sudo,只此一次,Mac/Windows 不需要)。
 
-### 2.3 启动三个常驻服务
+### 2.3 启动两个常驻服务
 
 ```bash
 node mcp.mjs start
 ```
 
-**预期输出**(三个都必须 `online`,且健康检查三个 `[✓]`):
+**预期输出**(两个都必须 `online`,且健康检查两个 `[✓]`):
 
 ```
 │ claudemcp-browser   │ online │   ← 有头,端口 3213
-│ claudemcp-database  │ online │   ← 数据库,端口 3214
 │ claudemcp-headless  │ online │   ← 无头,端口 3215
 
 ── 端点健康检查
   [✓] 无头浏览器 MCP (3215)  http://127.0.0.1:3215/mcp
   [✓] 有头浏览器 MCP (3213)  http://127.0.0.1:3213/mcp
-  [✓] 数据库 MCP (3214)      http://127.0.0.1:3214/mcp
 ```
 
 > **无显示环境(Linux 服务器 / SSH)**:有头服务会自动降级为无头并告警,不会启动失败。
@@ -91,7 +91,6 @@ node mcp.mjs config      # 打印适配本机的注册命令
 ```bash
 claude mcp add browser -s user -- node <仓库路径>/claude/bin/shim.mjs headless
 claude mcp add browser-headed -s user -- node <仓库路径>/claude/bin/shim.mjs headed
-claude mcp add database -s user -- node <仓库路径>/claude/bin/shim.mjs db
 ```
 
 或直接写配置(`~/.claude.json` 的 `mcpServers`,或项目级 `.mcp.json`):
@@ -100,8 +99,7 @@ claude mcp add database -s user -- node <仓库路径>/claude/bin/shim.mjs db
 {
   "mcpServers": {
     "browser": { "command": "node", "args": ["<仓库路径>/claude/bin/shim.mjs", "headless"] },
-    "browser-headed": { "command": "node", "args": ["<仓库路径>/claude/bin/shim.mjs", "headed"] },
-    "database": { "command": "node", "args": ["<仓库路径>/claude/bin/shim.mjs", "db"] },
+    "browser-headed": { "command": "node", "args": ["<仓库路径>/claude/bin/shim.mjs", "headed"] }
   }
 }
 ```
@@ -123,13 +121,13 @@ macOS/Linux 下 `pm2 startup` 会打印一条 `sudo ...` 命令,**需要人工�
 ## 3. 验证清单(部署后逐条跑)
 
 ```bash
-# ① 三服务在线
+# ① 两服务在线
 node mcp.mjs status
 
 # ② 端口只绑回环(不应出现 0.0.0.0,除非有意跨机且已配 token)
-#    Windows: netstat -ano | findstr "3213 3214 3215"
+#    Windows: netstat -ano | findstr "3213 3215"
 #    Linux/mac:
-ss -ltnp 2>/dev/null | grep -E ':(3213|3214|3215)' || netstat -an | grep -E '\.(3213|3214|3215) '
+ss -ltnp 2>/dev/null | grep -E ':(3213|3215)' || netstat -an | grep -E '\.(3213|3215) '
 
 # ③ 健康检查(自动跟随 HOST/PORT 环境变量)
 bash check-mcp-health.sh
@@ -139,7 +137,7 @@ bash check-mcp-health.sh
 
 ```bash
 node -e "
-const eps=[['无头',3215,44],['有头',3213,44],['数据库',3214,15]];
+const eps=[['无头',3215,46],['有头',3213,46]];
 for(const [n,p,want] of eps){
   const base=\`http://127.0.0.1:\${p}/mcp\`;
   const h={'Content-Type':'application/json',Accept:'application/json, text/event-stream'};
@@ -181,9 +179,8 @@ node -e "const b=require('fs').readFileSync(process.env.APPDATA+'/Microsoft/Wind
 | **会话 → 标签页** | 自动 | 客户端连上即分配 | 多窗口并行互不抢页;**共享登录态** |
 | **Space → 上下文** | 显式 `space_new` | 需要隔离 cookie 时 | 独立 profile,多账号互不干扰 |
 
-- 每个会话独立:标签页、console/network 缓冲、`set_block_rules`、数据库当前库指针
+- 每个会话独立:标签页、console/network 缓冲、`set_block_rules`
 - 同一 space 内的会话**共享 cookie/登录态**(这是设计意图,不是 bug)
-- 数据库:`connect`/`switch_db`/`disconnect` 只改**调用方会话**的指针,不影响其他窗口
 
 ---
 
@@ -210,7 +207,6 @@ node mcp.mjs update
 
 # 依赖拿最新(注意:npm install 受 lock 锁定,不会升范围内新版)
 cd claude && npm update && npm run build
-cd mcp-database && npm update && npm run build
 
 # 回滚到 stdio 形态(HTTP 出问题时的退路)
 node mcp.mjs config          # 里面同时给出 stdio 注册写法
@@ -218,7 +214,7 @@ node mcp.mjs config          # 里面同时给出 stdio 注册写法
 
 # 卸载
 node mcp.mjs stop
-pm2 delete claudemcp-browser claudemcp-headless claudemcp-database
+pm2 delete claudemcp-browser claudemcp-headless
 # Windows 另删: %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\claudemcp-autostart.cmd
 ```
 

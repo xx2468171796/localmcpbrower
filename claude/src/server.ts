@@ -48,13 +48,13 @@ const SERVER_VERSION = '2.2.0';
 /**
  * pipe 端点的服务名。
  *
- * 三个服务(有头 3213 / 数据库 3214 / 无头 3215)必须各自一个端点,
+ * 两个服务(有头 3213 / 无头 3215)必须各自一个端点,
  * 否则三份进程抢同一个管道名 —— 谁先起谁赢,后起的静默 EADDRINUSE,
  * 表现是「某个 MCP 莫名其妙连不上」,极难查。
  * 允许用 PIPE_SERVICE 显式覆盖,便于本地起多份做对比测试。
  */
 const PIPE_SERVICE = (process.env['PIPE_SERVICE'] ?? '').trim()
-  || (PORT === 3213 ? 'headed' : PORT === 3214 ? 'db' : 'headless');
+  || (PORT === 3213 ? 'headed' : 'headless');
 
 // ============================================================
 // HTTP 安全参数
@@ -622,7 +622,7 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
 
   server.registerTool('batch_fetch', {
     title: '批量抓取 URL',
-    description: '批量抓取多个不同 URL（最多 20 个），支持内容提取和请求间隔。胜过循环 navigate + get_page_content。建议 delay 设 500-1000ms 防封号。',
+    description: '批量抓取多个不同 URL（最多 20 个），支持内容提取和请求间隔。胜过循环 navigate + get_page_content。URL 分属不同站点时设 concurrency 3–5 并发抓，快几倍；同一站点保持 1–2，delay 500-1000ms 防封号。',
     inputSchema: BatchFetchSchema,
     outputSchema: ResultEnvelope,
     annotations: { title: '批量抓取 URL', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } satisfies ToolAnnotations,

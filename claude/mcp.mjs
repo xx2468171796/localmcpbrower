@@ -6,11 +6,11 @@
  * 纯 Node 实现，无第三方依赖 (ESM)。
  *
  * 子命令:
- *   install                               安装依赖 + Chromium + 构建 (浏览器 + 数据库)
+ *   install                               安装依赖 + Chromium + 构建 (浏览器)
  *   update                                git pull + 重装依赖 + 重新构建 (+重启 PM2 服务)
- *   start  [headed|headless|db|all]       通过 PM2 启动常驻 HTTP 服务 (默认 all)
- *   stop   [headed|headless|db|all]       停止服务
- *   restart[headed|headless|db|all]       重启服务
+ *   start  [headed|headless|all]       通过 PM2 启动常驻 HTTP 服务 (默认 all)
+ *   stop   [headed|headless|all]       停止服务
+ *   restart[headed|headless|all]       重启服务
  *   status                                查看 PM2 进程状态 + 端点健康
  *   autostart [--apply]                   开机自启配置 (三平台，默认只打印指引)
  *   config                                打印客户端注册方式 (HTTP 优先，stdio 备用)
@@ -26,14 +26,12 @@ const IS_WIN = process.platform === 'win32';
 const IS_MAC = process.platform === 'darwin';
 const ROOT = dirname(fileURLToPath(import.meta.url));      // claude/
 const requireCjs = createRequire(import.meta.url);         // 读 ecosystem*.cjs 用
-const DB_DIR = join(ROOT, 'mcp-database');
 const NPM = IS_WIN ? 'npm.cmd' : 'npm';
 const NPX = IS_WIN ? 'npx.cmd' : 'npx';
 const PM2 = IS_WIN ? 'pm2.cmd' : 'pm2';
 
 const SHIM_PATH = join(ROOT, 'bin', 'shim.mjs');
 const BROWSER_SERVER = join(ROOT, 'dist', 'server.js');
-const DB_SERVER = join(DB_DIR, 'dist', 'server.js');
 
 // 版本号只认 package.json 一处，避免这里的字面量和实际发布版本长期不同步
 const VERSION = (() => {
@@ -42,21 +40,19 @@ const VERSION = (() => {
 })();
 
 // ── 服务定义 ──────────────────────────────────────────────
-// 三个服务都以 HTTP 常驻形态运行，端口固定且三平台一致 (见 HTTP-DESIGN.md §五)。
+// 两个浏览器服务都以 HTTP 常驻形态运行(数据库 MCP 2026-09-25 撤下,库一律走堡垒机 db_*)，端口固定且三平台一致 (见 HTTP-DESIGN.md §五)。
 // needsDisplay: 有头浏览器必须有图形显示且跑在已登录的交互桌面会话里，窗口才可见。
 // eco 文件名必须能被 PM2 认成 ecosystem 配置 (.json/.yml/.yaml/.config.js/.config.cjs/.config.mjs)，
 // 否则 `pm2 start <文件>` 会把它当普通脚本跑，服务名和 env 全不对 —— 见 ecosystem.headless.config.cjs 顶部注释。
 const SERVICES = {
   headless: { name: 'claudemcp-headless', eco: join(ROOT, 'ecosystem.headless.config.cjs'), label: '无头浏览器 MCP (3215)', port: 3215, needsDisplay: false },
   headed:   { name: 'claudemcp-browser',  eco: join(ROOT, 'ecosystem.config.cjs'),   label: '有头浏览器 MCP (3213)', port: 3213, needsDisplay: true },
-  db:       { name: 'claudemcp-database', eco: join(DB_DIR, 'ecosystem.config.cjs'), label: '数据库 MCP (3214)',   port: 3214, needsDisplay: false },
 };
 
 // 旧写法 (start.bat browser / 历史文档) 一律保持可用，避免升级后既有脚本失效
 const SERVICE_ALIASES = {
   browser: 'headless', 'browser-headless': 'headless',
   'browser-headed': 'headed', headful: 'headed', head: 'headed',
-  database: 'db',
 };
 
 // ── 工具函数 ──────────────────────────────────────────────
@@ -128,7 +124,7 @@ function npmInstall(cwd, registry) {
 // 安装 Patchright Chromium。关键:Linux 的 --with-deps 用包管理器装系统库(libnss3 等)需要 root;
 // 非 root(尤其 AI 的非 tty shell)用 --with-deps 会卡在 sudo 输密码、永久挂起 → 这里降级:
 //   非 root 只装 chromium 二进制(不卡、不要 sudo),系统库留给人工一条 sudo 命令补。
-// 整步非致命:就算没成也不中止,后续数据库 MCP / 注册 / 配置照常完成。
+// 整步非致命:就算没成也不中止,后续注册 / 配置照常完成。
 function installChromium(preferMirror) {
   const isLinux = process.platform === 'linux';
   const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
@@ -151,7 +147,7 @@ function installChromium(preferMirror) {
 // ── install ──────────────────────────────────────────────
 async function cmdInstall() {
   log('============================================================');
-  log('  Claude Code MCP - 安装 (浏览器 + 数据库)');
+  log('  Claude Code MCP - 安装 (浏览器)');
   log('============================================================');
 
   const major = parseInt(process.versions.node.split('.')[0], 10);
@@ -168,17 +164,12 @@ async function cmdInstall() {
   step('[3/5] 构建浏览器 MCP');
   run(NPM, ['run', 'build'], ROOT);
 
-  step('[4/5] 安装数据库 MCP 依赖');
-  npmInstall(DB_DIR, registry);
-
-  step('[5/5] 构建数据库 MCP');
-  run(NPM, ['run', 'build'], DB_DIR);
 
   log('\n============================================================');
   log('  安装完成！');
   log('============================================================');
   log('  下一步 (推荐 HTTP 常驻形态):');
-  log('    1) node mcp.mjs start        启动三个服务 (有头 3213 / 无头 3215 / 数据库 3214)');
+  log('    1) node mcp.mjs start        启动两个服务 (有头 3213 / 无头 3215)');
   log('    2) node mcp.mjs config       获取客户端注册命令');
   log('    3) node mcp.mjs autostart    配置开机自启 (可选，三平台指引)');
 }
@@ -228,10 +219,9 @@ async function cmdUpdate() {
   }
 
   // ── 依赖 + 浏览器 ──
-  step('[2/4] 更新依赖 (浏览器 + 数据库)');
+  step('[2/4] 更新依赖');
   const registry = await detectRegistry();
   npmInstall(ROOT, registry);
-  npmInstall(DB_DIR, registry);
 
   step('[3/4] 校验 Patchright Chromium (已存在则跳过下载)');
   installChromium(!!registry);
@@ -239,7 +229,6 @@ async function cmdUpdate() {
   // ── 构建 ──
   step('[4/4] 重新构建');
   run(NPM, ['run', 'build'], ROOT);
-  run(NPM, ['run', 'build'], DB_DIR);
 
   // ── PM2 服务在跑则重启，让 HTTP 模式立即用上新代码 ──
   // 注意: pm2 守护进程未启动时 jlist 会先输出 "[PM2] Spawning..." 等日志行，
@@ -284,13 +273,13 @@ function resolveTargets(arg, { skipNoDisplay = false } = {}) {
   if (t === 'all') {
     const keys = Object.keys(SERVICES);
     if (!skipNoDisplay || hasDisplay()) return keys;
-    log('  ⚠ 未检测到图形显示 (DISPLAY / WAYLAND_DISPLAY)，本次跳过有头浏览器，只跑无头 + 数据库。');
+    log('  ⚠ 未检测到图形显示 (DISPLAY / WAYLAND_DISPLAY)，本次跳过有头浏览器，只跑无头。');
     log('    确需有头请先备好 Xvfb 并导出 DISPLAY，再执行:  node mcp.mjs start headed');
     return keys.filter((k) => !SERVICES[k].needsDisplay);
   }
   const key = SERVICE_ALIASES[t] ?? t;
   if (SERVICES[key]) return [key];
-  fail(`未知服务: ${arg} (可选: headed | headless | db | all；旧写法 browser = headless)`);
+  fail(`未知服务: ${arg} (可选: headed | headless | all；旧写法 browser = headless)`);
 }
 
 // ── 端点解析:一切以 ecosystem 文件里的 env 为准 ─────────────
@@ -475,7 +464,7 @@ function cmdAutostart(arg) {
     log('      pm2 save');
     if (apply) runSoft(PM2, ['startup']);
     else log('  想直接看到本机那条命令:  node mcp.mjs autostart --apply');
-    if (!hasDisplay()) log('  ⚠ 当前无 DISPLAY / WAYLAND_DISPLAY: 自启只会拉起无头 + 数据库。');
+    if (!hasDisplay()) log('  ⚠ 当前无 DISPLAY / WAYLAND_DISPLAY: 自启只会拉起无头浏览器。');
   }
 
   log('\n  自启后校验: 重启机器 → node mcp.mjs status → 三个端点应为 online');
@@ -487,46 +476,42 @@ function cmdConfig() {
   log('  Claude Code MCP 配置');
   log('============================================================');
 
-  if (!existsSync(BROWSER_SERVER) || !existsSync(DB_SERVER)) {
+  if (!existsSync(BROWSER_SERVER)) {
     log('  ⚠  尚未构建，请先运行:  node mcp.mjs install\n');
   }
 
   log('\n── 常驻服务 + 客户端接入方式');
   log('  一个浏览器给所有窗口共用: 省内存、登录态共用一份、可实时观察并人工接管;');
-  log('  浏览器默认共享标签页(任何窗口都能接管别的窗口开的页);数据库默认隔离当前库指针。');
+  log('  浏览器默认共享标签页(任何窗口都能接管别的窗口开的页)。');
   log('  1) 启动服务:  node mcp.mjs start');
   log('');
   log('  ★ 推荐:走 shim(stdio 转发到常驻进程的 named pipe / unix socket)');
   log('    一条 socket = 一个客户端窗口,会话生命周期由内核保证,窗口关掉即刻回收。');
-  log('    浏览器默认共享标签页(设 PIPE_ISOLATED=1 切隔离);数据库默认隔离当前库指针。');
+  log('    浏览器默认共享标签页(设 PIPE_ISOLATED=1 切隔离)。');
   log(`    claude mcp add browser        -s user -- node "${SHIM_PATH}" headless`);
   log(`    claude mcp add browser-headed -s user -- node "${SHIM_PATH}" headed`);
-  log(`    claude mcp add database       -s user -- node "${SHIM_PATH}" db`);
   log('');
   log('    Codex 写 ~/.codex/config.toml —— Windows 路径必须用 TOML 字面量字符串(单引号),');
   log('    用双引号的话反斜杠会被当转义符,node.exe 路径直接废掉:');
   log('    [mcp_servers.browser]');
   log(`    command = '${process.execPath}'`);
   log(`    args = ['${SHIM_PATH}', 'headless']`);
-  log('    type = "stdio"');
   log('');
   log('  2) 或退回 HTTP 端点(跨机共享只有这条路 —— named pipe 只能本机用):');
   log('  2) 注册端点 (在任意目录执行一次，默认写用户级 user scope):');
   // URL 同样按 ecosystem 里的实际 HOST/PORT 生成:HOST 被改成具体网卡地址时,
   // 印一条 127.0.0.1 的注册命令等于让人照着配一个连不上的端点。
-  const EP = { browser: endpoint(SERVICES.headless), headed: endpoint(SERVICES.headed), db: endpoint(SERVICES.db) };
+  const EP = { browser: endpoint(SERVICES.headless), headed: endpoint(SERVICES.headed) };
   log(`    claude mcp add --transport http browser        ${EP.browser.url}/mcp`);
   log(`    claude mcp add --transport http browser-headed ${EP.headed.url}/mcp`);
-  log(`    claude mcp add --transport http database       ${EP.db.url}/mcp`);
   log('\n  或写入项目根目录 .mcp.json (模板见 claude/.mcp.http.example.json):');
   log(JSON.stringify({
     mcpServers: {
       browser:         { type: 'http', url: `${EP.browser.url}/mcp` },
       'browser-headed': { type: 'http', url: `${EP.headed.url}/mcp` },
-      database:        { type: 'http', url: `${EP.db.url}/mcp` },
     },
   }, null, 2));
-  log('\n  注: 同名条目会冲突，若之前注册过 stdio 版 browser/database，先 claude mcp remove <名字> -s user');
+  log('\n  注: 同名条目会冲突，若之前注册过 stdio 版 browser，先 claude mcp remove <名字> -s user');
   log('  注: 服务默认只绑 127.0.0.1。跨机共享要在 ecosystem 里三件事一起做:');
   log('      1) HOST=0.0.0.0   2) MCP_AUTH_TOKEN=<随机串>');
   log(`      3) MCP_ALLOWED_HOSTS=<客户端 URL 里的 host:port，如 192.168.1.10:${EP.browser.port}>`);
@@ -536,12 +521,10 @@ function cmdConfig() {
   log('\n── 兜底: stdio 直连(不跑常驻服务时用;每个窗口各起一个进程、各开一个浏览器)');
   log('  每个客户端窗口各拉一个进程、各开一个浏览器，行为与旧版完全一致。');
   log(`    claude mcp add browser -- node "${BROWSER_SERVER}" --stdio`);
-  log(`    claude mcp add database -e MCP_TRANSPORT=stdio -- node "${DB_SERVER}" --stdio`);
   log('\n  或写入 .mcp.json (见 .mcp.json.example):');
   log(JSON.stringify({
     mcpServers: {
       browser:  { command: 'node', args: [BROWSER_SERVER, '--stdio'] },
-      database: { command: 'node', args: [DB_SERVER, '--stdio'], env: { MCP_TRANSPORT: 'stdio' } },
     },
   }, null, 2));
   log('');
@@ -554,11 +537,11 @@ function cmdHelp() {
 用法:  node mcp.mjs <命令> [参数]
 
 命令:
-  install                            安装依赖 + Chromium + 构建 (浏览器 + 数据库)
+  install                            安装依赖 + Chromium + 构建 (浏览器)
   update                             git pull + 重装依赖 + 重新构建 (+重启 PM2 服务)
-  start   [headed|headless|db|all]   PM2 启动常驻 HTTP 服务 (默认 all)
-  stop    [headed|headless|db|all]   停止服务 (默认 all)
-  restart [headed|headless|db|all]   重启服务 (默认 all)
+  start   [headed|headless|all]   PM2 启动常驻 HTTP 服务 (默认 all)
+  stop    [headed|headless|all]   停止服务 (默认 all)
+  restart [headed|headless|all]   重启服务 (默认 all)
   status                             查看 PM2 进程状态
   autostart [--apply]                开机自启配置 (三平台指引，--apply 落地本机部分)
   config                             打印客户端注册方式 (HTTP 优先，stdio 备用)
@@ -567,19 +550,18 @@ function cmdHelp() {
 服务与端口 (三平台一致):
   headed    claudemcp-browser   http://127.0.0.1:3213/mcp   有头，窗口可见、可人工接管
   headless  claudemcp-headless  http://127.0.0.1:3215/mcp   无头，服务器 / 后台
-  db        claudemcp-database  http://127.0.0.1:3214/mcp   数据库，共享连接池
   (旧写法 browser 仍等价于 headless，start.bat / 老脚本不受影响)
 
 示例:
   node mcp.mjs install         # 首次安装
-  node mcp.mjs start           # 启动三个服务 (无显示的 Linux 自动跳过有头)
+  node mcp.mjs start           # 启动两个服务 (无显示的 Linux 自动跳过有头)
   node mcp.mjs config          # 获取客户端注册命令 (推荐 HTTP)
   node mcp.mjs autostart       # 开机自启指引
   node mcp.mjs update          # 仓库更新后一键升级并重启在跑的服务
 
 说明:
   HTTP 常驻模式为推荐形态: 一份浏览器 / 一套连接池给所有客户端共用，
-  每个会话自动拿到独立标签页与独立数据库指针，互不干扰。
+  每个会话自动拿到独立标签页，互不干扰。
   服务默认只绑 127.0.0.1;跨机共享须同时设 HOST + MCP_AUTH_TOKEN + MCP_ALLOWED_HOSTS。
   有头(3213)与无头(3215)各占一份 profile(user_data_headed / user_data)，
   即两份独立登录态 —— 要共用一份登录态就只跑其中一个。

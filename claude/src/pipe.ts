@@ -56,7 +56,7 @@ import type { McpServer } from '@modelcontextprotocol/server';
 
 /** 每条连接一个会话:工厂按 sessionId 造 McpServer,断开时回收该会话的页面 */
 export interface PipeLegOptions {
-  /** 服务名,用于区分不同服务的端点(headless / headed / db) */
+  /** 服务名,用于区分不同服务的端点(headless / headed) */
   service: string;
   /** 造 McpServer —— 与 HTTP 腿共用同一个,保证两条腿工具完全一致 */
   createServer: (sessionId: string) => McpServer;
@@ -73,10 +73,9 @@ export interface PipeLegOptions {
    * 有头浏览器里**人手动打开**的页面,AI 也能直接看到,不用自己再导航一次。
    *
    * 隔离(false)的好处:防**并行使用时的静默串台** —— A 正在读的页面被 B 的 navigate
-   * 换走,A 拿到的是错数据**而且不会报错**。数据库尤其致命:B 一句 switch_db('prod')
-   * 会让 A 后续的 SQL 全跑到生产库上。
+   * 换走,A 拿到的是错数据**而且不会报错**。
    *
-   * 因此默认值按包区分:浏览器包共享(方便接管),数据库包隔离(防写错库)。
+   * 浏览器包默认共享(方便接管);若某类会话需要互不干扰,可按需将该开关设为 false 改用隔离。
    */
   shared?: boolean;
 }

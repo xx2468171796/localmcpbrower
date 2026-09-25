@@ -126,28 +126,10 @@ userDataDir: process.env['USER_DATA_DIR'] ?? path.join(INSTALL_ROOT, 'storage/us
 
 效果:登录态固定一份,不再随项目目录漂移,`storage/` 不再散落。**即使不切 HTTP 也应该改。**
 
-### 3.6 数据库 MCP:同样切 HTTP,且必须做会话隔离(风险高于浏览器)
+### 3.6 数据库 MCP(已撤下)
 
-**现状缺陷(切 HTTP 前必须修,否则会出数据事故):**
-
-| 问题 | 代码位置 | 后果 |
-|---|---|---|
-| `DatabaseManager` 全局单例,`currentType`/`currentConfig` 全局唯一 | `mcp-database/src/database.ts:11-16` | 窗口 A `switch_db('prod')` 后,窗口 B 以为在测试库执行 `execute()` → **写进生产库** |
-| 查询缓存 key 为 `${sql}:${params}`,**不含库标识** | `mcp-database/src/database.ts:91` | 同一条 SELECT 在切库后 60s 内返回**上一个库的缓存结果**。此 bug **当前 stdio 下已存在**,共享后被放大 |
-
-**设计(与浏览器复用同一套 ALS 机制):**
-
-```
-连接池注册表 Map<configKey, Pool>        ← 全服务共享(这才是连接池的意义)
-会话指针     Map<sessionId, configKey>   ← 每个会话「当前指向哪个库」独立
-```
-
-- `connect` / `switch_db` / `disconnect`:**只改调用方会话自己的指针**,不影响其他会话
-- 池按 `configKey`(host:port:db:user)复用;引用计数归零 + 空闲超时后关闭
-- **缓存 key 加入 `configKey`**(顺手修掉上述既有 bug)
-- 会话首次连接时套用 `.env` 默认库;`onsessionclosed` 释放该会话的池引用
-
-**切 HTTP 的实际收益(此前低估了):** 当前 N 个 stdio 进程 = **最多 N 套独立连接池**同时打 Postgres/MySQL;合并为常驻服务后是**一套共享池**,连接数与握手开销大幅下降。
+> 历史记录:本节原描述数据库 MCP 切 HTTP 时的会话隔离设计(连接池共享 + 每会话指针)。
+> 该服务已于 2026-09-25 撤下,数据库访问一律走堡垒机 baolei MCP 的 `db_*`,细节见 git 历史。
 
 ---
 
@@ -171,7 +153,6 @@ userDataDir: process.env['USER_DATA_DIR'] ?? path.join(INSTALL_ROOT, 'storage/us
 |---|---|---|---|
 | 无头浏览器 | 3215 | `claudemcp-headless` | **切 HTTP 常驻** |
 | 有头浏览器 | 3213 | `claudemcp-browser` | **切 HTTP 常驻**(仓库既有 `ecosystem.config.cjs` 本就是这么设计的) |
-| 数据库 | 3214 | `claudemcp-database` | **切 HTTP 常驻**(共享连接池;前提是先做完 §3.6 会话隔离) |
 
 PM2 已安装(本机 7.0.1)。
 
@@ -217,8 +198,7 @@ PM2 已安装(本机 7.0.1)。
 | **P0** | Profile 路径修复(§3.5) | 极低,stdio 也受益,可独立上线 |
 | **P1** | 安全加固(§四):绑 127.0.0.1 + DNS rebinding + CORS + 可选 token | 低 |
 | **P2** | 浏览器会话模型重构(§3.1–3.4):ALS + 每会话 page + 标签工具收敛 + 日志下沉 | **中,本次核心** |
-| **P2.5** | 数据库会话隔离(§3.6):共享池 + 每会话指针 + 缓存 key 修复 | **中,数据安全相关** |
-| **P3** | PM2 部署(有头 3213 / 无头 3215 / 数据库 3214)+ 冒烟(stdio & HTTP 双跑)+ 客户端切换 | 中 |
+| **P3** | PM2 部署(有头 3213 / 无头 3215)+ 冒烟(stdio & HTTP 双跑)+ 客户端切换 | 中 |
 | **P4** | 观察一周 → 是否推广到团队(ankottipublic `mcp/servers.json` 需支持 http 型 + setup 时拉起服务) | — |
 
 ---
@@ -273,5 +253,4 @@ PM2 已安装(本机 7.0.1)。
 1. ~~有头浏览器是否切 HTTP~~ → **已定:一起切**(用户级自启即可保证窗口可见,收益比无头更大)
 2. ~~访问范围~~ → **已定:V1 只本机 127.0.0.1**;鉴权代码 V1 内置但默认不开(§8.1),跨机为终局
 3. ~~团队推广~~ → **已定:V1 先本机跑通**,团队推广为终局(§8.4),V1 不实现但不挡路
-4. ~~数据库 MCP 是否切 HTTP~~ → **已定:一起切**,但必须先完成 §3.6 会话隔离,否则会出跨窗口写错库的数据事故
-5. **开机自启**:现在就配用户级自启(`pm2 save` + 启动项),还是先手动 `pm2 start` 跑一阵观察?
+4. **开机自启**:现在就配用户级自启(`pm2 save` + 启动项),还是先手动 `pm2 start` 跑一阵观察?
