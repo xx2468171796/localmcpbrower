@@ -4,10 +4,10 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
-import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import type { Frame, Page, Route } from 'patchright';
 import { getBrowserManager } from './browser.js';
+import { PDF_DIR, SCREENSHOT_DIR } from './paths.js';
 import { cancelOpt, reportProgress, throwIfCancelled } from './context.js';
 import { SNAPSHOT_WALKER_FN, EGO_HELPER_SRC } from './injected.js';
 import {
@@ -67,16 +67,9 @@ import type {
   ScreenshotResult, ExecuteJsResult, ConsoleLogEntry, NetworkRequestEntry
 } from './types.js';
 
-/**
- * 服务安装根目录(dist/ 的上一级)。
- * 截图目录与 profile 一样必须相对**安装目录**解析而不是 process.cwd():
- * 常驻 HTTP 服务下 CWD 与调用方项目无关,按 CWD 落盘会让 storage/ 散落各处。
- * 需要落到别处时用 SCREENSHOT_DIR 覆盖。
- */
-const INSTALL_ROOT = path.resolve(fileURLToPath(import.meta.url), '../..');
-
 function ensureScreenshotDir(): string {
-  const dir = path.resolve(process.env['SCREENSHOT_DIR'] ?? path.join(INSTALL_ROOT, 'storage', 'screenshots'));
+  // 截图放数据目录(paths.ts:Windows 不放 C:,不随调用方项目的 CWD 散落)
+  const dir = SCREENSHOT_DIR;
   if (!fs.existsSync(dir)) { fs.mkdirSync(dir, { recursive: true }); }
   return dir;
 }
@@ -485,7 +478,8 @@ export async function pdfExport(input: unknown): Promise<ToolResult<{ path: stri
   try {
     const parsed = PdfExportSchema.safeParse(input);
     if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
-    const { path: pdfPath } = parsed.data;
+    // 相对路径放数据目录下的 pdf/(paths.ts),不落在服务进程的 CWD 里
+    const pdfPath = path.resolve(PDF_DIR, parsed.data.path);
     const page = await getBrowserManager().getPage();
     const dir = path.dirname(pdfPath);
     if (!fs.existsSync(dir)) { fs.mkdirSync(dir, { recursive: true }); }

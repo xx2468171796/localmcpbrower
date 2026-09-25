@@ -21,10 +21,10 @@
  */
 
 import { cleanDisk, killOrphanBrowsers } from './reclaim.js';
+import { SCREENSHOT_DIR, adoptLegacy, legacyOf, profileDir, useServiceTmp } from './paths.js';
 import { chromium, type BrowserContext, type Page, type Route } from 'patchright';
 import * as path from 'path';
 import * as fs from 'fs';
-import { fileURLToPath } from 'node:url';
 import type { ConsoleLogEntry, NetworkRequestEntry, BrowserConfig } from './types.js';
 import { EGO_HELPER_SRC } from './injected.js';
 import { MAIN_WORLD_SRC, DRAIN_SRC, buildHtmlInjector } from './inject.js';
@@ -47,13 +47,11 @@ const DEFAULT_SPACE = 'default';
  * 按 CWD 解析会导致每个项目目录各落一份 profile —— 登录态不共享、storage/ 散落各处。
  * 跨平台一律走 path 模块,不假设分隔符。
  */
-const INSTALL_ROOT = path.resolve(fileURLToPath(import.meta.url), '../..');
-const SCREENSHOT_DIR = path.resolve(process.env['SCREENSHOT_DIR'] ?? path.join(INSTALL_ROOT, 'storage', 'screenshots'));
-
 const DEFAULT_CONFIG: BrowserConfig = {
   // headless 默认开启；Mac 调试时设 HEADLESS=false
   headless: process.env['HEADLESS'] !== 'false',
-  userDataDir: process.env['USER_DATA_DIR'] ?? path.join(INSTALL_ROOT, 'storage', 'user_data'),
+  // 落在哪个盘 / 目录见 paths.ts(Windows 不放 C:,Linux 不放 /tmp)
+  userDataDir: profileDir(process.env['USER_DATA_DIR']),
   viewportWidth: parseInt(process.env['VIEWPORT_WIDTH'] ?? '1280', 10),
   viewportHeight: parseInt(process.env['VIEWPORT_HEIGHT'] ?? '800', 10),
   devtools: process.env['DEVTOOLS'] === 'true',
@@ -194,6 +192,8 @@ class BrowserManager {
   }
 
   private reaper: NodeJS.Timeout | null = null;
+  /** 本服务的临时目录(killOrphans 里设好);没设好就不清,绝不去清系统临时目录 */
+  private tmpDir: string | null = null;
   /** 服务启动时调用:每分钟回收空闲浏览器;启动时和之后每天清一次磁盘 */
   public startReaper(): void {
     if (this.reaper) return;
@@ -202,19 +202,45 @@ class BrowserManager {
     const clean = () => {
       try {
         const inUse = new Set([...this.spaces.values()].filter((s) => s.context || s.launching).map((s) => s.name));
-        cleanDisk({ userDataDir: path.resolve(this.config.userDataDir), screenshotDir: SCREENSHOT_DIR, inUse });
+        cleanDisk({ userDataDir: path.resolve(this.config.userDataDir), screenshotDir: SCREENSHOT_DIR, inUse, ...(this.tmpDir ? { tmpDir: this.tmpDir } : {}) });
       } catch { /* 下次再清 */ }
     };
     clean();
     setInterval(clean, 24 * 3600_000).unref();
   }
 
-  /** 启动浏览器之前调用:杀掉上次服务异常退出留下的孤儿浏览器(占着内存,还锁着 profile) */
+  /**
+   * 服务启动、开浏览器之前调用:
+   *   1. 杀掉上次服务异常退出留下的孤儿浏览器(占着内存,还锁着 profile);
+   *   2. profile 和工作区还在老位置(安装目录 storage/)的,搬到 paths.ts 选定的数据目录;
+   *   3. 本服务的临时文件改写到数据目录下自己的 tmp,并清掉上次留下的(这时本服务还没开浏览器,不会误删)。
+   */
   public async killOrphans(): Promise<number[]> {
-    return killOrphanBrowsers(path.resolve(this.config.userDataDir)).catch((e) => {
+    const target = path.resolve(this.config.userDataDir);
+    const old = legacyOf(target);
+    const kill = (dir: string) => killOrphanBrowsers(dir).catch((e) => {
       console.error(`[Reclaim] 扫描孤儿浏览器失败(不影响启动):${e instanceof Error ? e.message : String(e)}`);
-      return [];
+      return [] as number[];
     });
+    // 老位置上的孤儿也要先杀:它们锁着 profile,不杀搬不动
+    const killed = [...(await kill(target)), ...(old ? await kill(old) : [])];
+    const dir = adoptLegacy(target);
+    if (dir === target) adoptLegacy(`${target}-spaces`);
+    else {
+      // 没搬成:这次整套(profile + 工作区)继续用老位置
+      this.config.userDataDir = dir;
+      const sp = this.spaces.get(DEFAULT_SPACE);
+      if (sp && !sp.context && !sp.launching) sp.userDataDir = dir;
+    }
+    adoptLegacy(SCREENSHOT_DIR);
+    try {
+      const tmp = useServiceTmp(this.config.userDataDir);
+      this.tmpDir = tmp;
+      for (const name of fs.readdirSync(tmp)) fs.rmSync(path.join(tmp, name), { recursive: true, force: true });
+    } catch (e) {
+      console.error(`[Storage] 准备临时目录失败:${e instanceof Error ? e.message : String(e)}`);
+    }
+    return killed;
   }
 
   /** 新开一个工作区浏览器之前:已开的够数了,就关掉最久没用、且没有在途调用的那个 */

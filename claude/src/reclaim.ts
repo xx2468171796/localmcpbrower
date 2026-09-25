@@ -95,7 +95,9 @@ function lastTouched(dir: string): number {
  */
 export function cleanDisk(opts: {
   userDataDir: string; screenshotDir: string; inUse: Set<string>; spaceDays?: number; screenshotDays?: number;
-}): { spaces: string[]; screenshots: number } {
+  /** 本服务的临时目录(paths.useServiceTmp):2 天没动过的删掉(浏览器开着也不会用这么久没碰的临时文件) */
+  tmpDir?: string;
+}): { spaces: string[]; screenshots: number; tmp: number } {
   const now = Date.now();
   const spaceMs = (opts.spaceDays ?? Number(process.env['SPACE_KEEP_DAYS'] ?? 14)) * 86_400_000;
   const shotMs = (opts.screenshotDays ?? Number(process.env['SCREENSHOT_KEEP_DAYS'] ?? 7)) * 86_400_000;
@@ -114,10 +116,17 @@ export function cleanDisk(opts: {
       if (st.isFile() && now - st.mtimeMs > shotMs) { fs.rmSync(f, { force: true }); shots++; }
     } catch { /* 已删 */ }
   }
-  if (removed.length || shots) {
-    console.log(`[Reclaim] 清理磁盘:${removed.length ? `久未使用的工作区 ${removed.join('、')};` : ''}${shots ? `旧截图 ${shots} 张` : ''}`);
+  let tmp = 0;
+  for (const name of opts.tmpDir ? safeList(opts.tmpDir) : []) {
+    const f = path.join(opts.tmpDir!, name);
+    try {
+      if (now - fs.statSync(f).mtimeMs > 2 * 86_400_000) { fs.rmSync(f, { recursive: true, force: true }); tmp++; }
+    } catch { /* 正被占用,下次再删 */ }
   }
-  return { spaces: removed, screenshots: shots };
+  if (removed.length || shots || tmp) {
+    console.log(`[Reclaim] 清理磁盘:${removed.length ? `久未使用的工作区 ${removed.join('、')};` : ''}${shots ? `旧截图 ${shots} 张;` : ''}${tmp ? `旧临时文件 ${tmp} 个` : ''}`);
+  }
+  return { spaces: removed, screenshots: shots, tmp };
 }
 
 function safeList(dir: string): string[] {

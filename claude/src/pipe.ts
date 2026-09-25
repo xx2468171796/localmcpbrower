@@ -48,11 +48,11 @@
 
 import net from 'node:net';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { serveStdio, StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import type { McpServer } from '@modelcontextprotocol/server';
+import { SYSTEM_TMP } from './paths.js';
 
 /** 每条连接一个会话:工厂按 sessionId 造 McpServer,断开时回收该会话的页面 */
 export interface PipeLegOptions {
@@ -86,7 +86,7 @@ export interface PipeLegOptions {
  * - Windows:命名管道。**只能**放在 `\\.\pipe\` 下,这是 Win32 的硬性要求,
  *   不是可选目录。名字里带用户名,避免多用户登录同一台机时互相抢占。
  * - Linux/macOS:unix domain socket。放 `XDG_RUNTIME_DIR`(systemd 会随会话清理),
- *   没有就退到 `os.tmpdir()`。
+ *   没有就退到系统临时目录(服务改 TMPDIR 之前的那个,见 paths.SYSTEM_TMP)。
  *   ⚠️ macOS 的 unix socket 路径有 **104 字节**硬上限(Linux 108),
  *   所以名字必须短,不能把长路径拼进去。
  */
@@ -101,7 +101,8 @@ export function endpointPath(service: string): string {
   // listen 直接 ENOENT —— pipe 腿失败只打日志、HTTP 腿照常起,进程显示 online,
   // 表现成「重启机器后所有 stdio 客户端都连不上」。存在性判掉这一类。
   const xdg = process.env['XDG_RUNTIME_DIR'];
-  const base = xdg && fs.existsSync(xdg) ? xdg : os.tmpdir();
+  // 用改临时目录之前的系统临时目录:服务会把自己的 TMPDIR 指到数据目录(paths.ts),shim 不知道
+  const base = xdg && fs.existsSync(xdg) ? xdg : SYSTEM_TMP;
   return path.join(base, `localmcp-${process.getuid?.() ?? 0}-${service}.sock`);
 }
 

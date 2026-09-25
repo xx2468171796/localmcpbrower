@@ -109,7 +109,7 @@ export const GetPageContentSchema = z.object({
 });
 
 export const PdfExportSchema = z.object({
-  path: z.string().min(1, 'path 不能为空').describe('PDF 输出文件的保存路径'),
+  path: z.string().min(1, 'path 不能为空').describe('PDF 输出文件的保存路径;相对路径存到浏览器 MCP 数据目录的 pdf/ 下'),
   fullPage: z.boolean().default(true).describe('是否导出整页内容')
 });
 

@@ -47,6 +47,7 @@ module.exports = {
       // 与有头服务(3213)并存时两者必须各占一份 profile:
       // 两个 Chromium 共用同一个 user_data 时磁盘上的 Cookies 互相覆盖，登录态会静默丢失。
       // 无头这边沿用默认的 storage/user_data，与 stdio 模式一致，老登录态无需迁移。
+      // 实际落在数据目录下的同名目录(src/paths.ts:Windows 挑非系统盘,Linux 不进 /tmp),这里只定目录名
       USER_DATA_DIR: path.join(__dirname, 'storage', 'user_data'),
       HEADLESS: 'true',
       DEVTOOLS: 'false',

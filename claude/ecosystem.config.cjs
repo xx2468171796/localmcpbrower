@@ -38,6 +38,7 @@ module.exports = {
       // 实测两边写入的登录态都会丢。所以这里必须显式分开：有头独占 user_data_headed，
       // 无头沿用 user_data（与 stdio 默认值一致，老登录态不迁移）。
       // 代价：有头 / 无头是两份独立登录态，要共用就只跑其中一个。
+      // 实际落在数据目录下的同名目录(src/paths.ts:Windows 挑非系统盘,Linux 不进 /tmp),这里只定目录名
       USER_DATA_DIR: path.join(__dirname, 'storage', 'user_data_headed'),
       HEADLESS: 'false',
       DEVTOOLS: 'false'
