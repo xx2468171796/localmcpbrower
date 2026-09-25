@@ -113,8 +113,9 @@ async function detectRegistry() {
 function npmInstall(cwd, registry) {
   const args = registry ? ['install', `--registry=${registry}`] : ['install'];
   if (runSoft(NPM, args, cwd)) return;
-  if (!registry) {
-    log('  ⚠ 官方源安装失败,改用 npmmirror 镜像重试');
+  // 指定的源(通常是公司下载节点,由 ecosystem-mcp 的 setup-mcp / 升级脚本注入 NPM_REGISTRY)出问题:退到 npmmirror
+  if (registry !== MIRROR_REGISTRY) {
+    log(`  ⚠ ${registry ? '指定源' : '官方源'}安装失败,改用 npmmirror 镜像重试`);
     run(NPM, ['install', `--registry=${MIRROR_REGISTRY}`], cwd);
   } else {
     fail(`npm install 失败 (cwd: ${cwd})`);
@@ -135,6 +136,11 @@ function installChromium(preferMirror) {
   if (!ok && !preferMirror && mirrorEnv) {
     log('  ⚠ Chromium 官方源下载失败,改用 npmmirror 镜像重试');
     ok = runSoft(NPX, ['patchright', ...pwArgs], ROOT, mirrorEnv);
+  }
+  // 外面指定的下载地址(通常是公司下载节点)出问题:退到 npmmirror
+  if (!ok && process.env.PLAYWRIGHT_DOWNLOAD_HOST && process.env.PLAYWRIGHT_DOWNLOAD_HOST !== MIRROR_PW_HOST) {
+    log('  ⚠ 指定的 Chromium 下载地址失败,改用 npmmirror 镜像重试');
+    ok = runSoft(NPX, ['patchright', ...pwArgs], ROOT, { PLAYWRIGHT_DOWNLOAD_HOST: MIRROR_PW_HOST });
   }
   if (isLinux && !isRoot) {
     log('  ⚠ 未以 root 运行,已跳过系统库(--with-deps),避免卡在 sudo。');
