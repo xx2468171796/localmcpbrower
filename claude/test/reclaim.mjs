@@ -38,7 +38,8 @@ await bm.close();
 const orphanDir = path.join(tmp, 'orphan_data');
 const { chromium } = await import('patchright');
 const exe = chromium.executablePath();
-const launchArgs = JSON.stringify(['--headless=new', `--user-data-dir=${orphanDir}`, 'about:blank']);
+// --no-sandbox:Linux 上直接起 Chromium 不带它会起不来(服务本身也带)
+const launchArgs = JSON.stringify(['--headless=new', '--no-sandbox', `--user-data-dir=${orphanDir}`, 'about:blank']);
 execFileSync(process.execPath, ['-e', `require('child_process').spawn(${JSON.stringify(exe)}, ${launchArgs}, { detached: true, stdio: 'ignore' }).unref()`]);
 await new Promise((r) => setTimeout(r, 2500));
 const killed = await killOrphanBrowsers(orphanDir);
@@ -47,7 +48,7 @@ await new Promise((r) => setTimeout(r, 1000));
 const again = await killOrphanBrowsers(orphanDir);
 check('清理后不再有残留', again.length === 0);
 // 反例:父进程还活着的(别的窗口在用)不能动
-const live = spawn(exe, ['--headless=new', `--user-data-dir=${orphanDir}`, 'about:blank'], { stdio: 'ignore' });
+const live = spawn(exe, ['--headless=new', '--no-sandbox', `--user-data-dir=${orphanDir}`, 'about:blank'], { stdio: 'ignore' });
 await new Promise((r) => setTimeout(r, 2500));
 const wrong = await killOrphanBrowsers(orphanDir);
 check('父进程还活着的浏览器不动', wrong.length === 0 && live.exitCode === null);
