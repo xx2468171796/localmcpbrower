@@ -125,6 +125,20 @@ export function adoptLegacy(target: string): string {
 }
 
 /**
+ * 搬家后老位置的残留(当时删不掉:别的窗口里老式直连的浏览器还开着这个 profile):现在删得掉就删,
+ * 还被占着就留到下次(服务启动时和每日清理都会再试)。新位置不存在时不碰——那说明还没搬。
+ */
+export function removeLegacyLeftover(target: string): void {
+  if (!isUnder(target, DATA_ROOT) || path.resolve(DATA_ROOT) === path.resolve(LEGACY_ROOT)) return;
+  const legacy = path.join(LEGACY_ROOT, path.relative(DATA_ROOT, target));
+  if (!fs.existsSync(legacy) || !fs.existsSync(target)) return;
+  try {
+    fs.rmSync(legacy, { recursive: true, force: true });
+    console.error(`[Storage] 删掉了搬家后残留的老目录 ${legacy}`);
+  } catch { /* 还被占着,下次再删 */ }
+}
+
+/**
  * 这个服务的临时目录(按 profile 区分:有头、无头两个服务同时在跑,互不清对方的)。
  * 设进 TMPDIR / TEMP / TMP 后,Chromium 和 patchright(下载、临时 profile 等)都写到这里,不再写系统临时目录。
  */

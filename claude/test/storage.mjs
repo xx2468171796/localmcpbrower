@@ -53,5 +53,13 @@ fs.utimesSync(old, threeDaysAgo, threeDaysAgo);
 const r = cleanDisk({ userDataDir: path.join(data, 'user_data'), screenshotDir: path.join(data, 'screenshots'), inUse: new Set(), tmpDir: tmp });
 check('2 天前的临时文件被清理,新的留着', !fs.existsSync(old) && fs.existsSync(fresh), `清了 ${r.tmp} 个`);
 
+// 搬家后老位置残留(当时被别的窗口的老式浏览器占着没删掉):不占了就删;新位置的数据不动
+const { removeLegacyLeftover } = await import('../dist/paths.js');
+fs.mkdirSync(path.join(legacy, 'user_data', 'Default'), { recursive: true });
+fs.writeFileSync(path.join(legacy, 'user_data', 'Default', 'chrome_debug.log'), 'x');
+removeLegacyLeftover(path.join(data, 'user_data'));
+// (Chromium 跑过之后会把 Default/Cookies 挪进 Default/Network/,所以这里只看新位置的 profile 目录还在)
+check('搬家残留不占用了就删掉,新位置不动', !fs.existsSync(path.join(legacy, 'user_data')) && fs.existsSync(path.join(data, 'user_data', 'Default')));
+
 for (const d of [legacy, data]) fs.rmSync(d, { recursive: true, force: true });
 process.exit(results.every(Boolean) ? 0 : 1);

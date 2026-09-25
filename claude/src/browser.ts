@@ -21,7 +21,7 @@
  */
 
 import { cleanDisk, killOrphanBrowsers } from './reclaim.js';
-import { SCREENSHOT_DIR, adoptLegacy, legacyOf, profileDir, useServiceTmp } from './paths.js';
+import { SCREENSHOT_DIR, adoptLegacy, legacyOf, profileDir, removeLegacyLeftover, useServiceTmp } from './paths.js';
 import { chromium, type BrowserContext, type Page, type Route } from 'patchright';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -202,6 +202,7 @@ class BrowserManager {
     const clean = () => {
       try {
         const inUse = new Set([...this.spaces.values()].filter((s) => s.context || s.launching).map((s) => s.name));
+        this.removeLeftovers();
         cleanDisk({ userDataDir: path.resolve(this.config.userDataDir), screenshotDir: SCREENSHOT_DIR, inUse, ...(this.tmpDir ? { tmpDir: this.tmpDir } : {}) });
       } catch { /* 下次再清 */ }
     };
@@ -233,6 +234,7 @@ class BrowserManager {
       if (sp && !sp.context && !sp.launching) sp.userDataDir = dir;
     }
     adoptLegacy(SCREENSHOT_DIR);
+    this.removeLeftovers();
     try {
       const tmp = useServiceTmp(this.config.userDataDir);
       this.tmpDir = tmp;
@@ -241,6 +243,12 @@ class BrowserManager {
       console.error(`[Storage] 准备临时目录失败:${e instanceof Error ? e.message : String(e)}`);
     }
     return killed;
+  }
+
+  /** 搬家后老位置删不掉的残留(别的窗口的老式浏览器占着),能删了就删;启动时和每日清理各试一次 */
+  private removeLeftovers(): void {
+    const target = path.resolve(this.config.userDataDir);
+    for (const dir of [target, `${target}-spaces`, SCREENSHOT_DIR]) removeLegacyLeftover(dir);
   }
 
   /** 新开一个工作区浏览器之前:已开的够数了,就关掉最久没用、且没有在途调用的那个 */
