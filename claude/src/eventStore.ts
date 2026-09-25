@@ -3,7 +3,8 @@
  *
  * SDK examples 里的 InMemoryEventStore 永不淘汰事件，长期运行会无界吃内存；
  * 这里按 FIFO 设置总量上限。超过上限后最旧的事件被丢弃 —— 客户端若拿着
- * 已淘汰的 Last-Event-ID 重连，会从可用事件之后继续（丢失部分重放，但不泄漏内存）。
+ * 已淘汰的 Last-Event-ID 重连，重放明确失败（SDK 回 500 "Error replaying events"），
+ * 客户端知道这段断线期间的消息没了，而不是拿到一条「成功但当场关掉」的空流反复重连。
  */
 
 import { randomUUID } from 'node:crypto';
@@ -35,7 +36,9 @@ export class BoundedEventStore implements EventStore {
     { send }: { send: (eventId: EventId, message: JSONRPCMessage) => Promise<void> },
   ): Promise<StreamId> {
     const entry = this.events.get(lastEventId);
-    if (!entry) return '';
+    // 以前返回 ''：SDK 会建一条流、发现 '' 不对应任何请求又立刻关掉，客户端收到 200 + 空流，
+    // 按 EventSource 惯例拿着同一个过期 ID 反复重连，永远不知道出错（2026-09-25 审查发现）
+    if (!entry) throw new Error(`Last-Event-ID ${lastEventId} 已被淘汰（只保留最近 ${MAX_EVENTS} 条事件），无法重放`);
     let found = false;
     for (const [eventId, { streamId, message }] of this.events) {
       if (found && streamId === entry.streamId) {
