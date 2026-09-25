@@ -111,15 +111,21 @@ async function detectRegistry() {
 }
 
 function npmInstall(cwd, registry) {
-  const args = registry ? ['install', `--registry=${registry}`] : ['install'];
-  if (runSoft(NPM, args, cwd)) return;
+  // 有锁文件就 npm ci:按锁文件装、不改锁文件。npm install 会被不同 npm 版本改写锁文件(加 "peer": true 等),
+  // 留下「未提交改动」,之后的升级就拒绝覆盖。锁文件和 package.json 对不上 ci 会失败,再退回 install。
+  const verb = existsSync(join(cwd, 'package-lock.json')) ? 'ci' : 'install';
+  const attempt = (v, reg) => runSoft(NPM, reg ? [v, `--registry=${reg}`] : [v], cwd);
+  if (attempt(verb, registry)) return;
   // 指定的源(通常是公司下载节点,由 ecosystem-mcp 的 setup-mcp / 升级脚本注入 NPM_REGISTRY)出问题:退到 npmmirror
   if (registry !== MIRROR_REGISTRY) {
     log(`  ⚠ ${registry ? '指定源' : '官方源'}安装失败,改用 npmmirror 镜像重试`);
-    run(NPM, ['install', `--registry=${MIRROR_REGISTRY}`], cwd);
-  } else {
-    fail(`npm install 失败 (cwd: ${cwd})`);
+    if (attempt(verb, MIRROR_REGISTRY)) return;
   }
+  if (verb === 'ci') {
+    log('  ⚠ npm ci 失败(锁文件可能和 package.json 对不上),改用 npm install');
+    if (attempt('install', registry !== MIRROR_REGISTRY ? MIRROR_REGISTRY : registry)) return;
+  }
+  fail(`npm install 失败 (cwd: ${cwd})`);
 }
 
 // 安装 Patchright Chromium。关键:Linux 的 --with-deps 用包管理器装系统库(libnss3 等)需要 root;
