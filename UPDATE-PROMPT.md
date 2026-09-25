@@ -28,7 +28,7 @@
 
 ```bash
 # 没有就克隆
-git clone http://192.168.110.246:3001/xuan/localmcpbrower.git ~/code/localmcpbrower
+git clone http://192.168.110.246:3001/gonggong/localmcpbrower.git ~/code/localmcpbrower
 # 已有就更新
 cd ~/code/localmcpbrower && git pull --ff-only
 ```

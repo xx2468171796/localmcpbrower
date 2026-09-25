@@ -39,7 +39,7 @@ pm2 -v           # 没有则: npm i -g pm2
 ### 2.1 获取代码
 
 ```bash
-git clone http://192.168.110.246:3001/xuan/localmcpbrower.git ~/code/localmcpbrower
+git clone http://192.168.110.246:3001/gonggong/localmcpbrower.git ~/code/localmcpbrower
 cd ~/code/localmcpbrower/claude
 ```
 
