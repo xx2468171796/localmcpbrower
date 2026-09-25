@@ -254,7 +254,8 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
     ((...args: unknown[]) =>
       mcpCtx.run(
         { sessionId, progress: progressOf(args[1]), signal: (args[1] as { mcpReq?: { signal?: AbortSignal } } | undefined)?.mcpReq?.signal },
-        () => (fn as unknown as (...a: unknown[]) => unknown)(...args),
+        // track:记这个工作区最近一次使用、在途调用数 —— 空闲回收据此判断能不能关浏览器
+        () => getBrowserManager().track(async () => (fn as unknown as (...a: unknown[]) => unknown)(...args)),
       )) as unknown as T;
 
   // === Navigation ===
@@ -972,6 +973,8 @@ function installProcessGuards(): void {
  */
 async function runStdio(): Promise<void> {
   // 预热浏览器，失败不阻塞，首个请求会重试
+  await getBrowserManager().killOrphans();
+  getBrowserManager().startReaper();
   try {
     await getBrowserManager().getContext();
     console.error('[Server] Browser ready (stdio mode)');
@@ -1050,6 +1053,8 @@ async function runHttp(): Promise<void> {
   await killPortProcess(PORT);
   await new Promise(resolve => setTimeout(resolve, 1000));
   console.log('[Server] Starting browser...');
+  await getBrowserManager().killOrphans();
+  getBrowserManager().startReaper();
   try { await getBrowserManager().getContext(); console.log('[Server] Browser ready'); }
   catch (e) { console.error(`[Server] Browser start failed, will retry on first request: ${e instanceof Error ? e.message : String(e)}`); }
   const app = createApp();

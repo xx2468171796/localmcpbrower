@@ -9,4 +9,5 @@ const none = await tools.selectOption({ selector: '#s' });
 const empty = await tools.selectOption({ selector: '#s', value: '' });
 const now = await page.$eval('#s', (el) => el.value);
 console.log(`都不给 → ${none.success ? '误报成功' : '报错 ✓'}；value="" → ${empty.success && now === '' ? '选中空选项 ✓' : '没选中（当前 ' + JSON.stringify(now) + '）'}`);
+await getBrowserManager().close();
 process.exit(!none.success && now === '' ? 0 : 1);

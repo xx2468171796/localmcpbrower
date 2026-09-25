@@ -19,7 +19,8 @@
     "bench:extract": "node test/extract-bench.mjs",
     "bench:batch": "node test/batch-bench.mjs",
     "test:crash": "node test/crash-recovery.mjs",
-    "test:select": "node test/select-option.mjs"
+    "test:select": "node test/select-option.mjs",
+    "test:reclaim": "node test/reclaim.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.1.0",

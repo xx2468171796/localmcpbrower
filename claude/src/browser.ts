@@ -20,6 +20,7 @@
  * 行为与改造前的「单 space 单 page」完全一致。
  */
 
+import { cleanDisk, killOrphanBrowsers } from './reclaim.js';
 import { chromium, type BrowserContext, type Page, type Route } from 'patchright';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -47,6 +48,7 @@ const DEFAULT_SPACE = 'default';
  * 跨平台一律走 path 模块,不假设分隔符。
  */
 const INSTALL_ROOT = path.resolve(fileURLToPath(import.meta.url), '../..');
+const SCREENSHOT_DIR = path.resolve(process.env['SCREENSHOT_DIR'] ?? path.join(INSTALL_ROOT, 'storage', 'screenshots'));
 
 const DEFAULT_CONFIG: BrowserConfig = {
   // headless 默认开启；Mac 调试时设 HEADLESS=false
@@ -84,6 +86,10 @@ interface Space {
   chromiumPid: number | null;
   /** 正在启动中的 promise —— 用于合并并发启动请求,见 launchSpace */
   launching: Promise<BrowserContext> | null;
+  /** 最近一次有工具调用的时间;空闲回收按它算 */
+  lastUsed: number;
+  /** 正在执行的工具调用数;>0 时绝不回收(等人工登录这类长调用可能跑几十分钟) */
+  inflight: number;
 }
 
 class BrowserManager {
@@ -125,7 +131,98 @@ class BrowserManager {
       listenedPages: new WeakSet<Page>(),
       chromiumPid: null,
       launching: null,
+      lastUsed: Date.now(),
+      inflight: 0,
     };
+  }
+
+  // ============================================================
+  // 空闲回收:项目多、时间久以后,AI 开了工作区(space_new)却忘了 space_close,
+  // 每个工作区都是一整个浏览器进程,越积越多把内存顶爆。这里按空闲时间自动关掉浏览器,
+  // 并限制同时开着的工作区浏览器数量。登录态存在 profile 目录里,下次用到自动重开(约 1–2 秒)。
+  // ============================================================
+
+  /** 包住一次工具调用:记最近使用时间、在途计数(server.ts 的 wrap 调用) */
+  public async track<R>(fn: () => Promise<R>): Promise<R> {
+    const sp = this.spaceFor(currentSessionId());
+    sp.inflight++;
+    sp.lastUsed = Date.now();
+    try {
+      return await fn();
+    } finally {
+      sp.inflight--;
+      sp.lastUsed = Date.now();
+    }
+  }
+
+  /** 空闲多久关浏览器:其它工作区 10 分钟;默认工作区无头 30 分钟、有头 2 小时(人可能正看着)。0 = 不回收 */
+  private idleLimitMs(sp: Space): number {
+    const isDefault = sp.name === DEFAULT_SPACE;
+    const env = process.env[isDefault ? 'IDLE_CLOSE_MIN' : 'SPACE_IDLE_CLOSE_MIN'];
+    const min = env !== undefined && env !== '' ? Number(env) : isDefault ? (this.config.headless ? 30 : 120) : 10;
+    return Number.isFinite(min) && min > 0 ? min * 60_000 : Infinity;
+  }
+
+  /** 同时最多开着几个工作区浏览器(含默认),超出先关最久没用的空闲那个 */
+  private static readonly MAX_OPEN_SPACES = Math.max(1, Number(process.env['MAX_OPEN_SPACES'] ?? 4) || 4);
+
+  /** 关掉一个工作区的浏览器(不删工作区,会话留着,下次调用自动重开) */
+  private async shutSpaceBrowser(sp: Space, reason: string): Promise<void> {
+    const ctx = sp.context;
+    if (!ctx) return;
+    console.log(`[BrowserManager] space '${sp.name}' ${reason},关闭浏览器释放内存(登录态在 profile 里,下次用到自动重开)`);
+    sp.context = null;
+    sp.chromiumPid = null;
+    for (const st of sp.sessions.values()) {
+      st.pages = [];
+      st.activeIndex = 0;
+    }
+    try { await ctx.close(); } catch { /* 可能已经没了 */ }
+  }
+
+  /** 关掉所有空闲超时的工作区浏览器,返回关了哪些(定时器每分钟调一次) */
+  public async reapIdle(now = Date.now()): Promise<string[]> {
+    const closed: string[] = [];
+    for (const sp of [...this.spaces.values()]) {
+      if (!sp.context || sp.inflight > 0 || sp.launching) continue;
+      const idle = now - sp.lastUsed;
+      if (idle < this.idleLimitMs(sp)) continue;
+      await this.shutSpaceBrowser(sp, `空闲 ${Math.round(idle / 60_000)} 分钟`);
+      closed.push(sp.name);
+    }
+    return closed;
+  }
+
+  private reaper: NodeJS.Timeout | null = null;
+  /** 服务启动时调用:每分钟回收空闲浏览器;启动时和之后每天清一次磁盘 */
+  public startReaper(): void {
+    if (this.reaper) return;
+    this.reaper = setInterval(() => { void this.reapIdle().catch(() => { /* 下一轮再试 */ }); }, 60_000);
+    this.reaper.unref();
+    const clean = () => {
+      try {
+        const inUse = new Set([...this.spaces.values()].filter((s) => s.context || s.launching).map((s) => s.name));
+        cleanDisk({ userDataDir: path.resolve(this.config.userDataDir), screenshotDir: SCREENSHOT_DIR, inUse });
+      } catch { /* 下次再清 */ }
+    };
+    clean();
+    setInterval(clean, 24 * 3600_000).unref();
+  }
+
+  /** 启动浏览器之前调用:杀掉上次服务异常退出留下的孤儿浏览器(占着内存,还锁着 profile) */
+  public async killOrphans(): Promise<number[]> {
+    return killOrphanBrowsers(path.resolve(this.config.userDataDir)).catch((e) => {
+      console.error(`[Reclaim] 扫描孤儿浏览器失败(不影响启动):${e instanceof Error ? e.message : String(e)}`);
+      return [];
+    });
+  }
+
+  /** 新开一个工作区浏览器之前:已开的够数了,就关掉最久没用、且没有在途调用的那个 */
+  private async makeRoomFor(sp: Space): Promise<void> {
+    const open = [...this.spaces.values()].filter((s) => s !== sp && (s.context || s.launching));
+    if (open.length < BrowserManager.MAX_OPEN_SPACES) return;
+    const victim = open.filter((s) => s.context && s.inflight === 0 && !s.launching).sort((a, b) => a.lastUsed - b.lastUsed)[0];
+    if (victim) await this.shutSpaceBrowser(victim, `同时开着的工作区浏览器已达上限 ${BrowserManager.MAX_OPEN_SPACES} 个,它最久没用`);
   }
 
   private newSessionState(): SessionState {
@@ -228,9 +325,10 @@ class BrowserManager {
    * 因 profile 目录被锁而失败,所以用 in-flight promise 把并发请求合并成一次启动。
    */
   private async launchSpace(sp: Space): Promise<BrowserContext> {
+    sp.lastUsed = Date.now();
     if (sp.context) return sp.context;
     if (!sp.launching) {
-      sp.launching = this.doLaunchSpace(sp).finally(() => { sp.launching = null; });
+      sp.launching = this.makeRoomFor(sp).then(() => this.doLaunchSpace(sp)).finally(() => { sp.launching = null; });
     }
     return sp.launching;
   }

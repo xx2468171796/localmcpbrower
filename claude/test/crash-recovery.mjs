@@ -12,4 +12,5 @@ const p2 = await bm.getPage();
 const same = p1 === p2;
 const ok = await Promise.race([p2.goto('data:text/html,<title>ok</title>').then(() => p2.title()), new Promise((r) => setTimeout(() => r('hang'), 5000))]).catch((e) => 'err ' + e.message.split('\n')[0]);
 console.log(`崩溃页已关闭=${p1.isClosed()} 拿到的是同一张崩溃页=${same} 新页可用=${ok}`);
+await bm.close();   // 不关的话浏览器会一直留着(以前这里漏了)
 process.exit(same || ok !== 'ok' ? 1 : 0);

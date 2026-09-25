@@ -24,6 +24,8 @@ import net from 'node:net';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const service = process.argv[2] ?? 'headless';
 
@@ -59,24 +61,61 @@ function endpointCandidates(svc) {
     .filter((p) => (seen.has(p) ? false : (seen.add(p), true)));
 }
 
-const candidates = endpointCandidates(service);
 // 命名管道没有「文件存在」这一说,Windows 直接用第一条;
 // unix 挑真实存在的那条,都不存在时仍用第一条,好让报错信息指向服务端该建的位置。
-const endpoint =
-  process.platform === 'win32'
+// 每次连接前重新挑:服务刚被拉起时 socket 文件是后出现的。
+function pickEndpoint() {
+  const candidates = endpointCandidates(service);
+  return process.platform === 'win32'
     ? candidates[0]
     : (candidates.find((p) => { try { return fs.statSync(p).isSocket(); } catch { return false; } }) ?? candidates[0]);
-const sock = net.connect(endpoint);
+}
+
+function connectOnce(endpoint) {
+  return new Promise((resolve, reject) => {
+    const s = net.connect(endpoint);
+    s.once('connect', () => { s.removeAllListeners('error'); resolve(s); });
+    s.once('error', reject);
+  });
+}
+
+/**
+ * 连不上常驻服务时,自己把它拉起来再连(最多等 60 秒),而不是直接失败。
+ * 以前这里一失败,安装脚本就退回「每个窗口各起一套服务 + 一个浏览器」的直连模式,
+ * 窗口一多内存就被顶爆 —— 现在不管服务在不在,注册的永远是 shim,全机共用一个浏览器。
+ * 多个窗口同时拉起没关系:mcp.mjs start 发现服务已在跑会直接跳过。
+ */
+async function connect() {
+  try {
+    return await connectOnce(pickEndpoint());
+  } catch {
+    const mcp = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'mcp.mjs');
+    process.stderr.write(`[shim] 常驻服务没在跑,正在拉起:node mcp.mjs start ${service}\n`);
+    try {
+      spawn(process.execPath, [mcp, 'start', service], { cwd: path.dirname(mcp), detached: true, stdio: 'ignore', windowsHide: true }).unref();
+    } catch { /* 下面的重试会给出最终错误 */ }
+    let last;
+    for (const deadline = Date.now() + 60_000; Date.now() < deadline; ) {
+      await new Promise((r) => setTimeout(r, 1000));
+      try { return await connectOnce(pickEndpoint()); } catch (e) { last = e; }
+    }
+    // 走 stderr:stdout 是 JSON-RPC 数据流,写一个字节的杂物就会把客户端解析器搞崩
+    process.stderr.write(
+      `[shim] 连不上常驻服务 ${pickEndpoint()}(${last?.code ?? last?.message ?? '超时'}),自动拉起也没成功。\n` +
+      `[shim] 手动试:cd <ROOT>/claude && node mcp.mjs start ${service},再看 pm2 logs\n`
+    );
+    process.exit(1);
+  }
+}
+
+// 连上之前客户端发来的消息留在 stdin 缓冲里,连上后一并转发,不丢
+process.stdin.pause();
+const sock = await connect();
 
 // Nagle 会把小的 JSON-RPC 消息攒着,给交互式调用凭空加延迟
 sock.setNoDelay(true);
-
 sock.on('error', (e) => {
-  // 走 stderr:stdout 是 JSON-RPC 数据流,写一个字节的杂物就会把客户端解析器搞崩
-  process.stderr.write(
-    `[shim] 连不上常驻服务 ${endpoint}(${e.code ?? e.message})。\n` +
-    `[shim] 常驻服务没起来?试:cd <ROOT>/claude && node mcp.mjs start ${service}\n`
-  );
+  process.stderr.write(`[shim] 与常驻服务的连接出错:${e.code ?? e.message}\n`);
   process.exit(1);
 });
 
