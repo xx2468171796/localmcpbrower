@@ -54,9 +54,11 @@ export async function killOrphanBrowsers(userDataDir: string): Promise<number[]>
   const byPid = new Map(procs.map((p) => [p.pid, p]));
   const ours = (dir: string | null) => dir !== null && (dir === base || (dir + path.sep).startsWith(IS_WIN ? spaces.toLowerCase() : spaces));
   const orphans = procs.filter((p) => {
-    if (!/chrom/i.test(p.name) || /--type=/.test(p.cmd)) return false; // 只看浏览器主进程
+    // 只看浏览器主进程:子进程带 --type=;崩溃上报进程(chrome_crashpad_handler)也带 profile 参数但不带 --type,单独排除
+    if (!/chrom/i.test(p.name) || /--type=/.test(p.cmd) || /crashpad/i.test(p.name + ' ' + p.cmd.split(' ')[0])) return false;
     if (!ours(userDataDirOf(p.cmd))) return false;
     const parent = byPid.get(p.ppid);
+    if (parent && /chrom/i.test(parent.name)) return false; // 父进程是浏览器自己 → 它是某个浏览器的下属,不是根
     return !parent || !/node/i.test(parent.name);
   });
   for (const o of orphans) {
