@@ -225,7 +225,7 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   const wrap = <T extends ToolHandler>(fn: T): T =>
     ((...args: unknown[]) =>
       mcpCtx.run(
-        { sessionId, progress: progressOf(args[1]) },
+        { sessionId, progress: progressOf(args[1]), signal: (args[1] as { mcpReq?: { signal?: AbortSignal } } | undefined)?.mcpReq?.signal },
         () => (fn as unknown as (...a: unknown[]) => unknown)(...args),
       )) as unknown as T;
 

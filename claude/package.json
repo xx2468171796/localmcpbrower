@@ -15,18 +15,19 @@
     "pm2:logs": "pm2 logs claudemcp-browser",
     "test:smoke": "node test/smoke-browser.mjs headless",
     "test:smoke:headed": "node test/smoke-browser.mjs headed",
-    "test:smoke:db": "node test/smoke-database.mjs"
+    "test:smoke:db": "node test/smoke-database.mjs",
+    "test:cancel": "node test/cancel-probe.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/client": "^2.0.0",
-    "@modelcontextprotocol/core": "^2.0.0",
-    "@modelcontextprotocol/express": "^2.0.0",
-    "@modelcontextprotocol/node": "^2.0.0",
-    "@modelcontextprotocol/server": "^2.0.0",
+    "@modelcontextprotocol/client": "^2.1.0",
+    "@modelcontextprotocol/core": "^2.1.0",
+    "@modelcontextprotocol/express": "^2.0.1",
+    "@modelcontextprotocol/node": "^2.1.0",
+    "@modelcontextprotocol/server": "^2.1.0",
     "@mozilla/readability": "^0.6.0",
-    "defuddle": "^0.19.3",
+    "defuddle": "^0.19.4",
     "express": "^5.2.1",
-    "jsdom": "^30.0.1",
+    "jsdom": "30.0.1",
     "patchright": "^1.63.0",
     "turndown": "^7.2.4",
     "zod": "^4.6.5"
@@ -34,9 +35,9 @@
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/jsdom": "^30.0.0",
-    "@types/node": "^26.6.0",
+    "@types/node": "^26.6.2",
     "@types/turndown": "^5.0.6",
-    "tsx": "^4.23.13",
+    "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   },
   "engines": {

@@ -7,7 +7,7 @@ import * as fs from 'fs';
 import { fileURLToPath } from 'node:url';
 import type { Frame, Page, Route } from 'patchright';
 import { getBrowserManager } from './browser.js';
-import { reportProgress } from './context.js';
+import { cancelOpt, reportProgress, throwIfCancelled } from './context.js';
 import { SNAPSHOT_WALKER_FN, EGO_HELPER_SRC } from './injected.js';
 import {
   NavigateSchema, ClickSchema, TypeSchema, ScreenshotSchema,
@@ -50,7 +50,7 @@ export async function navigate(input: unknown): Promise<ToolResult<NavigateResul
     if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
     const { url } = parsed.data;
     const page = await getBrowserManager().getPage();
-    await page.goto(url, { waitUntil: 'commit', timeout: 30000 });
+    await page.goto(url, { ...cancelOpt(), waitUntil: 'commit', timeout: 30000 });
     // 'commit' 在文档 title 解析前就返回，需等 DOM 解析完成再读 title。
     // 慢页面用短超时兜底，避免 hang；超时后仍尝试用 document.title 兜底。
     await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => {});
@@ -585,7 +585,7 @@ export async function newTab(input: unknown): Promise<ToolResult<{ index: number
     // openTab 内部已把新标签页设为本会话的活跃页(在 goto 之前),
     // 这样即便跳转超时，后续操作仍作用于这个新标签页而非旧的。
     const { page, index } = await getBrowserManager().openTab();
-    if (url) await page.goto(url, { waitUntil: 'commit', timeout: 30000 });
+    if (url) await page.goto(url, { ...cancelOpt(), waitUntil: 'commit', timeout: 30000 });
     return { success: true, data: { index, url: page.url() } };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
@@ -815,8 +815,9 @@ export async function batchFetch(input: unknown): Promise<ToolResult<{ results: 
     let fetched = 0;
 
     for (const url of urls) {
+      throwIfCancelled();
       try {
-        await page.goto(url, { waitUntil: 'commit', timeout: 15000 });
+        await page.goto(url, { ...cancelOpt(), waitUntil: 'commit', timeout: 15000 });
         if (waitFor) {
           await page.waitForSelector(waitFor, { timeout: 8000, state: 'visible' }).catch(() => {});
         }
@@ -854,9 +855,10 @@ export async function crawlPages(input: unknown): Promise<ToolResult<{ items: Ar
     const allItems: Array<Record<string, string>> = [];
     let pageCount = 0;
 
-    await page.goto(startUrl, { waitUntil: 'commit', timeout: 15000 });
+    await page.goto(startUrl, { ...cancelOpt(), waitUntil: 'commit', timeout: 15000 });
 
     while (pageCount < maxPages) {
+      throwIfCancelled();
       pageCount++;
       // 提取当前页数据
       const fieldsJson = JSON.stringify(fields);
@@ -1043,7 +1045,7 @@ export async function extractArticle(input: unknown): Promise<ToolResult<{
     const { url } = parsed.data;
     const page = await getBrowserManager().getPage();
     if (url) {
-      await page.goto(url, { waitUntil: 'commit', timeout: 30000 });
+      await page.goto(url, { ...cancelOpt(), waitUntil: 'commit', timeout: 30000 });
       // commit 阶段 DOM 还没解析完，直接 content() 会拿到半成品页面
       await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
     }
@@ -1151,6 +1153,7 @@ export async function discoverUrls(input: unknown): Promise<ToolResult<{
 
       // 至多抓取 ~5 个 sitemap，支持 sitemap-index 下钻一层
       while (sitemapQueue.length > 0 && sitemapFetches < 5) {
+        throwIfCancelled();
         const sm = sitemapQueue.shift()!;
         sitemapFetches++;
         const xml = await fetchText(sm);
@@ -1171,7 +1174,7 @@ export async function discoverUrls(input: unknown): Promise<ToolResult<{
 
     // 当前页面的 <a href>
     try {
-      await page.goto(url, { waitUntil: 'commit', timeout: 8000 });
+      await page.goto(url, { ...cancelOpt(), waitUntil: 'commit', timeout: 8000 });
       await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {});
       const hrefs = await page.evaluate(`Array.from(document.querySelectorAll('a[href]')).map(function(a){ return a.href; })`) as string[];
       for (const h of hrefs) linkUrls.add(h);
@@ -1308,6 +1311,7 @@ export async function waitForHuman(input: unknown): Promise<ToolResult<{
     const POLL_MS = 700;   // 够快让人无感,又不至于把 CPU 打满
 
     while (Date.now() < deadline) {
+      throwIfCancelled();
       await new Promise(r => setTimeout(r, POLL_MS));
       // 每轮重取:人工登录常常跳到新标签页,盯着旧 page 会永远等不到
       const page = await bm.getPage().catch(() => null);

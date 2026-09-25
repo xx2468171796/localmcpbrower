@@ -10,7 +10,7 @@
 
 | 项 | 状态 |
 |---|---|
-| SDK | **纯 v2.0.0**,v1 零残留(源码 / lock / node_modules) |
+| SDK | **v2.1.0**(2026-09-25 升级),v1 零残留;2.1.0 带 Windows 下 stdio 进程随 stdin 关闭退出的修复(防僵尸进程) |
 | 协议(日常实际) | **`2025-11-25`** —— 客户端在 stdio 上不探测新协议 |
 | 协议(服务端能力) | 新旧双线都支持,客户端钉死 `2026-07-28` 也能连(实测) |
 | 传输 | pipe(named pipe / unix socket)+ HTTP 并存 |
@@ -72,6 +72,13 @@ node --input-type=module -e 'import * as s from "@modelcontextprotocol/server";
 | HTTP 腿是否保留 | **建议保留**:named pipe 只能本机用,跨机共享(`HOST` + `MCP_AUTH_TOKEN`)只有 HTTP 这一条路,而"跨机是既定终局"写在 server.ts 里 |
 
 ---
+
+### 1.4 2026-09-25 复查结论
+
+- **Tasks 仍阻塞**:SDK 2.1.0 的 server 包仍只有 `RELATED_TASK_META_KEY` / `isTaskAugmentedRequestParams`,没有 task 运行时。新增的只有 `SUBSCRIPTION_ID_META_KEY`(订阅开始落地的迹象),下次升级再查。
+- **取消已接上**:`ctx.mcpReq.signal` 进 `mcpCtx`;`batch_fetch` / `crawl_pages` / `discover_urls` / `wait_for_human` 每轮 `throwIfCancelled()`,各处 `page.goto` 带 `...cancelOpt()`(Playwright 1.62 起支持 signal)。验证:`npm run test:cancel`(1.5 秒取消,10 秒后页面仍停在第 1 个网址)。
+- **快照不换成 Playwright 原生**:1.63 的 `ariaSnapshot({ mode: 'ai' })` 在 Wikipedia 条目页 195KB / 1625 个 ref,我们的 `snapshot(interactiveOnly)` 约 25KB / 677 个 ref,自研实现省 token 约 8 倍;`aria-ref=eN` 定位器在 patchright 可用(68ms),留作以后备选。
+- **jsdom 钉 30.0.1**:30.1.1 起选择器超过 2048 字符直接抛错,defuddle 0.19.4 在长页面(如 Wikipedia)会生成超长选择器 → `extract_article` 退化到 Readability。defuddle 修复前别升 jsdom;升级后跑 `test:smoke` 并看 `logs/*-error-*.log` 里有没有 `Selector exceeds`。
 
 ## 2. 这次实际拿到了什么
 

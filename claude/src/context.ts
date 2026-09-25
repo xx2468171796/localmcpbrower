@@ -27,6 +27,8 @@ export interface McpCallContext {
   sessionId: string;
   /** 本次调用的进度上报器;客户端未请求进度时为 undefined */
   progress?: ProgressReporter;
+  /** 调用方取消本次请求时触发(MCP notifications/cancelled);长任务据此停下 */
+  signal?: AbortSignal;
 }
 
 /** stdio(以及任何未经 mcpCtx.run 包裹的内部调用)使用的固定会话 ID */
@@ -53,6 +55,20 @@ export function runInSession<R>(sessionId: string, fn: () => R): R {
  * **故意做成"发射后不管"**:进度通知失败绝不能让工具本身失败。
  * 客户端没请求进度、连接已断、通知被拒 —— 一律静默吞掉。
  */
+/** 当前调用的取消信号;没有就返回空对象,直接展开进 Playwright 选项:page.goto(url, { ...cancelOpt(), timeout }) */
+export function cancelOpt(): { signal?: AbortSignal } {
+  const signal = mcpCtx.getStore()?.signal;
+  return signal ? { signal } : {};
+}
+
+/**
+ * 调用方已取消就抛错。长循环(翻页 / 批量抓取 / 等人工)每轮开头调一次:
+ * 不然 AI 取消了请求,浏览器还会把几十页跑完,白占标签页、还会改动页面状态。
+ */
+export function throwIfCancelled(): void {
+  if (mcpCtx.getStore()?.signal?.aborted) throw new Error('调用方已取消本次请求');
+}
+
 export function reportProgress(progress: number, total?: number, message?: string): void {
   try {
     mcpCtx.getStore()?.progress?.(progress, total, message);
