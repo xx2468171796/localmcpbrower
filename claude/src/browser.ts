@@ -260,7 +260,8 @@ class BrowserManager {
       '--disable-breakpad',
       '--disable-hang-monitor',
       '--disable-ipc-flooding-protection',
-      '--js-flags=--max-old-space-size=512',
+      // 不再限制页面 JS 堆(原 --max-old-space-size=512):重的后台 / 开发版 SPA 超过 512MB 就崩页。
+      // 2026-09-25 实测:同一页分配约 800MB 对象,带限制崩页,不带正常。
       '--disable-background-networking',
       '--disable-background-timer-throttling',
       '--disable-backgrounding-occluded-windows',
@@ -283,7 +284,9 @@ class BrowserManager {
     // macOS 专属（Metal GPU 加速）
     const macArgs = ['--enable-gpu-rasterization', '--enable-zero-copy', '--use-mock-keychain'];
     // Linux 专属（无 GPU，服务器沙箱兼容）
-    const linuxArgs = ['--disable-gpu', '--disable-software-rasterizer', '--disable-setuid-sandbox', '--single-process', '--no-zygote'];
+    // 不用 --single-process:整个浏览器挤在一个进程里,任何一个标签页崩溃都会带走整个浏览器(所有标签页和登录态)。
+    // 2026-09-25 在 ubuntu-244 实测:带它时一页 chrome://crash 整个浏览器关闭;去掉后只坏那一页,其余照常。
+    const linuxArgs = ['--disable-gpu', '--disable-software-rasterizer', '--disable-setuid-sandbox', '--no-zygote'];
     // Windows 专属：无需额外启动参数，通用参数已足够
     const winArgs: string[] = [];
     const platformArgs = IS_LINUX ? linuxArgs : IS_MAC ? macArgs : IS_WIN ? winArgs : [];
@@ -507,6 +510,9 @@ class BrowserManager {
     page.on('crash', () => {
       console.error(`[BrowserManager] space '${sp.name}' 会话 ${sessionId} 页面崩溃，将在下次请求时重建`);
       drop();
+      // 崩溃的页并不会自己关:不关的话它还挂在 context 里,下次 openPage 的「接管无主页」会把这具尸体捡回来,
+      // 之后每个操作都失败。关掉它,下次请求就开一张干净的新页。
+      void page.close().catch(() => { /* 可能已随浏览器一起没了 */ });
     });
 
     // window.open 弹出的新页归属**开它的那个会话**,否则会变成孤儿页被别的会话认领

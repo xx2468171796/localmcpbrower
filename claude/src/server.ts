@@ -947,8 +947,8 @@ async function runStdio(): Promise<void> {
   try {
     await getBrowserManager().getContext();
     console.error('[Server] Browser ready (stdio mode)');
-  } catch {
-    console.error('[Server] Browser start failed, will retry on first request');
+  } catch (e) {
+    console.error(`[Server] Browser start failed, will retry on first request: ${e instanceof Error ? e.message : String(e)}`);
   }
   const server = createMcpServer();
   await server.connect(new StdioServerTransport());
@@ -1023,7 +1023,7 @@ async function runHttp(): Promise<void> {
   await new Promise(resolve => setTimeout(resolve, 1000));
   console.log('[Server] Starting browser...');
   try { await getBrowserManager().getContext(); console.log('[Server] Browser ready'); }
-  catch { console.error('[Server] Browser start failed, will retry on first request'); }
+  catch (e) { console.error(`[Server] Browser start failed, will retry on first request: ${e instanceof Error ? e.message : String(e)}`); }
   const app = createApp();
   console.log(`[Server] auth=${AUTH_TOKEN ? 'bearer' : 'off (loopback only)'} allowedHosts=${ALLOWED.hosts.join(',')}`);
   installHttpShutdown();
