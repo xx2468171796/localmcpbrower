@@ -59,7 +59,9 @@ export async function killOrphanBrowsers(userDataDir: string): Promise<number[]>
     if (!ours(userDataDirOf(p.cmd))) return false;
     const parent = byPid.get(p.ppid);
     if (parent && /chrom/i.test(parent.name)) return false; // 父进程是浏览器自己 → 它是某个浏览器的下属,不是根
-    return !parent || !/node/i.test(parent.name);
+    // 看完整命令行而不是进程名:Linux 上 Node 24 会把主线程改名成 MainThread,进程名里没有 node
+    // (debian12test 实测)。只看名字会把别的窗口正在用的浏览器当孤儿杀掉。
+    return !parent || !/node/i.test(`${parent.name} ${parent.cmd}`);
   });
   for (const o of orphans) {
     try {
