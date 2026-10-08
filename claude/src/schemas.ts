@@ -45,6 +45,11 @@ export const SpaceNameSchema = z.object({
   name: z.string().min(1, 'name 不能为空').describe('space 名称，仅字母/数字/下划线/连字符，长度 1-40')
 });
 
+/** space_new 比切换 / 关闭多一个可选的 headed */
+export const SpaceNewSchema = SpaceNameSchema.extend({
+  headed: z.boolean().optional().describe('这个工作区要不要可见窗口。一般不用给：默认无头，要人工时 wait_for_human 会自动弹窗')
+});
+
 export const ScrollSchema = z.object({
   x: z.number().optional().describe('水平滚动到的像素位置'),
   y: z.number().optional().describe('垂直滚动到的像素位置'),
@@ -269,5 +274,6 @@ export const WaitForHumanSchema = z.object({
   disappears: z.string().min(1).optional().describe('等这个 CSS 选择器消失'),
   urlChanges: z.boolean().default(false).describe('等网址发生变化'),
   timeoutSec: z.number().int().min(5).max(1800).default(180).describe('最长等待秒数'),
+  show: z.boolean().default(true).describe('当前是无头时先弹出可见窗口（同一份登录态，页面原样恢复），默认 true'),
 }).refine((v) => !!(v.appears || v.disappears || v.urlChanges),
   { message: 'appears / disappears / urlChanges 至少要给一个' });

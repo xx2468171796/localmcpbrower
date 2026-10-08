@@ -255,13 +255,14 @@ claude mcp add browser  -- node "C:\abs\path\claude\dist\server.js" --stdio
 
 ---
 
-## 六、浏览器 MCP 工具（46 个）
+## 六、浏览器 MCP 工具（47 个）
 
 导航、点击、填表、截图、多标签页管理、Cookie 操作、JS 执行、
 网络拦截、PDF 导出、元素提取、页面爬取、拖拽、键盘输入、
 无障碍快照（snapshot + ref 操作，**穿透 iframe**）、正文提取（extract_article，defuddle 转 Markdown）、
 站点 URL 发现（discover_urls）、`run_script`（`__ego` 一次跑完，多步交互压成单次往返）、
-Task Spaces（`space_new/switch/list/close`，并行隔离工作区，独立 cookie/登录态）。
+Task Spaces（`space_new/switch/list/close`，并行隔离工作区，独立 cookie/登录态）、
+人工接管（`wait_for_human` 无头时自动弹出可见窗口，`hide_window` 收回；2.3.0 起不用再单开有头服务）。
 完整清单与调用规则见仓库根目录 `USAGE.md`。
 
 ---

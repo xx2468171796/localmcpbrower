@@ -502,6 +502,7 @@ function cmdConfig() {
   log('    浏览器默认共享标签页(设 PIPE_ISOLATED=1 切隔离)。');
   log(`    claude mcp add browser        -s user -- node "${SHIM_PATH}" headless`);
   log(`    claude mcp add browser-headed -s user -- node "${SHIM_PATH}" headed`);
+  log('    (2.3.0 起只注册 browser 就够:要人工处理时 wait_for_human 自动弹出可见窗口;browser-headed 仅为兼容保留)');
   log('');
   log('    Codex 写 ~/.codex/config.toml —— Windows 路径必须用 TOML 字面量字符串(单引号),');
   log('    用双引号的话反斜杠会被当转义符,node.exe 路径直接废掉:');

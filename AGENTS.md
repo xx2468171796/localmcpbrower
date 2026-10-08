@@ -12,7 +12,7 @@
 | 部署时逐步执行 + 故障处置 | `AI-DEPLOY.md` |
 | 了解工具怎么配合用 | `USAGE.md` |
 | 了解协议/架构为什么这么设计、踩过哪些坑 | **`MCP-V2-PLAN.md`**(含七条踩坑清单) |
-| **验证本机装得对不对** | 跑 `npm run test:smoke`(浏览器 46 工具) |
+| **验证本机装得对不对** | 跑 `npm run test:smoke`(浏览器 47 工具) |
 | Codex 专属配置与排错 | `CODEX.md` |
 | ~~`HTTP-DESIGN.md`~~ | 描述的是**已被 pipe 取代**的旧会话架构,只作历史参考 |
 
@@ -23,7 +23,10 @@
 - 两个常驻服务(PM2):`claudemcp-headless` 3215 / `claudemcp-browser`(有头)3213
 - 客户端经 **`bin/shim.mjs`** 以 stdio 接入,shim 把字节转发到常驻进程的 named pipe / unix socket。
   **一条 socket = 一个客户端窗口**
-- 工具数:浏览器 **46**
+- 工具数:浏览器 **47**
+- **按需弹窗**(2.3.0):浏览器平时无头,`wait_for_human` / `request_human` 一进来把当前工作区原地换成有窗口的
+  (同一个 profile,cookie / 标签页网址带过去),`hide_window` 收回。有头服务 3213 暂时保留一个版本做兼容。
+  实现在 `BrowserManager.switchMode`,测试 `npm run test:headed`
 
 ## 会话语义(容易搞错,先看清)
 

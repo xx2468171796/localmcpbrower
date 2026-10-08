@@ -20,7 +20,7 @@ import {
   ExtractLinksSchema, ExtractDataSchema, BatchFetchSchema,
   CrawlPagesSchema, WaitAndExtractSchema, SetBlockRulesSchema,
   SnapshotSchema, ExtractArticleSchema, DiscoverUrlsSchema,
-  RunScriptSchema, SpaceNameSchema, WaitForHumanSchema
+  RunScriptSchema, SpaceNameSchema, SpaceNewSchema, WaitForHumanSchema
 } from './schemas.js';
 import { Readability } from '@mozilla/readability';
 import { Defuddle } from 'defuddle/node';
@@ -1279,7 +1279,7 @@ export async function runScript(input: unknown): Promise<ToolResult<{ result: un
 
 /** 列出所有 space 及状态(当前活跃 / 是否存活 / 当前 URL) */
 export async function spaceList(): Promise<ToolResult<{
-  active: string; spaces: { name: string; active: boolean; alive: boolean; url: string | null }[];
+  active: string; spaces: { name: string; active: boolean; alive: boolean; headed: boolean; url: string | null }[];
 }>> {
   try {
     const bm = getBrowserManager();
@@ -1290,11 +1290,11 @@ export async function spaceList(): Promise<ToolResult<{
 }
 
 /** 新建并切换到一个隔离 space(独立 userDataDir → 独立 cookie/登录态) */
-export async function spaceNew(input: unknown): Promise<ToolResult<{ name: string; created: boolean; active: string }>> {
+export async function spaceNew(input: unknown): Promise<ToolResult<{ name: string; created: boolean; headed: boolean; reason?: string; active: string }>> {
   try {
-    const parsed = SpaceNameSchema.safeParse(input);
+    const parsed = SpaceNewSchema.safeParse(input);
     if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
-    const res = await getBrowserManager().createSpace(parsed.data.name);
+    const res = await getBrowserManager().createSpace(parsed.data.name, parsed.data.headed);
     return { success: true, data: { ...res, active: getBrowserManager().getActiveSpace() } };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
@@ -1326,6 +1326,19 @@ export async function spaceClose(input: unknown): Promise<ToolResult<{ closed: b
 }
 
 /**
+ * 收起可见窗口:当前工作区换回无头(登录态、标签页网址原样带过去)。
+ * 人工处理完后调;不调也行,临时弹出的窗口空闲 10 分钟会被收掉。
+ */
+export async function hideWindow(): Promise<ToolResult<{ headed: boolean; switched: boolean; restored: string[]; reason?: string }>> {
+  try {
+    const r = await getBrowserManager().ensureHeadless();
+    return { success: true, data: r };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
  * 等人工在可见窗口里处理完(扫码登录 / 验证码 / 风控确认)。
  *
  * 为什么不用 elicitation:实测在 bypassPermissions 权限模式下,服务端发起的
@@ -1336,16 +1349,23 @@ export async function spaceClose(input: unknown): Promise<ToolResult<{ closed: b
  *
  * 轮询而不是用 waitForSelector 的原因:要同时支持"出现/消失/网址变化"三种判据,
  * 且**人可能中途换标签页**(登录常开新窗口),所以每轮都重新取当前活跃页。
+ *
+ * 当前是无头时(show 默认 true)先把工作区换成有窗口的 —— 以前无头下调本工具,
+ * 人被告知去一个根本不存在的窗口里操作,只能干等到超时。换形态见 BrowserManager.ensureHeaded。
+ * 起始网址在换完之后取,所以 urlChanges 比的是恢复后的页面。
  */
 export async function waitForHuman(input: unknown): Promise<ToolResult<{
   reason: string; elapsedSec: number; url: string; title: string;
+  headed: boolean; switchedToHeaded: boolean; showNote?: string;
 }>> {
   try {
     const parsed = WaitForHumanSchema.safeParse(input);
     if (!parsed.success) return { success: false, error: `参数验证失败: ${parsed.error.message}` };
-    const { appears, disappears, urlChanges, timeoutSec } = parsed.data;
+    const { appears, disappears, urlChanges, timeoutSec, show } = parsed.data;
 
     const bm = getBrowserManager();
+    const mode = await showForHuman(show);
+    const extra = { headed: mode.headed, switchedToHeaded: mode.switched, ...(mode.reason ? { showNote: mode.reason } : {}) };
     const startUrl = await bm.getPage().then(p => p.url()).catch(() => '');
     const deadline = Date.now() + timeoutSec * 1000;
     const POLL_MS = 700;   // 够快让人无感,又不至于把 CPU 打满
@@ -1361,19 +1381,19 @@ export async function waitForHuman(input: unknown): Promise<ToolResult<{
       if (urlChanges && url && url !== startUrl) {
         return { success: true, data: { reason: `网址已变化:${startUrl} → ${url}`,
           elapsedSec: Math.round((timeoutSec * 1000 - (deadline - Date.now())) / 1000),
-          url, title: await page.title().catch(() => '') } };
+          url, title: await page.title().catch(() => ''), ...extra } };
       }
       if (appears) {
         const hit = await page.$(appears).then(el => !!el).catch(() => false);
         if (hit) return { success: true, data: { reason: `元素已出现:${appears}`,
           elapsedSec: Math.round((timeoutSec * 1000 - (deadline - Date.now())) / 1000),
-          url, title: await page.title().catch(() => '') } };
+          url, title: await page.title().catch(() => ''), ...extra } };
       }
       if (disappears) {
         const gone = await page.$(disappears).then(el => !el).catch(() => false);
         if (gone) return { success: true, data: { reason: `元素已消失:${disappears}`,
           elapsedSec: Math.round((timeoutSec * 1000 - (deadline - Date.now())) / 1000),
-          url, title: await page.title().catch(() => '') } };
+          url, title: await page.title().catch(() => ''), ...extra } };
       }
     }
 
@@ -1381,9 +1401,22 @@ export async function waitForHuman(input: unknown): Promise<ToolResult<{
     const url = page && !page.isClosed() ? page.url() : '';
     // 超时是**正常结局**之一(人没来得及处理),如实返回而不是抛异常 ——
     // 调用方据此决定是再等一轮还是放弃
+    const shown = mode.headed ? (mode.switched ? '已弹出可见窗口,' : '') : `没有可见窗口(${mode.reason ?? '当前是无头'}),`;
     return { success: false,
-      error: `等待 ${timeoutSec}s 后人工操作仍未完成(当前网址:${url || '未知'})。可加大 timeoutSec 再等,或确认判定条件是否写对。` };
+      error: `等待 ${timeoutSec}s 后人工操作仍未完成(${shown}当前网址:${url || '未知'})。可加大 timeoutSec 再等,或确认判定条件是否写对。` };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+/**
+ * 要人工之前把窗口亮出来(wait_for_human / request_human 共用)。
+ * show=false 只报告现状不换。换不成(Linux 没图形界面 / 有窗口的浏览器起不来)不算失败,
+ * 结果里 headed=false + reason 如实告诉 AI;别的调用正占着浏览器时 ensureHeaded 抛错,由调用方转成失败。
+ */
+export async function showForHuman(show: boolean): Promise<{ headed: boolean; switched: boolean; reason?: string }> {
+  const bm = getBrowserManager();
+  if (!show) return { headed: bm.isHeaded(), switched: false };
+  const r = await bm.ensureHeaded();
+  return { headed: r.headed, switched: r.switched, ...(r.reason ? { reason: r.reason } : {}) };
 }

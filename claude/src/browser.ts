@@ -20,9 +20,10 @@
  * 行为与改造前的「单 space 单 page」完全一致。
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { cleanDisk, killOrphanBrowsers } from './reclaim.js';
 import { SCREENSHOT_DIR, adoptLegacy, legacyOf, profileDir, removeLegacyLeftover, useServiceTmp } from './paths.js';
-import { chromium, type BrowserContext, type Page, type Route } from 'patchright';
+import { chromium, type BrowserContext, type Cookie, type Page, type Route } from 'patchright';
 import * as path from 'path';
 import * as fs from 'fs';
 import type { ConsoleLogEntry, NetworkRequestEntry, BrowserConfig } from './types.js';
@@ -40,6 +41,22 @@ const IS_WIN = process.platform === 'win32';
 const CHROME_VERSION = process.env['UA_CHROME_VERSION'] ?? '148.0.0.0';
 
 const DEFAULT_SPACE = 'default';
+
+/**
+ * 这台机能不能弹出可见窗口;不能就返回原因(给人看的中文),能就返回 null。
+ * 只有 Linux 能可靠判断(没有 DISPLAY / WAYLAND_DISPLAY 就没有图形会话)。
+ * Windows / macOS 恒有显示服务;但服务若被装成 Windows 系统服务(Session 0),窗口照样看不见 ——
+ * 那属于装错了(README 里禁止),这里查不出来。
+ */
+function noDisplayReason(): string | null {
+  if (IS_LINUX && !process.env['DISPLAY'] && !process.env['WAYLAND_DISPLAY']) {
+    return '这台 Linux 没有图形界面(未检测到 DISPLAY / WAYLAND_DISPLAY),弹不出可见窗口;需要人工处理请配 Xvfb + VNC 或换桌面机';
+  }
+  return null;
+}
+
+/** 换形态后重开网址的超时;页面慢也不能把等人工的调用卡死 */
+const RESTORE_NAV_TIMEOUT_MS = 30_000;
 
 /**
  * 服务安装根目录(dist/ 的上一级)。
@@ -88,6 +105,33 @@ interface Space {
   lastUsed: number;
   /** 正在执行的工具调用数;>0 时绝不回收(等人工登录这类长调用可能跑几十分钟) */
   inflight: number;
+  /**
+   * 这个工作区的浏览器**现在**是不是有窗口的。
+   * 以前有头 / 无头是整个服务进程一个开关(HEADLESS),桌面机只好跑两个服务、注册两个 MCP,
+   * AI 分不清该用哪个。现在挂在工作区上:平时无头,要人过验证码 / 扫码时 ensureHeaded 原地换成有窗口的。
+   */
+  headed: boolean;
+  /** 服务配置给的默认形态(HEADLESS);空闲回收、人手动关窗之后回到它 */
+  baseHeaded: boolean;
+}
+
+/** ensureHeaded / ensureHeadless 的结果 */
+export interface ModeSwitchResult {
+  /** 切换后(或本来就)是不是有窗口 */
+  headed: boolean;
+  /** 这一次调用是否真的换了形态(本来就是目标形态时为 false) */
+  switched: boolean;
+  /** 换形态后重新打开的网址(按会话、按标签页顺序) */
+  restored: string[];
+  /** 没换成 / 有部分没恢复时的原因(给人看的中文) */
+  reason?: string;
+}
+
+/** 换形态前记下的一个会话的标签页,换完按原顺序重开 */
+interface TabMemo {
+  sessionId: string;
+  urls: string[];
+  activeIndex: number;
 }
 
 class BrowserManager {
@@ -107,6 +151,12 @@ class BrowserManager {
   private retired = new Set<string>();
   /** 墓碑集合自身也要有界,超限按插入序淘汰最旧的(Set 保持插入序) */
   private static readonly RETIRED_MAX = 1000;
+  /**
+   * 当前这次工具调用落在哪个工作区(track 里设)。
+   * ensureHeaded 要判断「除了我自己,这个工作区还有没有别的调用在跑」:
+   * inflight 里本来就算着调用方自己,靠它把自己那 1 次减掉。
+   */
+  private callSpace = new AsyncLocalStorage<Space>();
 
   private constructor(config: BrowserConfig) {
     this.config = config;
@@ -131,6 +181,8 @@ class BrowserManager {
       launching: null,
       lastUsed: Date.now(),
       inflight: 0,
+      headed: !this.config.headless,
+      baseHeaded: !this.config.headless,
     };
   }
 
@@ -146,29 +198,39 @@ class BrowserManager {
     sp.inflight++;
     sp.lastUsed = Date.now();
     try {
-      return await fn();
+      return await this.callSpace.run(sp, fn);
     } finally {
       sp.inflight--;
       sp.lastUsed = Date.now();
     }
   }
 
-  /** 空闲多久关浏览器:其它工作区 10 分钟;默认工作区无头 30 分钟、有头 2 小时(人可能正看着)。0 = 不回收 */
+  /**
+   * 空闲多久关浏览器:其它工作区 10 分钟;默认工作区无头 30 分钟、有头 2 小时(人可能正看着)。0 = 不回收。
+   * 例外:平时无头、临时为人工弹出来的窗口(wait_for_human 等)空闲 10 分钟就收掉(HEADED_IDLE_CLOSE_MIN),
+   * 下次用到按默认的无头重开 —— 人处理完、AI 又忘了 hide_window 时,窗口不会在桌面上挂两个小时。
+   */
   private idleLimitMs(sp: Space): number {
     const isDefault = sp.name === DEFAULT_SPACE;
-    const env = process.env[isDefault ? 'IDLE_CLOSE_MIN' : 'SPACE_IDLE_CLOSE_MIN'];
-    const min = env !== undefined && env !== '' ? Number(env) : isDefault ? (this.config.headless ? 30 : 120) : 10;
+    const onDemand = sp.headed && !sp.baseHeaded;
+    const env = process.env[onDemand ? 'HEADED_IDLE_CLOSE_MIN' : isDefault ? 'IDLE_CLOSE_MIN' : 'SPACE_IDLE_CLOSE_MIN'];
+    const min = env !== undefined && env !== '' ? Number(env) : onDemand ? 10 : isDefault ? (sp.headed ? 120 : 30) : 10;
     return Number.isFinite(min) && min > 0 ? min * 60_000 : Infinity;
   }
 
   /** 同时最多开着几个工作区浏览器(含默认),超出先关最久没用的空闲那个 */
   private static readonly MAX_OPEN_SPACES = Math.max(1, Number(process.env['MAX_OPEN_SPACES'] ?? 4) || 4);
 
-  /** 关掉一个工作区的浏览器(不删工作区,会话留着,下次调用自动重开) */
-  private async shutSpaceBrowser(sp: Space, reason: string): Promise<void> {
+  /**
+   * 关掉一个工作区的浏览器(不删工作区,会话留着,下次调用自动重开)。
+   * keepMode=false(默认,空闲回收 / 腾位置)时形态回到服务默认:临时弹出的窗口不会在下次重开时又冒出来。
+   * 换形态(switchMode)自己管 headed,传 keepMode=true。
+   */
+  private async shutSpaceBrowser(sp: Space, reason: string, keepMode = false): Promise<void> {
     const ctx = sp.context;
+    if (!keepMode) sp.headed = sp.baseHeaded;
     if (!ctx) return;
-    console.log(`[BrowserManager] space '${sp.name}' ${reason},关闭浏览器释放内存(登录态在 profile 里,下次用到自动重开)`);
+    console.log(`[BrowserManager] space '${sp.name}' ${reason},关闭浏览器(登录态在 profile 里,下次用到自动重开)`);
     sp.context = null;
     sp.chromiumPid = null;
     for (const st of sp.sessions.values()) {
@@ -376,10 +438,12 @@ class BrowserManager {
     // 无显示环境自动降级为无头并告警,而不是启动失败(设计文档 §8.3)。
     // Linux 服务器上 HEADLESS=false 会因为找不到 X11/Wayland 直接 launch 失败,
     // 常驻服务下这等于整个服务起不来。Windows/macOS 恒有显示服务,不受影响。
-    let headless = this.config.headless;
-    if (!headless && IS_LINUX && !process.env['DISPLAY'] && !process.env['WAYLAND_DISPLAY']) {
-      console.warn('[BrowserManager] 未检测到 DISPLAY/WAYLAND_DISPLAY,HEADLESS=false 自动降级为无头模式(需要窗口请配 Xvfb)');
+    // 有没有窗口按工作区自己的形态(sp.headed),不再是整个服务一个开关
+    let headless = !sp.headed;
+    if (!headless && noDisplayReason()) {
+      console.warn(`[BrowserManager] ${noDisplayReason()},space '${sp.name}' 自动降级为无头模式`);
       headless = true;
+      sp.headed = false;   // 如实记成无头:space_list / ensureHeaded 不能把降级后的浏览器报成有窗口
     }
 
     // 通用参数（macOS + Linux）
@@ -504,10 +568,12 @@ class BrowserManager {
 
     // 浏览器被外部关掉(用户点 X / 崩溃)时把 space 打回未启动态,
     // 下次请求自动重建;各会话的日志缓冲保留,只清失效的页面引用。
+    // 人把临时弹出的窗口关了 = 处理完了,下次按服务默认形态(通常是无头)重开,不再弹窗。
     context.on('close', () => {
       if (sp.context !== context) return;
       console.log(`[BrowserManager] space '${sp.name}' 浏览器上下文已关闭,将在下次请求时重建`);
       sp.context = null;
+      sp.headed = sp.baseHeaded;
       sp.chromiumPid = null;
       for (const st of sp.sessions.values()) {
         st.pages = [];
@@ -517,6 +583,132 @@ class BrowserManager {
 
     sp.context = context;
     return context;
+  }
+
+  // ============================================================
+  // 按需弹窗:平时无头,要人工处理时同一个工作区原地换成有窗口的,处理完再换回去。
+  //
+  // 换形态 = 关掉这个工作区的浏览器、用**同一个 userDataDir** 按新形态重开,
+  // 所以 profile 里的登录态 / localStorage 自然带过去;会话 cookie(没有过期时间、不落盘的那种)
+  // 关浏览器会丢,先取出来、重开后补回去。各会话的标签页记下网址,重开后按原顺序打开、焦点不变。
+  // 带不过去的:sessionStorage、表单里没提交的输入、页面内存里的 JS 状态 —— 所以要在
+  // **把页面导航到需要人工那一步之后、开始填之前**弹窗(wait_for_human 一进来就弹正是这个时机)。
+  // ============================================================
+
+  /** 当前会话所在工作区换成有窗口的(已经是就什么都不做) */
+  public async ensureHeaded(): Promise<ModeSwitchResult> {
+    return this.switchMode(this.spaceFor(currentSessionId()), true);
+  }
+
+  /** 当前会话所在工作区换回无头(已经是就什么都不做);人工处理完收窗口用 */
+  public async ensureHeadless(): Promise<ModeSwitchResult> {
+    return this.switchMode(this.spaceFor(currentSessionId()), false);
+  }
+
+  private async switchMode(sp: Space, headed: boolean): Promise<ModeSwitchResult> {
+    // 正在启动 / 正在被别的调用换形态:等它落定再判断,不并发重开同一个 profile(会抢 SingletonLock)
+    while (sp.launching) await sp.launching.catch(() => { /* 启动失败也往下走,由下面重开 */ });
+    if (sp.headed === headed) return { headed, switched: false, restored: [] };
+    if (headed) {
+      const why = noDisplayReason();
+      if (why) return { headed: false, switched: false, restored: [], reason: why };
+    }
+    // 还没开浏览器(刚启动 / 被空闲回收了):只改形态,下次用到按新形态开,不用关什么
+    if (!sp.context) {
+      sp.headed = headed;
+      return { headed, switched: true, restored: [] };
+    }
+    // 别的调用正在用这个浏览器(另一个窗口在跑 navigate / 批量抓取…):关掉它等于把别人的活掐断。
+    // 宁可明确拒绝,让 AI 等那边跑完再来。inflight 里含调用方自己这一次,先减掉。
+    const self = this.callSpace.getStore() === sp ? 1 : 0;
+    const others = sp.inflight - self;
+    if (others > 0) {
+      throw new Error(
+        `工作区 '${sp.name}' 还有 ${others} 个别的调用正在用浏览器,现在${headed ? '弹出窗口' : '收起窗口'}会打断它们。`
+        + '等那些调用结束后再试;或用 space_new 开一个单独的工作区处理需要人工的页面。');
+    }
+    // 整个换形态过程挂在 launching 上:这期间进来的 getPage / launchSpace 都等它,
+    // 不会有人趁浏览器关着另起一个,也不会被空闲回收、makeRoomFor 挑中
+    const run = this.doSwitchMode(sp, headed);
+    const launching = run.then(() => {
+      if (!sp.context) throw new Error(`space '${sp.name}' 换形态后浏览器没起来`);
+      return sp.context;
+    }).finally(() => { if (sp.launching === launching) sp.launching = null; });
+    launching.catch(() => { /* 错误由 run 交给调用方;这里只防未处理拒绝 */ });
+    sp.launching = launching;
+    return run;
+  }
+
+  private async doSwitchMode(sp: Space, headed: boolean): Promise<ModeSwitchResult> {
+    const old = sp.context!;
+    // 1. 记下每个会话的标签页和焦点
+    const memos: TabMemo[] = [];
+    for (const [sessionId, st] of sp.sessions) {
+      this.pruneClosed(st);
+      const urls = st.pages.filter((p) => !p.isClosed()).map((p) => p.url());
+      if (urls.length) memos.push({ sessionId, urls, activeIndex: st.activeIndex });
+    }
+    // 2. 会话 cookie 不落盘,关浏览器就没了 —— 先取出来(持久 cookie 也一并取,补回去无害)
+    let cookies: Cookie[] = [];
+    try { cookies = await old.cookies(); } catch { /* 取不到就只靠 profile */ }
+
+    // 3. 关掉、按新形态重开(同一个 userDataDir)
+    await this.shutSpaceBrowser(sp, headed ? '要人工处理,换成有窗口的' : '人工处理完,收起窗口换回无头', true);
+    sp.headed = headed;
+    let reason: string | undefined;
+    try {
+      await this.relaunch(sp);
+    } catch (e) {
+      // 有窗口的起不来(例如完整版 Chromium 没装):退回无头,别让工作区直接没了浏览器
+      if (!headed) throw e;
+      const msg = e instanceof Error ? (e.message.split('\n')[0] ?? e.message) : String(e);
+      reason = `有窗口的浏览器启动失败,已退回无头:${msg}`;
+      console.error(`[BrowserManager] space '${sp.name}' ${reason}`);
+      sp.headed = false;
+      await this.relaunch(sp);
+    }
+    const ctx = sp.context!;
+    if (cookies.length) {
+      try { await ctx.addCookies(cookies); } catch (e) {
+        console.error(`[BrowserManager] space '${sp.name}' 补回 cookie 失败:${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+
+    // 4. 各会话按原顺序重开标签页、恢复焦点
+    const restored: string[] = [];
+    const failed: string[] = [];
+    let adopt = true;   // 第一张页接管 launchPersistentContext 自带的空白页,不多留一个游离标签
+    for (const m of memos) {
+      const st = sp.sessions.get(m.sessionId);
+      if (!st) continue;   // 换形态期间这个会话已经下线
+      for (const url of m.urls) {
+        const page = await this.openPage(sp, m.sessionId, st, adopt);
+        adopt = false;
+        if (!url || url === 'about:blank') continue;
+        try {
+          await page.goto(url, { waitUntil: 'domcontentloaded', timeout: RESTORE_NAV_TIMEOUT_MS });
+          restored.push(url);
+        } catch {
+          failed.push(url);
+        }
+      }
+      st.activeIndex = Math.min(m.activeIndex, Math.max(0, st.pages.length - 1));
+    }
+    if (failed.length) {
+      const note = `有 ${failed.length} 个标签页没能重新打开:${failed.join(' , ')}`;
+      reason = reason ? `${reason};${note}` : note;
+    }
+    return { headed: sp.headed, switched: sp.headed === headed, restored, ...(reason ? { reason } : {}) };
+  }
+
+  /** 关掉后立刻用同一个 profile 重开;Chromium 退出后 profile 锁偶尔晚一拍释放,失败等一下再试一次 */
+  private async relaunch(sp: Space): Promise<void> {
+    try {
+      await this.doLaunchSpace(sp);
+    } catch {
+      await new Promise((r) => setTimeout(r, 1500));
+      await this.doLaunchSpace(sp);
+    }
   }
 
   /** 找出某个 page 属于哪个会话(console/network 事件回流时用) */
@@ -716,6 +908,11 @@ class BrowserManager {
     return this.isSpaceAlive(this.spaceFor(currentSessionId()));
   }
 
+  /** 当前会话所在工作区现在是不是有窗口 */
+  public isHeaded(): boolean {
+    return this.spaceFor(currentSessionId()).headed;
+  }
+
   /** 把某个页面设为当前会话的活跃页(不属于本会话则先纳入本会话) */
   public setActivePage(page: Page): void {
     const sessionId = currentSessionId();
@@ -893,7 +1090,7 @@ class BrowserManager {
   }
 
   /** 列出所有 space 及状态(active/url 按**调用方会话**的视角给) */
-  public listSpaces(): { name: string; active: boolean; alive: boolean; url: string | null }[] {
+  public listSpaces(): { name: string; active: boolean; alive: boolean; headed: boolean; url: string | null }[] {
     const sessionId = currentSessionId();
     const activeName = this.spaceNameFor(sessionId);
     return [...this.spaces.values()].map((sp) => {
@@ -903,6 +1100,7 @@ class BrowserManager {
         name: sp.name,
         active: sp.name === activeName,
         alive: this.isSpaceAlive(sp),
+        headed: sp.headed,
         url: page && !page.isClosed() ? page.url() : null,
       };
     });
@@ -930,21 +1128,33 @@ class BrowserManager {
   /**
    * 新建并切换到一个 space(隔离的 userDataDir → 独立 cookie/登录态)。
    * 已存在同名 space 则直接切过去,不重复创建。切换只作用于调用方会话。
+   * headed:这个工作区要不要可见窗口(新建时直接按它开;已存在且形态不同则原地换)。
+   * 不给就按服务默认(通常无头;要人工时 wait_for_human 会自动弹窗)。
    */
-  public async createSpace(name: string): Promise<{ name: string; created: boolean }> {
+  public async createSpace(name: string, headed?: boolean): Promise<{ name: string; created: boolean; headed: boolean; reason?: string }> {
     const clean = name.trim();
     if (!clean) throw new Error('space 名不能为空');
     if (!/^[A-Za-z0-9_-]{1,40}$/.test(clean)) {
       throw new Error('space 名仅允许字母/数字/下划线/连字符,长度 1-40');
     }
     let created = false;
+    let reason: string | undefined;
     if (!this.spaces.has(clean)) {
-      this.spaces.set(clean, this.newSpaceState(clean, this.spaceDirFor(clean)));
+      const fresh = this.newSpaceState(clean, this.spaceDirFor(clean));
+      if (headed !== undefined) {
+        reason = (headed ? noDisplayReason() : null) ?? undefined;
+        fresh.headed = headed && !reason;
+      }
+      this.spaces.set(clean, fresh);
       created = true;
     }
+    const sp = this.spaces.get(clean)!;
     this.sessionSpace.set(currentSessionId(), clean);
-    await this.launchSpace(this.spaces.get(clean)!);
-    return { name: clean, created };
+    if (!created && headed !== undefined && sp.headed !== headed) {
+      reason = (await this.switchMode(sp, headed)).reason;
+    }
+    await this.launchSpace(sp);
+    return { name: clean, created, headed: sp.headed, ...(reason ? { reason } : {}) };
   }
 
   /** 切换调用方会话的 space(必须已存在) */

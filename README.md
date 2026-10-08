@@ -6,7 +6,7 @@
 
 ## 特性
 
-- **浏览器 MCP（46 个工具）** —— Patchright 1.61 驱动（自带反检测，Chromium 149），支持导航、点击、填表、截图、无障碍快照（snapshot+ref 操作）、正文提取（defuddle 转 Markdown）、站点 URL 发现、批量爬取、网络拦截、PDF 导出等。
+- **浏览器 MCP（47 个工具）** —— Patchright 1.61 驱动（自带反检测，Chromium 149），支持导航、点击、填表、截图、无障碍快照（snapshot+ref 操作）、正文提取（defuddle 转 Markdown）、站点 URL 发现、批量爬取、网络拦截、PDF 导出等。
 - **对齐 ego-lite 的三件套** —— ① `run_script` 一次跑完：脚本内直接用 `__ego.click/fill/waitFor/snapshot`，把「填表→点击→等待→读结果」压成单次 MCP 往返，省 token 省延迟；② `snapshot` 与 `click/type/hover` **穿透 iframe(含跨域)**,iframe 内元素同样带 ref、可直接操作;③ **Task Spaces**:`space_new/switch/list/close` 开并行隔离工作区,各自独立 cookie/登录态,适合多任务或多账号。
 - **HTTP 常驻形态（推荐）** —— 两个长驻服务，同一个服务的所有客户端窗口共用：一份 Chromium、一份登录态，替代过去「每个窗口各拉一个进程 + 各开一个浏览器」。有头模式下窗口可见，可实时观察 agent 操作并随时**人工接管**（登录 / 验证码 / 二次确认）。
 - **会话隔离** —— 每个客户端会话自动分到**自己的标签页**：A 窗口的标签页工具只看得到自己的标签页，console / 网络记录与 `set_block_rules` 的拦截规则同样按会话隔离；**cookie / 登录态则是同一个 space 内共享**（这是省资源的设计意图），需要独立登录态时用 `space_new` 开隔离工作区。注意有头（3213）与无头（3215）是两个进程、两份 profile，**登录态不互通**。

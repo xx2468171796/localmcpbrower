@@ -20,8 +20,9 @@ node mcp.mjs autostart      # 开机自启指引（--apply 落地）
 ```
 
 **MCP 端点（默认只绑 127.0.0.1，三平台端口一致）：**
-- 有头浏览器 `http://127.0.0.1:3213/mcp` —— 窗口可见，可实时观察、随时人工接管
-- 无头浏览器 `http://127.0.0.1:3215/mcp` —— 后台 / 服务器
+- 无头浏览器 `http://127.0.0.1:3215/mcp` —— **日常只用这一个**。2.3.0 起要人工处理时 `wait_for_human`
+  会自动弹出可见窗口（见「四、人工接管」），不用再切到有头服务
+- 有头浏览器 `http://127.0.0.1:3213/mcp` —— 窗口常开，可实时观察；为兼容保留一个版本，之后撤掉
 
 **会话隔离（多窗口并行时的关键语义）：**
 - **浏览器标签页默认共享**(设 PIPE_ISOLATED=1 切隔离)，console / 网络记录、`set_block_rules` 的拦截规则
@@ -216,13 +217,19 @@ space_close({ name: "job1" })   # 关闭并释放（default 不可关）
 
 ---
 
-## 四、完整工具清单（浏览器 MCP，46 个）
+## 四、完整工具清单（浏览器 MCP，47 个）
 
-### 人工接管（2 个,新增）
+### 人工接管（3 个）
 | 工具 | 参数 | 说明 |
 |------|------|------|
-| `wait_for_human` | appears? / disappears? / urlChanges? / timeoutSec? | **阻塞等人在可见窗口里操作完**(扫码登录、短信/图形验证码、风控确认)。判据三选一可组合:等元素出现 / 等元素消失 / 等网址变化。**不弹窗**,靠盯页面变化判断,因此在全自主(bypassPermissions)模式下**照常工作**。用法:先在对话里告诉用户要做什么,再调本工具等待 |
-| `request_human` | message | 走协议 elicitation 主动弹窗问用户。⚠️ **在 bypassPermissions 模式下会被客户端自动拒绝且界面无任何提示** —— 那种模式请改用 `wait_for_human`。保留供其它客户端/权限模式使用 |
+| `wait_for_human` | appears? / disappears? / urlChanges? / timeoutSec? / show? | **遇到验证码 / 扫码 / 登录就调它。** 当前是无头时**自动弹出可见窗口**(show 默认 true;同一份登录态,标签页网址原样恢复),然后阻塞等人操作完。判据三选一可组合:等元素出现 / 等元素消失 / 等网址变化。不发客户端弹窗,靠盯页面变化判断,因此在全自主(bypassPermissions)模式下**照常工作**。结果里 `switchedToHeaded` = 这次新弹了窗、`headed` = 现在有没有窗口(Linux 无图形界面时为 false,`showNote` 说原因)。用法:先导航到要人处理的那一步、在对话里告诉用户要做什么,再调本工具 |
+| `hide_window` | — | 人处理完收起窗口,当前工作区换回无头(cookie、标签页网址带过去)。本来就无头时什么都不做。不调也行:临时弹出的窗口空闲 10 分钟(`HEADED_IDLE_CLOSE_MIN`)自动收掉,人手动关掉窗口也一样回到无头 |
+| `request_human` | message / show? | 同样先弹出可见窗口,再走协议 elicitation 问用户。⚠️ **在 bypassPermissions 模式下会被客户端自动拒绝且界面无任何提示** —— 那种模式请改用 `wait_for_human`。保留供其它客户端/权限模式使用 |
+
+**换窗口的边界**(弹出 / 收起都是关掉浏览器、用同一个 profile 按新形态重开):
+- 带得过去:cookie(含会话 cookie)、localStorage 等 profile 里的数据、各标签页网址和焦点。
+- 带不过去:sessionStorage、表单里没提交的输入、页面内存里的 JS 状态 —— 所以先导航到要人处理的那一步、**别先填一半**再弹窗。
+- 同一工作区还有**别的调用在跑**(另一个窗口在 navigate / 批量抓取)时拒绝切换并明确报错,不会把人家的调用掐断;等那边跑完再调,或 `space_new` 开个单独工作区处理。
 
 ### 基础操作（14个）
 | 工具 | 参数 | 说明 |
@@ -276,7 +283,7 @@ space_close({ name: "job1" })   # 关闭并释放（default 不可关）
 ### 工作区 Task Spaces（4个）
 | 工具 | 参数 | 说明 |
 |------|------|------|
-| `space_new` | name | 新建并切换到隔离工作区（独立 cookie/登录态）|
+| `space_new` | name, headed? | 新建并切换到隔离工作区（独立 cookie/登录态）。headed 一般不用给：默认无头，要人工时 wait_for_human 自动弹窗 |
 | `space_switch` | name | 切换活跃工作区 |
 | `space_list` | - | 列出所有工作区及状态 |
 | `space_close` | name | 关闭并释放工作区（default 不可关）|

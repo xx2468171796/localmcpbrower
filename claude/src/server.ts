@@ -39,12 +39,12 @@ import {
   ExtractLinksSchema, ExtractDataSchema, BatchFetchSchema,
   CrawlPagesSchema, WaitAndExtractSchema, SetBlockRulesSchema,
   SnapshotSchema, ExtractArticleSchema, DiscoverUrlsSchema,
-  RunScriptSchema, SpaceNameSchema, WaitForHumanSchema
+  RunScriptSchema, SpaceNameSchema, SpaceNewSchema, WaitForHumanSchema
 } from './schemas.js';
 
 const PORT = parseInt(process.env['PORT'] ?? '3211', 10);
 const startTime = Date.now();
-const SERVER_VERSION = '2.2.0';
+const SERVER_VERSION = '2.3.0';
 
 /**
  * pipe 端点的服务名。
@@ -134,7 +134,8 @@ const SERVER_INSTRUCTIONS = `本地浏览器操控 MCP。工具配合要点:
 - 填 2 个以上表单字段用 fill_form;click/type 内置三级 fallback,仍失败改 execute_js 直接操作 DOM。
 - 多步交互(填表→点击→等待→读结果)优先用 run_script 一次跑完:脚本里调 __ego.click/fill/waitFor/snapshot,省去多次往返。
 - snapshot/click/type/hover 已能穿透 iframe(含跨域),iframe 内元素同样带 ref、可直接操作。
-- 需要并行多任务或多账号隔离时用 space_new 开独立工作区(cookie/登录态互不干扰),space_switch 切换,space_list 查看。`;
+- 需要并行多任务或多账号隔离时用 space_new 开独立工作区(cookie/登录态互不干扰),space_switch 切换,space_list 查看。
+- 遇到验证码 / 扫码 / 登录等必须人来处理的页面:先在对话里告诉用户要做什么,再调 wait_for_human —— 浏览器平时无头,这时会自动弹出可见窗口(登录态和页面原样带过去);人处理完调 hide_window 收起窗口。`;
 
 // Session management
 const SESSION_TTL = 30 * 60 * 1000;
@@ -496,8 +497,8 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
 
   server.registerTool('space_new', {
     title: '新建工作区',
-    description: '新建并切换到一个隔离工作区，拥有独立的 userDataDir（cookie/登录态与其它工作区完全隔离）。用于并行跑多任务或同站多账号，互不污染。已存在同名则直接切过去。',
-    inputSchema: SpaceNameSchema,
+    description: '新建并切换到一个隔离工作区，拥有独立的 userDataDir（cookie/登录态与其它工作区完全隔离）。用于并行跑多任务或同站多账号，互不污染。已存在同名则直接切过去。headed 一般不用给：默认无头，要人工时 wait_for_human 会自动弹窗。',
+    inputSchema: SpaceNewSchema,
     outputSchema: ResultEnvelope,
     annotations: { title: '新建工作区', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => structured(await tools.spaceNew(args))));
@@ -520,7 +521,9 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
 
   // === 人工接管 ===
   //
-  // 有头浏览器(3213)存在的**唯一**理由就是让人过验证码 / 登录。在此之前全仓 0 处使用
+  // 可见窗口存在的**唯一**理由就是让人过验证码 / 登录。2.3.0 起不再靠单独的有头服务(3213):
+  // 两个人工工具一进来就把当前工作区换成有窗口的(BrowserManager.ensureHeaded),处理完 hide_window 收回。
+  // 在此之前全仓 0 处使用
   // elicitation:撞到登录墙只能返回失败,再靠 AI 在聊天里让用户去登录、登完回来说一声 ——
   // 一次人工接管要三轮对话,而且 AI 常在等待期间自作主张去干别的。
   //
@@ -533,36 +536,51 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('request_human', {
     title: '请人工接管',
     description:
-      '暂停并请用户在【可见的浏览器窗口】里手动处理,处理完自动继续。'
+      '弹出可见浏览器窗口(当前是无头时自动换成有窗口的,登录态和页面原样带过去),'
+      + '再通过客户端弹窗请用户手动处理,用户确认后继续。'
       + '用于:需要扫码/短信验证码登录、图形验证码、风控二次确认、需要人工选择的页面。'
-      + '⚠️ 仅在有头浏览器(browser-headed)下有意义;无头模式下用户看不到窗口。'
+      + '⚠️ bypassPermissions(全自主)模式下客户端弹窗会被自动拒绝 —— 那种模式请用 wait_for_human。'
       + '调用前先把页面导航到需要处理的那一步,消息里写清楚要用户做什么。',
     inputSchema: z.object({
       message: z.string().min(1).max(500)
         .describe('给用户看的说明,写清楚要他在浏览器里做什么,例如「请在已打开的窗口中扫码登录抖店,完成后确认」'),
+      show: z.boolean().default(true)
+        .describe('当前是无头时先弹出可见窗口,默认 true'),
     }),
     annotations: {
       title: '请人工接管', readOnlyHint: false, destructiveHint: false,
       idempotentHint: false, openWorldHint: true,
     } satisfies ToolAnnotations,
   }, wrap(async (args: unknown, ctx: unknown) => {
-    const { message } = args as { message: string };
+    const { message, show = true } = args as { message: string; show?: boolean };
     const responses = (ctx as { mcpReq?: { inputResponses?: unknown } } | undefined)?.mcpReq?.inputResponses;
     const outcome = readHumanAck(responses);
+    // 先把窗口亮出来再问人。只在第一轮(还没问过)换:用户应答后本工具会被重新调用,
+    // 那时窗口早已弹出,ensureHeaded 是空操作;但不能在第二轮才弹(人已经回答了)。
+    let mode: Awaited<ReturnType<typeof tools.showForHuman>>;
+    try {
+      mode = await tools.showForHuman(outcome.state === 'ask' ? show : false);
+    } catch (e) {
+      return text({ success: false, error: e instanceof Error ? e.message : String(e) });
+    }
     // ⚠️ 只有"从没问过"才发问。
     // 第一版把"拒绝/取消"也当成"该发问",于是用户一点拒绝就无限重问,
     // 撞上 SDK 的 maxRounds(8)后报
     //   Multi-round-trip request 'tools/call' still required input after 8 rounds
     // 用户视角是"点了拒绝然后卡住,最后一个看不懂的错"。别改回去。
     if (outcome.state === 'ask') return buildHumanRequest(message);
-    if (outcome.state === 'refused') return text({ success: false, error: outcome.reason });
+    if (outcome.state === 'refused') {
+      // 典型是 bypassPermissions 下被客户端自动拒绝:窗口已经弹出来了,提示改用 wait_for_human 盯页面
+      const hint = mode.headed ? '(可见窗口已打开,可改用 wait_for_human 盯页面变化等人处理完)' : '';
+      return text({ success: false, error: `${outcome.reason}${hint}` });
+    }
     const ack = outcome.ack;
     // 顺手把当前标签页状态带回去:人工操作后页面多半已经变了(登录跳转/新开窗口),
     // 让调用方少一次 list_tabs 往返就能知道现在在哪
     const tabs = await tools.listTabs();
     return text({
       success: true,
-      data: { done: ack.done, note: ack.note ?? null, page: tabs.success ? tabs.data : null },
+      data: { done: ack.done, note: ack.note ?? null, page: tabs.success ? tabs.data : null, headed: mode.headed },
     });
   }));
 
@@ -585,11 +603,12 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
   server.registerTool('wait_for_human', {
     title: '等人工在窗口里处理完',
     description:
-      '阻塞等待,直到人在【可见的浏览器窗口】里完成操作(扫码登录、短信验证码、图形验证码、风控确认等)。'
+      '遇到验证码/扫码/登录等必须人来处理的页面就调本工具:当前是无头时**自动弹出可见浏览器窗口**'
+      + '(同一份登录态,页面原样恢复),然后阻塞等人在窗口里操作完。'
       + '判定方式三选一:等某个元素出现(appears)、等某个元素消失(disappears)、或等网址变化(urlChanges)。'
-      + '⚠️ 调用前先在对话里把要做的事告诉用户,再调本工具等待。'
-      + '与 request_human 的区别:本工具**不弹窗**,靠盯页面变化判断,'
-      + '因此在 bypassPermissions(全自主)模式下**照样有效** —— 那种模式下弹窗会被自动拒绝。',
+      + '⚠️ 调用前先在对话里把要做的事告诉用户,再调本工具等待;人处理完可调 hide_window 收起窗口。'
+      + '与 request_human 的区别:本工具不发客户端弹窗,靠盯页面变化判断,'
+      + '因此在 bypassPermissions(全自主)模式下**照样有效**。结果里 switchedToHeaded 表示这次是否新弹出了窗口。',
     inputSchema: z.object({
       appears: z.string().min(1).optional()
         .describe('等这个 CSS 选择器出现,例如登录成功后才有的头像 ".user-avatar"'),
@@ -599,6 +618,8 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
         .describe('等网址发生变化(登录后跳转最常见)。与 appears/disappears 可同时给,任一满足即返回'),
       timeoutSec: z.number().int().min(5).max(1800).default(180)
         .describe('最长等待秒数,默认 180。人工操作要留够时间,别设太短'),
+      show: z.boolean().default(true)
+        .describe('当前是无头时先弹出可见窗口(默认 true);只想在无头里盯页面变化时设 false'),
     }).refine((v) => !!(v.appears || v.disappears || v.urlChanges),
       { message: 'appears / disappears / urlChanges 至少要给一个,否则无法判断人工何时完成' }),
     outputSchema: ResultEnvelope,
@@ -607,6 +628,18 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
       idempotentHint: false, openWorldHint: true,
     } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => structured(await tools.waitForHuman(args))));
+
+  server.registerTool('hide_window', {
+    title: '收起浏览器窗口',
+    description:
+      '人工处理完(wait_for_human / request_human 返回后)收起可见窗口,当前工作区换回无头;'
+      + '登录态和各标签页网址原样带过去。本来就是无头时什么都不做。不调也行,临时弹出的窗口空闲 10 分钟自动收掉。',
+    outputSchema: ResultEnvelope,
+    annotations: {
+      title: '收起浏览器窗口', readOnlyHint: false, destructiveHint: false,
+      idempotentHint: true, openWorldHint: false,
+    } satisfies ToolAnnotations,
+  }, wrap(async () => structured(await tools.hideWindow())));
   // === Network intercept ===
   server.registerTool('intercept_requests', {
     title: '拦截请求',

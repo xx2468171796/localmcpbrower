@@ -1,5 +1,5 @@
 /**
- * 浏览器 MCP 冒烟测试 —— 46 个工具全覆盖,走真实调用路径(shim → named pipe → 常驻服务)。
+ * 浏览器 MCP 冒烟测试 —— 47 个工具全覆盖,走真实调用路径(shim → named pipe → 常驻服务)。
  *
  *   node test/smoke-browser.mjs [headless|headed] [临时目录]
  *
@@ -150,6 +150,8 @@ await step('space_close', { name: 'sweep-tmp' });
 
 // ───── E. 人工接管
 await step('wait_for_human', { appears: 'body', timeoutSec: 5 }, { timeout: 30000, note: p => brief(p, 80) });
+// 无头下 wait_for_human 会自动弹窗(2.3.0),收回去,后面的 request_human 照常跑
+await step('hide_window', {}, { timeout: 60000, note: p => brief(p, 80) });
 await step('request_human', { message: '自动化探测:预期被「无 elicitation 能力」的客户端直接拒绝,不应挂起' },
   { timeout: 20000, note: p => brief(p, 110) });
 

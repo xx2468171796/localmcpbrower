@@ -2,7 +2,7 @@
 
 > **读者是 AI 助手,不是人。** 面向人的详解见 [`DEPLOY.md`](./DEPLOY.md);本文件是**可直接执行的部署流程**,每步带可自检的预期输出。
 >
-> 本项目提供一个 MCP 服务:**浏览器 MCP(46 工具)**,推荐以 **HTTP 常驻**形态部署(v3 起),stdio 为备用形态。
+> 本项目提供一个 MCP 服务:**浏览器 MCP(47 工具)**,推荐以 **HTTP 常驻**形态部署(v3 起),stdio 为备用形态。
 >
 > 数据库 MCP 已于 2026-09-25 撤下,库一律用堡垒机 baolei MCP 的 `db_*`(历史版本见 git 历史)。
 
@@ -137,7 +137,7 @@ bash check-mcp-health.sh
 
 ```bash
 node -e "
-const eps=[['无头',3215,46],['有头',3213,46]];
+const eps=[['无头',3215,47],['有头',3213,47]];
 for(const [n,p,want] of eps){
   const base=\`http://127.0.0.1:\${p}/mcp\`;
   const h={'Content-Type':'application/json',Accept:'application/json, text/event-stream'};

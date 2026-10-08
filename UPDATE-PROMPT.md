@@ -103,7 +103,7 @@ cd ~/code/localmcpbrower/claude && node -e "
 const { Client } = await import('@modelcontextprotocol/client');
 const { StdioClientTransport } = await import('@modelcontextprotocol/client/stdio');
 const SHIM = process.cwd() + '/bin/shim.mjs';
-for (const [name, svc, want] of [['浏览器','headless',46],['有头','headed',46]]) {
+for (const [name, svc, want] of [['浏览器','headless',47],['有头','headed',47]]) {
   try {
     const c = new Client({name:'probe',version:'1'}, {capabilities:{elicitation:{}}});
     await c.connect(new StdioClientTransport({command: process.execPath, args:[SHIM, svc]}));
@@ -122,7 +122,8 @@ for (const [name, svc, want] of [['浏览器','headless',46],['有头','headed',
 
 ```bash
 cd ~/code/localmcpbrower/claude
-npm run test:smoke        # 浏览器 46 个工具,末尾应为「覆盖 46/46 … 通过 48/48」
+npm run test:smoke        # 浏览器 47 个工具,末尾应为「覆盖 47/47 … 通过 49/49」
+npm run test:headed       # 按需弹窗(2.3.0):自己起一份独立服务测,不碰在跑的服务;Windows 上会短暂弹出窗口
 ```
 
 ## 5. 绝对不要做的事(踩了要返工)
@@ -157,6 +158,11 @@ npm run test:smoke        # 浏览器 46 个工具,末尾应为「覆盖 46/46 �
 - `snapshot` 的 `deep:true` 静默失效 —— 与 `deep:false` 输出逐字节相同。⚠️ 这条**没修好功能**,
   是改成**如实报告不可用**(当前 patchright 版本下主世界/隔离世界不互通,深扫描做不了);
   以前它假装成功,调用方会误以为「这页确实没有隐藏可点元素」
+
+**2.3.0 按需弹窗**(46 → 47):浏览器平时无头,遇到验证码 / 扫码 / 登录,`wait_for_human` 会把当前工作区
+**原地换成有可见窗口的**(同一个 profile,cookie 和标签页网址带过去,结果里 `switchedToHeaded` 说明这次弹没弹),
+人处理完用新工具 `hide_window` 收回(不收也行,临时窗口空闲 10 分钟自动收)。`space_new` 多了可选 `headed`。
+有头服务 3213 / `browser-headed` 注册本版仍保留、照常可用,下个版本再撤。
 
 **新增两个工具**(44 → 46):
 
