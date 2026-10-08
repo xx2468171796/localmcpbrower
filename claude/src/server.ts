@@ -44,7 +44,7 @@ import {
 
 const PORT = parseInt(process.env['PORT'] ?? '3211', 10);
 const startTime = Date.now();
-const SERVER_VERSION = '2.3.1';
+const SERVER_VERSION = '2.3.2';
 
 /**
  * pipe 端点的服务名。

@@ -187,6 +187,19 @@ async function cmdInstall() {
 }
 
 // ── update ───────────────────────────────────────────────
+/**
+ * PM2 管着的进程列表(jlist);PM2 出错返回 []。
+ * pm2 守护进程未启动时 jlist 会先输出 "[PM2] Spawning..." 等日志行，真正的 JSON 数组在最后一行，需逐行从后往前找
+ */
+function pm2Procs() {
+  const out = runCapture(PM2, ['jlist']);
+  if (out.status !== 0) return [];
+  try {
+    const jsonLine = out.stdout.split('\n').reverse().find(l => l.trim().startsWith('[') && !l.trim().startsWith('[PM2]'));
+    return jsonLine ? JSON.parse(jsonLine) : [];
+  } catch { return []; }
+}
+
 function runCapture(cmd, args, cwd) {
   const res = spawnShell(cmd, args, { cwd: cwd || ROOT, encoding: 'utf-8' });
   return { status: res.status, stdout: (res.stdout || '').trim(), stderr: (res.stderr || '').trim() };
@@ -245,12 +258,9 @@ async function cmdUpdate() {
   // ── PM2 服务在跑则重启，让 HTTP 模式立即用上新代码 ──
   // 注意: pm2 守护进程未启动时 jlist 会先输出 "[PM2] Spawning..." 等日志行，
   // 真正的 JSON 数组在最后一行，需逐行从后往前找
-  const pm2List = runCapture(PM2, ['jlist']);
-  if (pm2List.status === 0) {
+  {
     try {
-      const jsonLine = pm2List.stdout.split('\n').reverse()
-        .find(l => l.trim().startsWith('[') && !l.trim().startsWith('[PM2]'));
-      const procs = jsonLine ? JSON.parse(jsonLine) : [];
+      const procs = pm2Procs();
       const running = Object.values(SERVICES).filter(svc =>
         procs.some(p => p.name === svc.name && p.pm2_env?.status === 'online'));
       for (const svc of running) {
@@ -351,6 +361,16 @@ async function cmdStart(arg) {
     const svc = SERVICES[key];
     step(`启动 ${svc.label}`);
     if (!existsSync(svc.eco)) fail(`找不到 PM2 配置: ${svc.eco}`);
+    // 已经在跑且端点健康就不动它:shim 连不上管道时会自己调 start,多个 Claude 窗口同时调,
+    // 以前每次都 delete 重建,刚起来的实例被下一个窗口删掉 → 连不上 → 再 start,死循环(2026-10-08 本机 3215 每 15 秒重启一次)。
+    // 要强制重建用 restart。
+    if (await probe(svc)) { log('  已在运行且健康,不重启(要重建用 node mcp.mjs restart)'); continue; }
+    // PM2 正管着它(在跑 / 正在起 / 等着重启,比如 update 刚 restart):只等它健康,不删了重建——删了会和 PM2 自己的重启抢端口
+    const managed = pm2Procs().find(p => p.name === svc.name);
+    if (managed && ['online', 'launching', 'waiting restart'].includes(managed.pm2_env?.status)) {
+      log(`  PM2 正在管它(${managed.pm2_env.status}),等它起来,不重建`);
+      continue;
+    }
     spawnShell(PM2, ['delete', svc.name], { stdio: 'ignore' });
     run(PM2, ['start', svc.eco]);
   }
@@ -580,7 +600,7 @@ async function cmdMergeHeaded() {
   const to = join(root, 'user_data');
   if (!existsSync(from)) { log(`没有有头 profile(${from}),不用合并`); return; }
   // LOCALMCP_MERGE_NO_PM2=1 只给测试用:临时 profile 上跑,不碰本机在跑的服务
-  const procs = process.env.LOCALMCP_MERGE_NO_PM2 === '1' ? [] : (() => { try { return JSON.parse(runCapture(PM2, ['jlist']).replace(/^[^[]*/, '')); } catch { return []; } })();
+  const procs = process.env.LOCALMCP_MERGE_NO_PM2 === '1' ? [] : pm2Procs();
   const running = Object.entries(SERVICES).filter(([, svc]) => procs.some(p => p.name === svc.name && p.pm2_env?.status === 'online'));
   for (const [, svc] of running) { step(`暂停 ${svc.label}(要独占打开 profile)`); run(PM2, ['stop', svc.name]); }
   try {
