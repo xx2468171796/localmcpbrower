@@ -544,6 +544,64 @@ function cmdConfig() {
 }
 
 // ── help ─────────────────────────────────────────────────
+// ── merge-headed:把有头 profile 的登录态并进无头 profile ───────────────
+// 2.3.0 起只注册一个 browser(无头为主,要人工时 wait_for_human 原地弹窗、用的还是无头那份 profile),
+// 老的 browser-headed 用的是另一份 profile(user_data_headed),在那边登录过的网站换过来要重登一次。
+// 这个命令把有头 profile 里的 cookie 合并进无头 profile:两边都有的取过期时间更晚的,只在有头那边有的补进来,
+// 不拿旧的盖掉无头这边已有的登录。会话 cookie(没有过期时间,关浏览器就没)和页面本地存储(localStorage)搬不了。
+// 两份 profile 都要独占打开:先停在跑的浏览器服务,合并完再按原样启动。
+function dataRoot() {
+  if (process.env.LOCALMCP_DATA_DIR) return process.env.LOCALMCP_DATA_DIR;
+  try {
+    const saved = readFileSync(join(ROOT, 'storage', 'data-root.txt'), 'utf8').trim();
+    if (saved) return saved;
+  } catch { /* 老版本:就在安装目录下 */ }
+  return join(ROOT, 'storage');
+}
+
+/** 两边同一个 cookie(名字 + 域 + 路径)取过期时间更晚的;会话 cookie(expires<=0)不搬 */
+export function mergeCookies(target, source) {
+  const key = c => `${c.name}|${c.domain}|${c.path}`;
+  const have = new Map(target.map(c => [key(c), c]));
+  const add = [];
+  let skippedSession = 0, kept = 0;
+  for (const c of source) {
+    if (!(c.expires > 0)) { skippedSession++; continue; }
+    const mine = have.get(key(c));
+    if (mine && (mine.expires <= 0 || mine.expires >= c.expires)) { kept++; continue; }
+    add.push(c);
+  }
+  return { add, skippedSession, kept };
+}
+
+async function cmdMergeHeaded() {
+  const root = dataRoot();
+  const from = join(root, 'user_data_headed');
+  const to = join(root, 'user_data');
+  if (!existsSync(from)) { log(`没有有头 profile(${from}),不用合并`); return; }
+  // LOCALMCP_MERGE_NO_PM2=1 只给测试用:临时 profile 上跑,不碰本机在跑的服务
+  const procs = process.env.LOCALMCP_MERGE_NO_PM2 === '1' ? [] : (() => { try { return JSON.parse(runCapture(PM2, ['jlist']).replace(/^[^[]*/, '')); } catch { return []; } })();
+  const running = Object.entries(SERVICES).filter(([, svc]) => procs.some(p => p.name === svc.name && p.pm2_env?.status === 'online'));
+  for (const [, svc] of running) { step(`暂停 ${svc.label}(要独占打开 profile)`); run(PM2, ['stop', svc.name]); }
+  try {
+    const { chromium } = requireCjs('patchright'); // CommonJS 包:用 require 取,import 会包在 default 里
+    const open = dir => chromium.launchPersistentContext(dir, { headless: true, channel: 'chromium' });
+    const src = await open(from);
+    const source = await src.cookies();
+    await src.close();
+    const dst = await open(to);
+    const { add, skippedSession, kept } = mergeCookies(await dst.cookies(), source);
+    if (add.length) await dst.addCookies(add);
+    await dst.close();
+    const sites = new Set(add.map(c => c.domain.replace(/^\./, '')));
+    log(`✓ 合并完成:补进 ${add.length} 个 cookie(${sites.size} 个网站),无头这边更新的 ${kept} 个保持不动,会话 cookie ${skippedSession} 个搬不了`);
+    if (sites.size) log(`  涉及网站:${[...sites].sort().slice(0, 30).join(', ')}${sites.size > 30 ? ' …' : ''}`);
+    log('  页面本地存储(localStorage)没搬;个别网站如果还要求登录,在 wait_for_human 弹出的窗口里登录一次即可');
+  } finally {
+    for (const [, svc] of running) { step(`恢复 ${svc.label}`); run(PM2, ['restart', svc.eco, '--update-env']); }
+  }
+}
+
 function cmdHelp() {
   log(`Claude Code MCP - 跨平台管理工具 (v${VERSION})
 
@@ -558,6 +616,7 @@ function cmdHelp() {
   status                             查看 PM2 进程状态
   autostart [--apply]                开机自启配置 (三平台指引，--apply 落地本机部分)
   config                             打印客户端注册方式 (HTTP 优先，stdio 备用)
+  merge-headed                       把旧 browser-headed 的登录态(cookie)并进 browser,之后只注册 browser 即可
   --help, -h                         显示本帮助
 
 服务与端口 (三平台一致):
@@ -592,6 +651,7 @@ switch (cmd) {
   case 'status':            cmdStatus(); break;
   case 'autostart':         cmdAutostart(arg); break;
   case 'config':            cmdConfig(); break;
+  case 'merge-headed':      await cmdMergeHeaded(); break;
   case undefined:
   case '--help':
   case '-h':

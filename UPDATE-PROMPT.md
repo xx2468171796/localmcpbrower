@@ -159,6 +159,10 @@ npm run test:headed       # 按需弹窗(2.3.0):自己起一份独立服务测,�
   是改成**如实报告不可用**(当前 patchright 版本下主世界/隔离世界不互通,深扫描做不了);
   以前它假装成功,调用方会误以为「这页确实没有隐藏可点元素」
 
+**2.3.1 搬登录态**:`node mcp.mjs merge-headed` 把旧 `browser-headed`(profile `user_data_headed`)里的 cookie 并进 `browser`
+(两边都有的取过期更晚的,不拿旧的盖新的;会话 cookie 和 localStorage 搬不了),会先暂停在跑的浏览器服务、合并完原样恢复。
+跑完就可以 `claude mcp remove browser-headed -s user`,只留 `browser`(每个会话少一整套重复的工具清单)。
+
 **2.3.0 按需弹窗**(46 → 47):浏览器平时无头,遇到验证码 / 扫码 / 登录,`wait_for_human` 会把当前工作区
 **原地换成有可见窗口的**(同一个 profile,cookie 和标签页网址带过去,结果里 `switchedToHeaded` 说明这次弹没弹),
 人处理完用新工具 `hide_window` 收回(不收也行,临时窗口空闲 10 分钟自动收)。`space_new` 多了可选 `headed`。
