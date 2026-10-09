@@ -15,7 +15,7 @@
 ## 系统要求
 
 - Windows 10+ / macOS 10.15+ / Linux (Debian 12+、Ubuntu 等)
-- **Node.js >= 20**
+- **Node.js >= 24**
 - HTTP 模式额外需要 PM2（`npm install -g pm2`）；stdio 模式不需要
 
 ## 服务一览
@@ -252,6 +252,8 @@ claude mcp add browser  -- node "C:\abs\path\claude\dist\server.js" --stdio
 | `ecosystem.headless.config.cjs` | 全平台 | 无头浏览器 PM2 配置（3215，`HOST=127.0.0.1`，profile `storage/user_data`） |
 | `.mcp.http.example.json` | — | 项目级 **HTTP** 配置模板（推荐） |
 | `.mcp.json.example` | — | 项目级 **stdio** 配置模板（备用） |
+| `eval/` | 全平台 | **考卷**（裁判层，AI 不得改）：`npm run eval` 跑 50 道本地题并和 `eval/baseline.json` 比；`npm run eval:smoke` 真实站点冒烟（不计入放行） |
+| `test/unit/` | 全平台 | 单测：`npm run test:unit`（考卷放行规则、遥测） |
 
 ---
 

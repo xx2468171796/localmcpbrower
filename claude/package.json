@@ -22,7 +22,11 @@
     "test:select": "node test/select-option.mjs",
     "test:reclaim": "node test/reclaim.mjs",
     "test:storage": "node test/storage.mjs",
-    "test:headed": "node test/on-demand-headed.mjs"
+    "test:headed": "node test/on-demand-headed.mjs",
+    "test:unit": "tsc && node --test test/unit/",
+    "eval": "tsc && node eval/run.mjs",
+    "eval:smoke": "tsc && node eval/smoke-sites.mjs",
+    "eval:baseline": "tsc && node eval/run.mjs --update-baseline"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.1.0",

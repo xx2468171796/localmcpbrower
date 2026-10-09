@@ -1,0 +1,318 @@
+{
+  "version": "2.3.2",
+  "patchright": "1.63.0",
+  "createdAt": "2026-10-09T06:47:34.890Z",
+  "summary": {
+    "tasks": 50,
+    "passed": 48,
+    "passRate": 96,
+    "calls": 153,
+    "toolErrors": 2,
+    "toolErrorRate": 1.31,
+    "totalMs": 14537,
+    "p50Ms": 140,
+    "totalBytes": 31601
+  },
+  "tasks": {
+    "nav.basic": {
+      "pass": true,
+      "ms": 187,
+      "bytes": 171,
+      "toolErrors": 0
+    },
+    "nav.rejects-file-url": {
+      "pass": true,
+      "ms": 9,
+      "bytes": 96,
+      "toolErrors": 0
+    },
+    "nav.history": {
+      "pass": true,
+      "ms": 309,
+      "bytes": 670,
+      "toolErrors": 0
+    },
+    "snapshot.click-by-ref": {
+      "pass": true,
+      "ms": 173,
+      "bytes": 507,
+      "toolErrors": 0
+    },
+    "snapshot.type-by-ref": {
+      "pass": true,
+      "ms": 95,
+      "bytes": 502,
+      "toolErrors": 0
+    },
+    "snapshot.truncates-large-page": {
+      "pass": true,
+      "ms": 154,
+      "bytes": 3031,
+      "toolErrors": 0
+    },
+    "interact.type-click": {
+      "pass": true,
+      "ms": 214,
+      "bytes": 404,
+      "toolErrors": 0
+    },
+    "interact.fill-form": {
+      "pass": true,
+      "ms": 251,
+      "bytes": 410,
+      "toolErrors": 0
+    },
+    "interact.select-by-label": {
+      "pass": true,
+      "ms": 79,
+      "bytes": 230,
+      "toolErrors": 0
+    },
+    "interact.hover": {
+      "pass": true,
+      "ms": 140,
+      "bytes": 233,
+      "toolErrors": 0
+    },
+    "interact.keyboard": {
+      "pass": true,
+      "ms": 120,
+      "bytes": 327,
+      "toolErrors": 0
+    },
+    "interact.scroll-to-element": {
+      "pass": true,
+      "ms": 74,
+      "bytes": 227,
+      "toolErrors": 0
+    },
+    "interact.drag-and-drop": {
+      "pass": true,
+      "ms": 168,
+      "bytes": 231,
+      "toolErrors": 0
+    },
+    "interact.viewport": {
+      "pass": true,
+      "ms": 35,
+      "bytes": 299,
+      "toolErrors": 0
+    },
+    "wait.selector-appears": {
+      "pass": true,
+      "ms": 944,
+      "bytes": 244,
+      "toolErrors": 0
+    },
+    "wait.selector-detached": {
+      "pass": true,
+      "ms": 1389,
+      "bytes": 228,
+      "toolErrors": 0
+    },
+    "wait.selector-timeout-reports-error": {
+      "pass": true,
+      "ms": 1050,
+      "bytes": 279,
+      "toolErrors": 0
+    },
+    "wait.wait-and-extract": {
+      "pass": true,
+      "ms": 1005,
+      "bytes": 232,
+      "toolErrors": 0
+    },
+    "read.attribute-and-html": {
+      "pass": true,
+      "ms": 82,
+      "bytes": 676,
+      "toolErrors": 0
+    },
+    "script.execute-js": {
+      "pass": true,
+      "ms": 48,
+      "bytes": 278,
+      "toolErrors": 0
+    },
+    "script.run-script-ego": {
+      "pass": true,
+      "ms": 116,
+      "bytes": 303,
+      "toolErrors": 0
+    },
+    "script.run-script-snapshot": {
+      "pass": true,
+      "ms": 52,
+      "bytes": 358,
+      "toolErrors": 0
+    },
+    "script.run-script-error": {
+      "pass": true,
+      "ms": 47,
+      "bytes": 187,
+      "toolErrors": 0
+    },
+    "extract.data-table": {
+      "pass": true,
+      "ms": 60,
+      "bytes": 504,
+      "toolErrors": 0
+    },
+    "extract.links-filter-and-scope": {
+      "pass": true,
+      "ms": 65,
+      "bytes": 527,
+      "toolErrors": 0
+    },
+    "batch.fetch-in-order": {
+      "pass": true,
+      "ms": 134,
+      "bytes": 343,
+      "toolErrors": 0
+    },
+    "batch.fetch-concurrent": {
+      "pass": true,
+      "ms": 359,
+      "bytes": 626,
+      "toolErrors": 0
+    },
+    "batch.fetch-missing-page": {
+      "pass": true,
+      "ms": 67,
+      "bytes": 343,
+      "toolErrors": 0
+    },
+    "crawl.pagination": {
+      "pass": false,
+      "ms": 132,
+      "bytes": 141,
+      "toolErrors": 1
+    },
+    "crawl.max-pages": {
+      "pass": false,
+      "ms": 186,
+      "bytes": 141,
+      "toolErrors": 1
+    },
+    "article.extract-clean": {
+      "pass": true,
+      "ms": 221,
+      "bytes": 2345,
+      "toolErrors": 0
+    },
+    "discover.sitemap-and-links": {
+      "pass": true,
+      "ms": 64,
+      "bytes": 360,
+      "toolErrors": 0
+    },
+    "report.page-report": {
+      "pass": true,
+      "ms": 63,
+      "bytes": 590,
+      "toolErrors": 0
+    },
+    "iframe.snapshot-sees-both-frames": {
+      "pass": true,
+      "ms": 610,
+      "bytes": 440,
+      "toolErrors": 0
+    },
+    "iframe.same-origin-click": {
+      "pass": true,
+      "ms": 669,
+      "bytes": 608,
+      "toolErrors": 0
+    },
+    "iframe.cross-origin-click": {
+      "pass": true,
+      "ms": 993,
+      "bytes": 943,
+      "toolErrors": 0
+    },
+    "iframe.cross-origin-type": {
+      "pass": true,
+      "ms": 653,
+      "bytes": 631,
+      "toolErrors": 0
+    },
+    "file.upload": {
+      "pass": true,
+      "ms": 55,
+      "bytes": 350,
+      "toolErrors": 0
+    },
+    "file.download-link": {
+      "pass": true,
+      "ms": 196,
+      "bytes": 256,
+      "toolErrors": 0
+    },
+    "file.screenshot": {
+      "pass": true,
+      "ms": 77,
+      "bytes": 258,
+      "toolErrors": 0
+    },
+    "file.pdf-export": {
+      "pass": true,
+      "ms": 501,
+      "bytes": 247,
+      "toolErrors": 0
+    },
+    "tabs.open-switch-close": {
+      "pass": true,
+      "ms": 274,
+      "bytes": 803,
+      "toolErrors": 0
+    },
+    "tabs.close-invalid-index": {
+      "pass": true,
+      "ms": 14,
+      "bytes": 314,
+      "toolErrors": 0
+    },
+    "space.cookie-isolation": {
+      "pass": true,
+      "ms": 968,
+      "bytes": 1760,
+      "toolErrors": 0
+    },
+    "cookie.set-get-send": {
+      "pass": true,
+      "ms": 75,
+      "bytes": 633,
+      "toolErrors": 0
+    },
+    "log.network": {
+      "pass": true,
+      "ms": 39,
+      "bytes": 6580,
+      "toolErrors": 0
+    },
+    "log.console": {
+      "pass": true,
+      "ms": 345,
+      "bytes": 555,
+      "toolErrors": 0
+    },
+    "block.images": {
+      "pass": true,
+      "ms": 91,
+      "bytes": 791,
+      "toolErrors": 0
+    },
+    "block.intercept-pattern": {
+      "pass": true,
+      "ms": 882,
+      "bytes": 389,
+      "toolErrors": 0
+    },
+    "health.browser-alive": {
+      "pass": true,
+      "ms": 3,
+      "bytes": 0,
+      "toolErrors": 0
+    }
+  }
+}

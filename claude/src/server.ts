@@ -26,6 +26,7 @@ import * as tools from './tools.js';
 import { killPortProcess } from './portkill.js';
 import { startPipeLeg } from './pipe.js';
 import { buildHumanRequest, readHumanAck } from './elicit.js';
+import { createToolTelemetry, sampleOf } from './telemetry.js';
 import type { HealthCheckResult } from './types.js';
 import {
   NavigateSchema, ClickSchema, TypeSchema, ScreenshotSchema,
@@ -188,15 +189,18 @@ type ToolHandler = (...args: never[]) => unknown;
 
 /**
  * HTTP 模式下每个会话一个独立 McpServer 实例，sessionId 直接闭包捕获。
- * 全部 44 个 handler 统一套一层 mcpCtx.run，让 BrowserManager 在调用链任意深度
+ * 全部工具 handler 统一套一层 mcpCtx.run，让 BrowserManager 在调用链任意深度
  * 都能读到「这次调用属于哪个会话」，工具函数签名一律不动（零侵入）。
  * stdio 传入默认值 → 与改造前的单会话行为完全一致。
  */
 /**
  * 所有工具的输出排成人看得懂的文本(见 format.ts):状态行 + 耗时 + 对齐的结果,代替一行 JSON。
  * 原始结果挂在 _meta['localmcp/result'](AI 和界面都不显示),测试和程序从那里读。
- * 在 registerTool 这一层统一套,46 个工具的实现一行都不用动。
+ * 在 registerTool 这一层统一套,所有工具的实现一行都不用动。
  */
+// 工具调用遥测(见 telemetry.ts):本机配了 baolei MCP 密钥默认开,BROWSER_TELEMETRY=0 关。只发工具名和数字
+const telemetry = createToolTelemetry(SERVER_VERSION, STDIO ? 'stdio' : PIPE_SERVICE);
+
 function humanizeOutput(server: McpServer): void {
   const register = server.registerTool.bind(server) as (...a: unknown[]) => unknown;
   (server as unknown as { registerTool: (...a: unknown[]) => unknown }).registerTool = (name: unknown, config: unknown, handler: unknown) => {
@@ -204,16 +208,26 @@ function humanizeOutput(server: McpServer): void {
     const fn = handler as (...a: unknown[]) => Promise<{ content?: Array<{ type: string; text?: string }>; _meta?: Record<string, unknown> }>;
     return register(name, config, async (...args: unknown[]) => {
       const t0 = performance.now();
-      const out = await fn(...args);
+      let out: Awaited<ReturnType<typeof fn>>;
+      try {
+        out = await fn(...args);
+      } catch (e) {
+        telemetry?.record({ tool: String(name), ok: false, ms: Math.round(performance.now() - t0), bytes: 0, truncated: false });
+        throw e;
+      }
       const ms = performance.now() - t0;
       const i = out?.content?.findIndex((c) => c.type === 'text') ?? -1;
-      if (i < 0) return out;
       let parsed: unknown;
-      try { parsed = JSON.parse(out.content![i]!.text ?? ''); } catch { return out; }
-      if (!parsed || typeof parsed !== 'object' || typeof (parsed as { success?: unknown }).success !== 'boolean') return out;
+      if (i >= 0) { try { parsed = JSON.parse(out.content![i]!.text ?? ''); } catch { parsed = undefined; } }
+      if (!parsed || typeof parsed !== 'object' || typeof (parsed as { success?: unknown }).success !== 'boolean') {
+        telemetry?.record(sampleOf(String(name), out, ms));
+        return out;
+      }
       const content = [...out.content!];
       content[i] = { type: 'text', text: formatResult(title, parsed as { success: boolean; data?: unknown; error?: string }, ms) };
-      return { ...out, content, _meta: { ...(out._meta ?? {}), [RAW_META_KEY]: parsed } };
+      const result = { ...out, content, _meta: { ...(out._meta ?? {}), [RAW_META_KEY]: parsed } };
+      telemetry?.record(sampleOf(String(name), result, ms, parsed));
+      return result;
     });
   };
 }
@@ -824,7 +838,7 @@ function createApp(): express.Application {
         }
         const eventStore = new BoundedEventStore();
         // 会话 ID 自己先生成：McpServer 要在 initialize 处理前就建好，
-        // 提前定下 ID 才能让 44 个 handler 闭包捕获到正确的 sessionId。
+        // 提前定下 ID 才能让所有工具 handler 闭包捕获到正确的 sessionId。
         const newSessionId = randomUUID();
         transport = new NodeStreamableHTTPServerTransport({
           sessionIdGenerator: () => newSessionId,

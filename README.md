@@ -6,7 +6,7 @@
 
 ## 特性
 
-- **浏览器 MCP（47 个工具）** —— Patchright 1.61 驱动（自带反检测，Chromium 149），支持导航、点击、填表、截图、无障碍快照（snapshot+ref 操作）、正文提取（defuddle 转 Markdown）、站点 URL 发现、批量爬取、网络拦截、PDF 导出等。
+- **浏览器 MCP（47 个工具）** —— Patchright 1.63 驱动（自带反检测，Chromium 153）+ MCP SDK 2.x，支持导航、点击、填表、截图、无障碍快照（snapshot+ref 操作）、正文提取（defuddle 转 Markdown）、站点 URL 发现、批量爬取、网络拦截、PDF 导出等。
 - **对齐 ego-lite 的三件套** —— ① `run_script` 一次跑完：脚本内直接用 `__ego.click/fill/waitFor/snapshot`，把「填表→点击→等待→读结果」压成单次 MCP 往返，省 token 省延迟；② `snapshot` 与 `click/type/hover` **穿透 iframe(含跨域)**,iframe 内元素同样带 ref、可直接操作;③ **Task Spaces**:`space_new/switch/list/close` 开并行隔离工作区,各自独立 cookie/登录态,适合多任务或多账号。
 - **HTTP 常驻形态（推荐）** —— 两个长驻服务，同一个服务的所有客户端窗口共用：一份 Chromium、一份登录态，替代过去「每个窗口各拉一个进程 + 各开一个浏览器」。有头模式下窗口可见，可实时观察 agent 操作并随时**人工接管**（登录 / 验证码 / 二次确认）。
 - **会话隔离** —— 每个客户端会话自动分到**自己的标签页**：A 窗口的标签页工具只看得到自己的标签页，console / 网络记录与 `set_block_rules` 的拦截规则同样按会话隔离；**cookie / 登录态则是同一个 space 内共享**（这是省资源的设计意图），需要独立登录态时用 `space_new` 开隔离工作区。注意有头（3213）与无头（3215）是两个进程、两份 profile，**登录态不互通**。
@@ -19,7 +19,7 @@
 
 ## 系统要求
 
-- Node.js >= 20
+- Node.js >= 24
 - Windows 10+ / macOS 10.15+ / Linux
 - PM2（HTTP 常驻模式；只用 stdio 可不装）
 
@@ -70,6 +70,20 @@ node claude/mcp.mjs update
 ```
 
 HTTP 模式在 Claude Code 里 `/mcp` 重连即可生效；stdio 模式下次会话自动生效。对 AI 说"更新本地 MCP"即可触发。
+
+## 考卷（自动评测）与工具调用遥测
+
+- **考卷**：`pnpm eval`（或 `npm run eval`，在仓库根目录或 `claude/` 下都行）跑 50 道固定题，全部打本地测试页、不连外网：
+  导航、snapshot ref、点击 / 输入 / 填表、iframe（含跨站）、上传 / 下载 / 截图 / PDF、batch_fetch、crawl_pages 翻页、
+  extract_article、run_script（`__ego`）、wait_for_selector、工作区隔离、标签页等。每题核对页面上的真实效果，
+  记成功率、耗时、输出字节（token 的代理）和工具报错，写 `claude/eval/results.json`，和 `claude/eval/baseline.json` 比：
+  基线通过的题失败、通过率低 5 个百分点以上、工具报错率高 3 个百分点以上 → 不放行（退出码非 0）。
+  被测服务起在空闲端口、临时 profile、独立管道名，跑完清干净，**不碰本机 PM2 的 3213 / 3215 和你的登录态**。
+- **真实站点冒烟**：`pnpm eval:smoke`，8 个外站，只当参考、不计入放行（公司网络下国外站点可能连不上）。
+- **考卷属于裁判层**：`claude/eval/**`、`.ankotti/evolve.json` 只有人能改；更新基线 `npm run eval:baseline` 也只由人做。
+  见 `.ankotti/evolve.json` 与堡垒机仓库 `docs/research/2026-10-self-evolving-projects.md` 6.1。
+- **遥测**：每次工具调用记 `{tool, ok, ms, bytes, truncated}`，攒批异步发到堡垒机（只有工具名和数字，不带参数、网址、页面内容；
+  发不出去不影响工具）。本机配了 baolei MCP 密钥时默认开，`BROWSER_TELEMETRY=0` 关；上报地址和格式见 `claude/src/telemetry.ts` 头部。
 
 ## 文档
 

@@ -13,6 +13,7 @@
 | 了解工具怎么配合用 | `USAGE.md` |
 | 了解协议/架构为什么这么设计、踩过哪些坑 | **`MCP-V2-PLAN.md`**(含七条踩坑清单) |
 | **验证本机装得对不对** | 跑 `npm run test:smoke`(浏览器 47 工具) |
+| **改了工具行为,看有没有退步** | 跑 `pnpm eval`(50 道本地题,和 `claude/eval/baseline.json` 比,不放行就别交) |
 | Codex 专属配置与排错 | `CODEX.md` |
 | ~~`HTTP-DESIGN.md`~~ | 描述的是**已被 pipe 取代**的旧会话架构,只作历史参考 |
 
@@ -58,6 +59,11 @@ Codex 写 `~/.codex/config.toml` 时,Windows 路径**必须用 TOML 字面量字
    报错指向反了。
 
 更完整的踩坑清单见 `MCP-V2-PLAN.md` 第 3 节。
+
+## 裁判层(AI 不得修改)
+
+`claude/eval/**`(考卷、测试页、放行规则、基线)、`.ankotti/evolve.json`、CI 配置属于**裁判层**,只有人能改。
+AI 改进代码时只能改被测代码,让 `pnpm eval` 放行;碰到裁判层的改动会被自动关掉。基线(`npm run eval:baseline`)也只由人更新。
 
 ## 开发约束
 

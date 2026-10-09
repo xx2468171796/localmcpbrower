@@ -2,7 +2,7 @@
  * MCP 调用上下文(AsyncLocalStorage)
  *
  * 为什么用 ALS 而不是给工具函数加 sessionId 参数:
- * 44 个工具函数签名里都没有 sessionId,逐个改签名改动面极大且极易漏改一处
+ * 所有工具函数签名里都没有 sessionId,逐个改签名改动面极大且极易漏改一处
  * 导致「A 会话操作到 B 会话的页面」这类隐蔽串台。改用 Node 原生 AsyncLocalStorage
  * 隐式携带 —— server.ts 在每次工具调用最外层 run 一次,BrowserManager 内部按需读取,
  * 工具函数签名一律不动(零侵入)。
@@ -16,7 +16,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 /**
  * 进度上报器。由 server.ts 的 wrap 从 MCP 请求上下文构造后放进 ALS,
  * 深层工具函数用 reportProgress() 调用 —— 与 sessionId 同样是**零侵入**:
- * 44 个工具函数签名一个都不用改。
+ * 所有工具函数签名一个都不用改。
  *
  * 客户端没给 progressToken 时,wrap 不会放这个字段,reportProgress() 静默 no-op。
  */

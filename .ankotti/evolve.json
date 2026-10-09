@@ -1,0 +1,30 @@
+{
+  "project": "localmcpbrower",
+  "shape": "client",
+  "upstream": [
+    { "name": "patchright", "source": "npm", "coolDays": 7, "autoMajor": false },
+    {
+      "name": "@modelcontextprotocol/server",
+      "source": "npm",
+      "coolDays": 7,
+      "autoMajor": false,
+      "with": ["@modelcontextprotocol/client", "@modelcontextprotocol/core", "@modelcontextprotocol/node", "@modelcontextprotocol/express"]
+    }
+  ],
+  "eval": { "command": "pnpm eval", "baseline": "claude/eval/baseline.json", "results": "claude/eval/results.json" },
+  "protected": [
+    "claude/eval/**",
+    "claude/test/unit/eval-compare.test.mjs",
+    ".ankotti/evolve.json",
+    "package.json",
+    ".gitea/**",
+    ".github/**"
+  ],
+  "humanReview": ["claude/src/server.ts", "claude/src/pipe.ts", "claude/src/telemetry.ts", "claude/bin/**", "claude/mcp.mjs", "claude/ecosystem*.cjs"],
+  "scorecard": [
+    { "signal": "tool_error_rate", "worseBy": "3pp" },
+    { "signal": "eval_pass_rate", "worseBy": "5pp" }
+  ],
+  "rollout": { "stages": ["internal", "10%", "100%"], "observeHours": 24, "minSamples": 20, "defaultChannel": "stable" },
+  "health": "curl -fsS http://127.0.0.1:3215/health"
+}
