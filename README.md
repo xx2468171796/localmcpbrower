@@ -71,6 +71,19 @@ node claude/mcp.mjs update
 
 HTTP 模式在 Claude Code 里 `/mcp` 重连即可生效；stdio 模式下次会话自动生效。对 AI 说"更新本地 MCP"即可触发。
 
+## 自动更新（堡垒机发布中心，2.4.0 起）
+
+装了 ai-kit 1.25.0 以上的电脑不用再手动升级：ai-kit 后台按堡垒机「发布中心」分给本人的版本自动装（员工默认稳定版，业主和少数人在 latest 名单里先拿新版本）。
+流程：核发布中心签名和 sha256 → 装到 `~/.ankotti/browser-mcp/versions/<版本>/`（原来 git 装的目录原样保留）→ `npm ci` + Chromium（`PLAYWRIGHT_SKIP_BROWSER_GC=1`，走公司下载节点 / npmmirror）→
+`claude/bin/release-smoke.mjs` 冒烟 → **等浏览器空闲**（`/health` 的 `inFlight = 0` 且 `lastCallAt` 超过 10 分钟）→ PM2 换成新版本 → `/health` 不健康就自动退回旧版并上报。
+登录态沿用原来的数据目录（`storage/data-root.txt` 跟着走）。MCP 配置会改成指向启动器 `~/.ankotti/browser-mcp/shim.mjs`；2.4.0 的 shim 在常驻服务重启时**自动重连**，不用再 `/mcp`。
+看状态：`node ~/.ankotti/ai-kit/browser-mcp.mjs status`；关掉：环境变量 `ANKOTTI_BROWSER_AUTOUPDATE=off`。细节见堡垒机仓库 `docs/architecture.md`「浏览器 MCP 自动更新」。
+
+- **`/health`** 多了 `version`（只认 `claude/package.json`）、`inFlight`、`lastCallAt`、`calls`，供更新器判断空闲。
+- **出发布包**（管理员 / 以后的构建机）：`cd claude && npm run build && node scripts/pack-release.mjs --version <版本>` → `release/localmcpbrower-<版本>.tgz`，
+  放到安装源 `/opt/baolei-dl/evolve/localmcpbrower/<版本>/` 后在堡垒机 `POST /api/admin/releases` 登记，考卷成绩用 `action=eval` 登记。
+- 断线续接实测：`node claude/test/shim-reconnect.mjs`。
+
 ## 考卷（自动评测）与工具调用遥测
 
 - **考卷**：在仓库根目录跑 `pnpm eval`跑 50 道固定题，全部打本地测试页、不连外网：
