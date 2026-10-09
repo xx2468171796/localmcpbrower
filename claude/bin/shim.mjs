@@ -88,11 +88,34 @@ function connectOnce(endpoint) {
  * 窗口一多内存就被顶爆 —— 现在不管服务在不在,注册的永远是 shim,全机共用一个浏览器。
  * 多个窗口同时拉起没关系:mcp.mjs start 发现服务已在跑会直接跳过。
  */
-async function connect() {
+/**
+ * 拉起常驻服务用哪个版本的 mcp.mjs:经 ai-kit 启动器(~/.ankotti/browser-mcp/shim.mjs)起的,启动器设了
+ * LOCALMCP_STATE_FILE,用它记的当前版本(自动更新换过版本后,老窗口里的 shim 也不会把旧版本拉起来);否则用 shim 自己旁边的。
+ */
+function mcpScript() {
+  const own = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'mcp.mjs');
+  const stateFile = process.env.LOCALMCP_STATE_FILE;
+  if (!stateFile) return own;
   try {
-    return await connectOnce(pickEndpoint());
-  } catch {
-    const mcp = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'mcp.mjs');
+    const root = JSON.parse(fs.readFileSync(stateFile, 'utf8')).current?.root;
+    const p = root ? path.join(root, 'claude', 'mcp.mjs') : null;
+    if (p && fs.existsSync(p)) return p;
+  } catch { /* 读不到就用自己旁边的 */ }
+  return own;
+}
+
+/**
+ * graceMs:断线重连时先只等服务自己回来这么久、不去拉起 —— 多半是自动更新在换版本(先停旧的再起新的),
+ * 这时抢着用自己这个版本的 mcp.mjs 把服务拉起来,会和更新器打架(2026-10-09 回滚演练里实测到)。
+ */
+async function connect(graceMs = 0) {
+  for (const deadline = Date.now() + graceMs; ; ) {
+    try { return await connectOnce(pickEndpoint()); } catch { /* 下面等一下或拉起 */ }
+    if (Date.now() >= deadline) break;
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  {
+    const mcp = mcpScript();
     process.stderr.write(`[shim] 常驻服务没在跑,正在拉起:node mcp.mjs start ${service}\n`);
     try {
       spawn(process.execPath, [mcp, 'start', service], { cwd: path.dirname(mcp), detached: true, stdio: 'ignore', windowsHide: true }).unref();
@@ -120,6 +143,7 @@ let sock = null;
 let resuming = false;
 let stdinEnded = false;
 let replayRest = [];
+const RECONNECT_GRACE_MS = 180_000; // 换版本最慢:新版本健康检查 150 秒 + 退回;正常换版本 10 秒内就回来
 const resumes = [];        // 最近的续接时刻:10 分钟内超过 20 次就放弃(服务在反复崩)
 
 function toServer(line) {
@@ -164,7 +188,7 @@ async function onServerClosed() {
   resuming = true;
   for (const line of relay.failPending('reconnecting')) process.stdout.write(line + '\n');
   process.stderr.write('[shim] 常驻服务断开了(可能在换版本),正在重连…\n');
-  const s = await connect();
+  const s = await connect(RECONNECT_GRACE_MS);
   sock = s;
   attach(s);
   const [opening, ...rest] = relay.replayLines();
