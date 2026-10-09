@@ -8,3 +8,4 @@ Thumbs.db
 package-lock.json
 claude/eval/results.json
 claude/eval/smoke-results.json
+release/

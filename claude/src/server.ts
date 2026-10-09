@@ -28,6 +28,7 @@ import { startPipeLeg } from './pipe.js';
 import { buildHumanRequest, readHumanAck } from './elicit.js';
 import { createToolTelemetry, RetryTracker, sampleOf, type ToolCallSample } from './telemetry.js';
 import type { HealthCheckResult } from './types.js';
+import { Activity, packageVersion } from './activity.js';
 import {
   NavigateSchema, ClickSchema, TypeSchema, ScreenshotSchema,
   ExecuteJsSchema, ScrollSchema, WaitForSelectorSchema,
@@ -45,7 +46,8 @@ import {
 
 const PORT = parseInt(process.env['PORT'] ?? '3211', 10);
 const startTime = Date.now();
-const SERVER_VERSION = '2.3.2';
+// 版本号只认 package.json(发布中心构建时写入候选版本号),见 activity.ts
+const SERVER_VERSION = packageVersion();
 
 /**
  * pipe 端点的服务名。
@@ -200,6 +202,8 @@ type ToolHandler = (...args: never[]) => unknown;
  */
 // 工具调用遥测(见 telemetry.ts):本机配了 baolei MCP 密钥默认开,BROWSER_TELEMETRY=0 关。只发工具名和数字
 const telemetry = createToolTelemetry(SERVER_VERSION, STDIO ? 'stdio' : PIPE_SERVICE);
+// 工具调用活动(两条腿合计):/health 报给本机自动更新器,它只在空闲时换版本
+const activity = new Activity();
 
 function humanizeOutput(server: McpServer): void {
   const retries = new RetryTracker(); // 每个会话一个:重试率按会话算
@@ -210,12 +214,15 @@ function humanizeOutput(server: McpServer): void {
     const fn = handler as (...a: unknown[]) => Promise<{ content?: Array<{ type: string; text?: string }>; _meta?: Record<string, unknown> }>;
     return register(name, config, async (...args: unknown[]) => {
       const t0 = performance.now();
+      const end = activity.begin();
       let out: Awaited<ReturnType<typeof fn>>;
       try {
         out = await fn(...args);
       } catch (e) {
         record({ tool: String(name), ok: false, ms: Math.round(performance.now() - t0), bytes: 0, truncated: false });
         throw e;
+      } finally {
+        end();
       }
       const ms = performance.now() - t0;
       const i = out?.content?.findIndex((c) => c.type === 'text') ?? -1;
@@ -805,7 +812,9 @@ function createApp(): express.Application {
       // sessions = MCP 传输层会话数；browserSessions = 真正持有标签页的浏览器会话数。
       // 两者对不上就说明会话回收漏了(排查资源泄漏的第一手指标)。
       sessions: transports.size,
-      browserSessions: bm.countSessions()
+      browserSessions: bm.countSessions(),
+      version: SERVER_VERSION,
+      ...activity.snapshot(),
     };
     res.status(result.browserAlive ? 200 : 503).json(result);
   });

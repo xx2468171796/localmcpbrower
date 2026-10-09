@@ -92,4 +92,12 @@ export interface HealthCheckResult {
    * 要判断回收有没有漏,看这个值在所有客户端断开后是否回落到 0。
    */
   browserSessions?: number;
+  /** 正在跑的版本(claude/package.json) */
+  version?: string;
+  /** 正在执行的工具调用数(两条腿合计);本机自动更新器只在为 0 且空闲够久时换版本 */
+  inFlight?: number;
+  /** 最近一次工具调用开始或结束的时刻(epoch ms),启动以来没调用过为 null */
+  lastCallAt?: number | null;
+  /** 启动以来的工具调用总数 */
+  calls?: number;
 }

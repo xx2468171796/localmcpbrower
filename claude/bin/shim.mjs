@@ -16,6 +16,8 @@
  * 和生命周期,不需要 44 个工具各自多带一个 handle 参数,也就不存在模型漏传导致的串台。
  * 详见 `src/pipe.ts` 头部。
  *
+ * 常驻服务重启时自动重连并重放开场握手(session-relay.mjs),客户端不用手动 /mcp 重连。
+ *
  * 刻意保持无依赖、不参与构建:它要在 `npm install` 之前就能跑,
  * 也不该因为 dist 没构建就失效。
  */
@@ -26,6 +28,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { LineSplitter, SessionRelay } from './session-relay.mjs';
 
 const service = process.argv[2] ?? 'headless';
 
@@ -108,20 +111,90 @@ async function connect() {
   }
 }
 
+// ── 转发 + 断线续接(见 session-relay.mjs)──
+// 常驻服务重启(自动更新换版本 / 崩溃被 PM2 拉起)时不再跟着退出:在途请求各回一条错误,重连后重放开场握手,
+// 客户端那边这个 MCP 不会「断开」,不用人手动 /mcp 重连。
+const relay = new SessionRelay();
+const queue = [];          // 续接期间客户端发来的行,握手重放完再发
+let sock = null;
+let resuming = false;
+let stdinEnded = false;
+let replayRest = [];
+const resumes = [];        // 最近的续接时刻:10 分钟内超过 20 次就放弃(服务在反复崩)
+
+function toServer(line) {
+  if (!sock || resuming) queue.push(line);
+  else sock.write(line + '\n');
+}
+
+function replayDone() {
+  for (const l of replayRest) sock.write(l + '\n');
+  replayRest = [];
+  resuming = false;
+  for (const l of queue.splice(0)) sock.write(l + '\n');
+  process.stderr.write('[shim] 已重新接上常驻服务\n');
+}
+
+function attach(s) {
+  // Nagle 会把小的 JSON-RPC 消息攒着,给交互式调用凭空加延迟
+  s.setNoDelay(true);
+  s.setEncoding('utf8');
+  const lines = new LineSplitter();
+  s.on('data', (chunk) => {
+    for (const line of lines.push(chunk)) {
+      if (relay.fromServer(line)) process.stdout.write(line + '\n');
+      else replayDone();
+    }
+  });
+  s.on('error', (e) => process.stderr.write(`[shim] 与常驻服务的连接出错:${e.code ?? e.message}\n`));
+  s.on('close', () => { if (s === sock) void onServerClosed(); });
+}
+
+async function onServerClosed() {
+  sock = null;
+  // 客户端已经走了,或者还没握过手(没东西可重放):照旧退出
+  if (stdinEnded || !relay.canResume()) process.exit(0);
+  const now = Date.now();
+  resumes.push(now);
+  while (resumes.length && now - resumes[0] > 10 * 60_000) resumes.shift();
+  if (resumes.length > 20) {
+    process.stderr.write('[shim] 常驻服务 10 分钟内断了 20 多次,不再自动重连\n');
+    process.exit(1);
+  }
+  resuming = true;
+  for (const line of relay.failPending('reconnecting')) process.stdout.write(line + '\n');
+  process.stderr.write('[shim] 常驻服务断开了(可能在换版本),正在重连…\n');
+  const s = await connect();
+  sock = s;
+  attach(s);
+  const [opening, ...rest] = relay.replayLines();
+  replayRest = rest;
+  s.write(opening + '\n');
+  setTimeout(() => {
+    if (resuming && sock === s) {
+      process.stderr.write('[shim] 重连后握手 30 秒没回应,退出(客户端重连即可)\n');
+      process.exit(1);
+    }
+  }, 30_000).unref();
+}
+
 // 连上之前客户端发来的消息留在 stdin 缓冲里,连上后一并转发,不丢
 process.stdin.pause();
-const sock = await connect();
-
-// Nagle 会把小的 JSON-RPC 消息攒着,给交互式调用凭空加延迟
-sock.setNoDelay(true);
-sock.on('error', (e) => {
-  process.stderr.write(`[shim] 与常驻服务的连接出错:${e.code ?? e.message}\n`);
-  process.exit(1);
+sock = await connect();
+attach(sock);
+process.stdin.setEncoding('utf8');
+const fromClient = new LineSplitter();
+process.stdin.on('data', (chunk) => {
+  for (const line of fromClient.push(chunk)) {
+    relay.fromClient(line);
+    toServer(line);
+  }
 });
-
-process.stdin.pipe(sock);
-sock.pipe(process.stdout);
-
-// 任意一端断开都要收尾,否则客户端会一直等一个永远不来的响应
-sock.on('close', () => process.exit(0));
-process.stdin.on('end', () => sock.end());
+// 客户端断开就收尾,否则常驻服务会一直留着这个会话
+process.stdin.on('end', () => {
+  stdinEnded = true;
+  if (fromClient.rest) toServer(fromClient.rest);
+  if (sock) sock.end();
+  else process.exit(0);
+});
+process.stdin.resume();
