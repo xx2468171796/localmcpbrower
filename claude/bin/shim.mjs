@@ -105,13 +105,27 @@ function mcpScript() {
 }
 
 /**
+ * 自动更新器正在换版本吗:它换之前在 state.json 写 switching.since,换完(成功或退回)清掉。
+ * 超过 20 分钟的标记当作更新器死了留下的,不再等(最慢一次换版本:两个服务各等 150 秒 + 退回再各 150 秒 ≈ 10 分钟)。
+ */
+const SWITCH_STALE_MS = 20 * 60_000;
+function switchingNow(stateFile = process.env.LOCALMCP_STATE_FILE, now = Date.now()) {
+  if (!stateFile) return false;
+  try {
+    const since = Date.parse(JSON.parse(fs.readFileSync(stateFile, 'utf8')).switching?.since ?? '');
+    return Number.isFinite(since) && now - since < SWITCH_STALE_MS;
+  } catch { return false; }
+}
+
+/**
  * graceMs:断线重连时先只等服务自己回来这么久、不去拉起 —— 多半是自动更新在换版本(先停旧的再起新的),
  * 这时抢着用自己这个版本的 mcp.mjs 把服务拉起来,会和更新器打架(2026-10-09 回滚演练里实测到)。
  */
 async function connect(graceMs = 0) {
   for (const deadline = Date.now() + graceMs; ; ) {
     try { return await connectOnce(pickEndpoint()); } catch { /* 下面等一下或拉起 */ }
-    if (Date.now() >= deadline) break;
+    // 更新器还在换版本:接着等,不抢着拉起(它退回老版本时会自己起)
+    if (Date.now() >= deadline && !switchingNow()) break;
     await new Promise((r) => setTimeout(r, 1000));
   }
   {
@@ -143,7 +157,7 @@ let sock = null;
 let resuming = false;
 let stdinEnded = false;
 let replayRest = [];
-const RECONNECT_GRACE_MS = 180_000; // 换版本最慢:新版本健康检查 150 秒 + 退回;正常换版本 10 秒内就回来
+const RECONNECT_GRACE_MS = 180_000; // 没有更新器标记时等这么久;更新器写了 switching 标记就一直等到它清掉(见 switchingNow)
 const resumes = [];        // 最近的续接时刻:10 分钟内超过 20 次就放弃(服务在反复崩)
 
 function toServer(line) {
