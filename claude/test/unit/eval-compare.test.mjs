@@ -61,3 +61,20 @@ test('newly passing and new tasks are notes', () => {
   assert.equal(c.ok, true);
   assert.equal(c.notes.length, 2);
 });
+
+test('isolatedEnv: the system under test gets no secrets and a scratch home', async () => {
+  const { isolatedEnv } = await import('../../eval/harness.mjs');
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'iso-test-'));
+  try {
+    const env = isolatedEnv(scratch, { PATH: '/bin', BAOLEI_MCP_TOKEN: 'bl_secret', BAOLEI_MCP_URL: 'http://b/mcp', GITEA_TOKEN: 'x', HOME: '/real', USERPROFILE: 'C:/real' });
+    assert.equal(env.PATH, '/bin');
+    for (const k of ['BAOLEI_MCP_TOKEN', 'BAOLEI_MCP_URL', 'GITEA_TOKEN']) assert.equal(env[k], undefined, k);
+    assert.ok(env.HOME.startsWith(scratch) && env.USERPROFILE.startsWith(scratch) && env.APPDATA.startsWith(scratch));
+    assert.ok(!Object.values(env).some((v) => String(v).includes('bl_secret')));
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+});

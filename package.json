@@ -3,10 +3,10 @@
   "private": true,
   "description": "Repo root entry points. The judge-layer commands live here (protected by .ankotti/evolve.json); the MCP server package is claude/.",
   "scripts": {
-    "build": "npm --prefix claude run build",
-    "eval": "npm --prefix claude run build && node claude/eval/run.mjs",
-    "eval:smoke": "npm --prefix claude run build && node claude/eval/smoke-sites.mjs",
-    "eval:baseline": "npm --prefix claude run build && node claude/eval/run.mjs --update-baseline",
-    "test": "npm --prefix claude run build && node --test claude/test/unit/"
+    "build": "node claude/node_modules/typescript/bin/tsc -p claude",
+    "eval": "node claude/node_modules/typescript/bin/tsc -p claude && node claude/eval/run.mjs",
+    "eval:smoke": "node claude/node_modules/typescript/bin/tsc -p claude && node claude/eval/smoke-sites.mjs",
+    "eval:baseline": "node claude/node_modules/typescript/bin/tsc -p claude && node claude/eval/run.mjs --update-baseline",
+    "test": "node claude/node_modules/typescript/bin/tsc -p claude && node --test claude/test/unit/"
   }
 }

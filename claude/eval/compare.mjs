@@ -1,7 +1,7 @@
 /**
  * 考卷成绩的汇总与「和基线比」(纯函数,单测见 test/eval-compare.test.mjs)。
  *
- * 放行规则(和 .ankotti/evolve.json 的 scorecard 同口径):
+ * 放行规则(和 .ankotti/evolve.json 的 gates 同口径):
  *   - 基线里通过的题现在没过 → 不放行(回归);
  *   - 基线里有、这次没跑的题 → 不放行(考卷被删 / 被跳过);
  *   - 通过率比基线低 5 个百分点以上 → 不放行;

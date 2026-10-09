@@ -5,6 +5,8 @@
  *   - 空闲端口(不是 3213 / 3215),独立 pipe 名 eval-<pid>(不抢 headless / headed 的管道);
  *   - profile、数据目录、截图、临时文件全在系统临时目录下新建的 eval 目录里,跑完删掉;
  *   - 遥测关掉(BROWSER_TELEMETRY=0),考试数据不进线上成绩单;
+ *   - 被测服务只拿白名单环境变量,HOME / USERPROFILE / APPDATA 指向临时目录:被测代码是 AI 可改的,
+ *     不能让它读到本机的 baolei 密钥(BAOLEI_MCP_TOKEN、~/.claude.json、~/.codex/config.toml)或别的秘密;
  *   - 结束时按进程树强杀(连同 chromium),再确认临时 profile 能删掉(删不掉 = 有浏览器漏了)。
  * 这个文件属于裁判层(.ankotti/evolve.json protected),AI 改进流程不得修改。
  */
@@ -40,6 +42,31 @@ function killTree(pid) {
   }
 }
 
+/** 浏览器内核装在哪(patchright 默认位置;HOME 换掉以后要显式告诉它) */
+function browsersPath() {
+  if (process.env.PLAYWRIGHT_BROWSERS_PATH) return process.env.PLAYWRIGHT_BROWSERS_PATH;
+  if (process.platform === 'win32') return path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'ms-playwright');
+  if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Caches', 'ms-playwright');
+  return path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache'), 'ms-playwright');
+}
+
+/** 被测服务的环境:只放跑起来必需的系统变量,家目录全部换成临时目录,不带任何密钥 */
+export function isolatedEnv(scratch, source = process.env) {
+  const KEEP = ['PATH', 'Path', 'PATHEXT', 'SystemRoot', 'SYSTEMROOT', 'windir', 'ComSpec', 'SystemDrive', 'NUMBER_OF_PROCESSORS',
+    'PROCESSOR_ARCHITECTURE', 'OS', 'LANG', 'LC_ALL', 'TZ', 'DISPLAY', 'WAYLAND_DISPLAY', 'XDG_RUNTIME_DIR'];
+  const env = {};
+  for (const k of KEEP) if (source[k] !== undefined) env[k] = source[k];
+  const home = path.join(scratch, 'home');
+  const tmp = path.join(scratch, 'tmp');
+  for (const d of [home, tmp, path.join(home, 'AppData', 'Roaming'), path.join(home, 'AppData', 'Local')]) fs.mkdirSync(d, { recursive: true });
+  Object.assign(env, {
+    HOME: home, USERPROFILE: home, APPDATA: path.join(home, 'AppData', 'Roaming'), LOCALAPPDATA: path.join(home, 'AppData', 'Local'),
+    XDG_CONFIG_HOME: path.join(home, '.config'), XDG_CACHE_HOME: path.join(home, '.cache'),
+    TEMP: tmp, TMP: tmp, TMPDIR: tmp, USERNAME: 'eval', PLAYWRIGHT_BROWSERS_PATH: browsersPath(),
+  });
+  return env;
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** 起被测服务(dist/server.js,HTTP 模式),等到 /health 报 browserAlive */
@@ -51,7 +78,7 @@ export async function startServer({ root, log }) {
   const dirs = { profile: path.join(scratch, 'profile'), data: path.join(scratch, 'data'), legacy: path.join(scratch, 'legacy'), shots: path.join(scratch, 'shots'), files: path.join(scratch, 'files') };
   for (const d of Object.values(dirs)) fs.mkdirSync(d, { recursive: true });
   const env = {
-    ...process.env,
+    ...isolatedEnv(scratch),
     PORT: String(port),
     HOST: '127.0.0.1',
     PIPE_SERVICE: `eval-${process.pid}`,
@@ -106,18 +133,20 @@ export async function connect(base) {
  * 一道题的执行上下文:call() 调工具并记指标,expect() 断言。
  * 指标:ms(调用耗时)、bytes(回给 AI 的全部文本字节,token 的代理)、toolErrors(非预期的工具失败)。
  */
-export function taskContext(client, env) {
+export function taskContext(client, env, signal) {
   const calls = [];
   const ctx = {
     ...env,
     calls,
+    signal,
     async call(name, args = {}, opts = {}) {
+      if (signal?.aborted) throw new AssertionFailed('题目已超时,后续调用取消');
       const t0 = performance.now();
       let raw;
       let bytes = 0;
       let threw = null;
       try {
-        const r = await client.callTool({ name, arguments: args }, undefined, { timeout: opts.timeout ?? 60_000 });
+        const r = await client.callTool({ name, arguments: args }, undefined, { timeout: opts.timeout ?? 60_000, signal });
         for (const c of r.content ?? []) if (typeof c.text === 'string') bytes += Buffer.byteLength(c.text);
         raw = r._meta?.[RAW_META_KEY];
         if (!raw) { try { raw = JSON.parse(r.content?.[0]?.text ?? ''); } catch { raw = { success: !r.isError, data: r.content?.[0]?.text } }; }
@@ -150,16 +179,27 @@ export function taskContext(client, env) {
 
 /** 跑一道题,收集结果(题目自己的超时兜底,免得一道题卡死整场) */
 export async function runTask(client, task, env) {
-  const ctx = taskContext(client, env);
+  const abort = new AbortController();
+  const ctx = taskContext(client, env, abort.signal);
   const t0 = performance.now();
+  const limit = task.timeoutMs ?? 90_000;
   let error = null;
+  let timer;
+  const running = Promise.resolve().then(() => task.run(ctx));
   try {
     await Promise.race([
-      task.run(ctx),
-      sleep(task.timeoutMs ?? 90_000).then(() => { throw new AssertionFailed(`超时 ${task.timeoutMs ?? 90_000}ms`); }),
+      running,
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new AssertionFailed(`超时 ${limit}ms`)), limit); }),
     ]);
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
+  } finally {
+    clearTimeout(timer);
+  }
+  if (error && !abort.signal.aborted && /^超时 /.test(error)) {
+    // 超时:取消在途调用、拦下后续调用,并等这道题真正停下来,免得它和下一道题抢同一个浏览器
+    abort.abort();
+    await Promise.race([running.catch(() => {}), sleep(10_000)]);
   }
   const unexpected = ctx.calls.filter((c) => !c.ok && !c.expectedError).length;
   return {

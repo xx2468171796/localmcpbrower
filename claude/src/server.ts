@@ -26,7 +26,7 @@ import * as tools from './tools.js';
 import { killPortProcess } from './portkill.js';
 import { startPipeLeg } from './pipe.js';
 import { buildHumanRequest, readHumanAck } from './elicit.js';
-import { createToolTelemetry, sampleOf } from './telemetry.js';
+import { createToolTelemetry, RetryTracker, sampleOf, type ToolCallSample } from './telemetry.js';
 import type { HealthCheckResult } from './types.js';
 import {
   NavigateSchema, ClickSchema, TypeSchema, ScreenshotSchema,
@@ -202,6 +202,8 @@ type ToolHandler = (...args: never[]) => unknown;
 const telemetry = createToolTelemetry(SERVER_VERSION, STDIO ? 'stdio' : PIPE_SERVICE);
 
 function humanizeOutput(server: McpServer): void {
+  const retries = new RetryTracker(); // 每个会话一个:重试率按会话算
+  const record = (sample: ToolCallSample): void => { if (telemetry) telemetry.record(retries.mark(sample)); };
   const register = server.registerTool.bind(server) as (...a: unknown[]) => unknown;
   (server as unknown as { registerTool: (...a: unknown[]) => unknown }).registerTool = (name: unknown, config: unknown, handler: unknown) => {
     const title = (config as { title?: string }).title ?? String(name);
@@ -212,7 +214,7 @@ function humanizeOutput(server: McpServer): void {
       try {
         out = await fn(...args);
       } catch (e) {
-        telemetry?.record({ tool: String(name), ok: false, ms: Math.round(performance.now() - t0), bytes: 0, truncated: false });
+        record({ tool: String(name), ok: false, ms: Math.round(performance.now() - t0), bytes: 0, truncated: false });
         throw e;
       }
       const ms = performance.now() - t0;
@@ -220,13 +222,13 @@ function humanizeOutput(server: McpServer): void {
       let parsed: unknown;
       if (i >= 0) { try { parsed = JSON.parse(out.content![i]!.text ?? ''); } catch { parsed = undefined; } }
       if (!parsed || typeof parsed !== 'object' || typeof (parsed as { success?: unknown }).success !== 'boolean') {
-        telemetry?.record(sampleOf(String(name), out, ms));
+        record(sampleOf(String(name), out, ms));
         return out;
       }
       const content = [...out.content!];
       content[i] = { type: 'text', text: formatResult(title, parsed as { success: boolean; data?: unknown; error?: string }, ms) };
       const result = { ...out, content, _meta: { ...(out._meta ?? {}), [RAW_META_KEY]: parsed } };
-      telemetry?.record(sampleOf(String(name), result, ms, parsed));
+      record(sampleOf(String(name), result, ms, parsed));
       return result;
     });
   };
@@ -944,6 +946,7 @@ function installHttpShutdown(): void {
     }, 2000);
     hardExit.unref?.();
     for (const [sid, entry] of transports) { try { entry.transport.close?.(); } catch { /* noop */ } releaseSession(sid); }
+    await telemetry?.drain(800); // 退出前补发遥测(在 2 秒兜底之内)
     try { await getBrowserManager().close(); } catch (e) { console.error('[Server] close error:', e); }
     // 不等连接排空：SSE 长连接会让 server.close() 的回调永远不触发
     try { httpServer?.close(); } catch { /* noop */ }
@@ -1047,6 +1050,7 @@ async function runStdio(): Promise<void> {
       process.exit(1);
     }, 2000);
     hardExit.unref?.();
+    await telemetry?.drain(800); // 退出前补发遥测(短会话也进成绩单)
     try {
       await getBrowserManager().close();
     } catch (e) {

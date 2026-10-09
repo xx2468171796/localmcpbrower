@@ -17,13 +17,19 @@
     "claude/test/unit/eval-compare.test.mjs",
     ".ankotti/evolve.json",
     "package.json",
+    "claude/package.json",
+    "claude/tsconfig.json",
     ".gitea/**",
     ".github/**"
   ],
   "humanReview": ["claude/src/server.ts", "claude/src/pipe.ts", "claude/src/telemetry.ts", "claude/bin/**", "claude/mcp.mjs", "claude/ecosystem*.cjs"],
+  "gates": [
+    { "signal": "eval_pass_rate", "worseBy": "5pp", "source": "pnpm eval" },
+    { "signal": "eval_tool_error_rate", "worseBy": "3pp", "source": "pnpm eval" }
+  ],
   "scorecard": [
-    { "signal": "tool_error_rate", "worseBy": "3pp" },
-    { "signal": "eval_pass_rate", "worseBy": "5pp" }
+    { "signal": "tool_error_rate", "worseBy": "3pp", "source": "telemetry tool_calls" },
+    { "signal": "retry_rate", "worseBy": "3pp", "source": "telemetry tool_calls" }
   ],
   "rollout": { "stages": ["internal", "10%", "100%"], "observeHours": 24, "minSamples": 20, "defaultChannel": "stable" },
   "health": "curl -fsS http://127.0.0.1:3215/health"

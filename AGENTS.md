@@ -62,8 +62,14 @@ Codex 写 `~/.codex/config.toml` 时,Windows 路径**必须用 TOML 字面量字
 
 ## 裁判层(AI 不得修改)
 
-`claude/eval/**`(考卷、测试页、放行规则、基线)、`.ankotti/evolve.json`、CI 配置属于**裁判层**,只有人能改。
-AI 改进代码时只能改被测代码,让 `pnpm eval` 放行;碰到裁判层的改动会被自动关掉。基线(`npm run eval:baseline`)也只由人更新。
+`claude/eval/**`(考卷、测试页、放行规则、基线)、根目录和 `claude/` 的 `package.json`、`claude/tsconfig.json`、
+`.ankotti/evolve.json`、CI 配置属于**裁判层**,只有人能改。
+AI 改进代码时只能改被测代码,让 `pnpm eval` 放行;碰到裁判层的改动会被自动关掉。基线(`pnpm eval:baseline`)也只由人更新。
+
+考卷的防作弊(被测代码是 AI 可改的,不能让它改分数或拿到密钥):
+- 基线在起被测服务之前读进内存;裁判文件跑前跑后各算一次指纹,中途被改过 → 不放行(退出码 3);
+- 被测服务只拿白名单环境变量,HOME / USERPROFILE / APPDATA 指向临时目录,读不到本机 baolei 密钥;
+- 进化流水线应从可信的 main 拷贝运行 `claude/eval/**`,工作区只当被测对象,并且不带凭据、不联网。
 
 ## 开发约束
 

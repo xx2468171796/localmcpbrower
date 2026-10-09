@@ -73,17 +73,18 @@ HTTP 模式在 Claude Code 里 `/mcp` 重连即可生效；stdio 模式下次会
 
 ## 考卷（自动评测）与工具调用遥测
 
-- **考卷**：`pnpm eval`（或 `npm run eval`，在仓库根目录或 `claude/` 下都行）跑 50 道固定题，全部打本地测试页、不连外网：
+- **考卷**：在仓库根目录跑 `pnpm eval`跑 50 道固定题，全部打本地测试页、不连外网：
   导航、snapshot ref、点击 / 输入 / 填表、iframe（含跨站）、上传 / 下载 / 截图 / PDF、batch_fetch、crawl_pages 翻页、
   extract_article、run_script（`__ego`）、wait_for_selector、工作区隔离、标签页等。每题核对页面上的真实效果，
   记成功率、耗时、输出字节（token 的代理）和工具报错，写 `claude/eval/results.json`，和 `claude/eval/baseline.json` 比：
   基线通过的题失败、通过率低 5 个百分点以上、工具报错率高 3 个百分点以上 → 不放行（退出码非 0）。
-  被测服务起在空闲端口、临时 profile、独立管道名，跑完清干净，**不碰本机 PM2 的 3213 / 3215 和你的登录态**。
+  被测服务起在空闲端口、临时 profile、独立管道名、临时家目录（拿不到本机密钥），跑完清干净，**不碰本机 PM2 的 3213 / 3215 和你的登录态**。
+  基线在起服务前读入；考试过程中裁判文件被改动 → 直接不放行。
 - **真实站点冒烟**：`pnpm eval:smoke`，8 个外站，只当参考、不计入放行（公司网络下国外站点可能连不上）。
-- **考卷属于裁判层**：`claude/eval/**`、`.ankotti/evolve.json` 只有人能改；更新基线 `npm run eval:baseline` 也只由人做。
+- **考卷属于裁判层**：`claude/eval/**`、两个 `package.json`、`claude/tsconfig.json`、`.ankotti/evolve.json` 只有人能改；更新基线 `pnpm eval:baseline` 也只由人做。
   见 `.ankotti/evolve.json` 与堡垒机仓库 `docs/research/2026-10-self-evolving-projects.md` 6.1。
-- **遥测**：每次工具调用记 `{tool, ok, ms, bytes, truncated}`，攒批异步发到堡垒机（只有工具名和数字，不带参数、网址、页面内容；
-  发不出去不影响工具）。本机配了 baolei MCP 密钥时默认开，`BROWSER_TELEMETRY=0` 关；上报地址和格式见 `claude/src/telemetry.ts` 头部。
+- **遥测**：每次工具调用记 `{tool, ok, ms, bytes, truncated, retry}`，攒批异步发到堡垒机（首批 10 秒、之后每分钟，退出前尽量补发一次）（只有工具名和数字，不带参数、网址、页面内容；
+  发不出去不影响工具）。本机配了 baolei MCP 密钥时默认开，`BROWSER_TELEMETRY=0` 关；自定义上报地址时必须同时给 `BROWSER_TELEMETRY_TOKEN`（baolei 密钥只发往 baolei 自己）；上报地址和格式见 `claude/src/telemetry.ts` 头部。
 
 ## 文档
 
