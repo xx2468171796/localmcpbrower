@@ -42,8 +42,9 @@ jobs:
           cd "$W/repo"
           git remote add origin "$GITEA_URL/$GITHUB_REPOSITORY.git"
           header="Authorization: Basic $(printf 'x-access-token:%s' "$JOB_TOKEN" | base64 -w0)"
-          git -c http.extraheader="$header" fetch -q --no-tags origin "$BASE_SHA" "refs/pull/$PR_NUMBER/head"
+          git -c http.extraheader="$header" fetch -q --no-tags origin "refs/pull/$PR_NUMBER/head"
           test "$(git rev-parse FETCH_HEAD)" = "$HEAD_SHA" || { echo "PR 头提交对不上（推送太快？下一次推送会重跑）"; exit 1; }
+          git -c http.extraheader="$header" fetch -q --no-tags origin "$BASE_SHA"
           git -c advice.detachedHead=false checkout -q --detach "$HEAD_SHA"
           git cat-file -e "$BASE_SHA^{commit}"
 
