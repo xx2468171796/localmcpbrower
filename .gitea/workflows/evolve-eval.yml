@@ -1,0 +1,111 @@
+# 浏览器 MCP 考卷 CI（裁判层，只有人能改；AI 补丁碰了 .gitea/** 堡垒机直接关 PR）。
+#
+# 堡垒机进化流水线的补丁门槛只认这里写出的提交状态「evolve-eval / …」（必须是 Gitea Actions 写的）：
+# 通过才自动合并 evolve/* 分支的 PR，失败就关。说明见 baolei docs/architecture.md「进化流水线」。
+#
+# 要点：
+# - 用 pull_request_target：跑的永远是目标分支上的这份流程，PR 改不到它；
+# - 代码取 PR 头提交，但考卷 / 评判用的文件一律换成目标分支（base）的版本：
+#   claude/eval/**、evolve/**、.ankotti/evolve.json、根 package.json（pnpm eval 的定义）、claude/tsconfig.json、
+#   claude/test/unit/eval-compare.test.mjs；claude/package.json 用 base 的，只把依赖版本换成 PR 的
+#   （升级 PR 要装新版本，锁文件得对得上；堡垒机门槛另外核对升级 PR 只改了登记的那个依赖）；
+# - 不带任何密钥：仓库令牌只在「取代码」这一步用（它不跑 PR 的代码）；
+# - 跑 PR 代码的步骤都在 bwrap 沙箱里：看不到运行器的 .runner、家目录、/opt，环境变量清空；
+#   装依赖只能连公司下载节点（构建机出站白名单），考卷那一步没有网络（只有沙箱自己的回环）；
+# - 运行器：ubuntu-244 上隔离账号 baolei-build 的仓库级运行器 build-ubuntu244，标签 evolve-eval-host（主机模式，不用 Docker）。
+name: evolve-eval
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: read
+jobs:
+  eval:
+    runs-on: evolve-eval-host
+    timeout-minutes: 45
+    env:
+      GITEA_URL: http://192.168.110.246:3001
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - name: 取代码（PR 头提交 + 目标分支的考卷文件）
+        env:
+          JOB_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          test -n "$BASE_SHA" && test -n "$HEAD_SHA" || { echo "拿不到 PR 的 base / head 提交"; exit 1; }
+          W="$GITHUB_WORKSPACE/eval-work"
+          rm -rf "$W" "$GITHUB_WORKSPACE/bin"
+          mkdir -p "$W" "$GITHUB_WORKSPACE/bin"
+          git init -q "$W/repo"
+          cd "$W/repo"
+          git remote add origin "$GITEA_URL/$GITHUB_REPOSITORY.git"
+          header="Authorization: Basic $(printf 'x-access-token:%s' "$JOB_TOKEN" | base64 -w0)"
+          git -c http.extraheader="$header" fetch -q --no-tags origin "refs/pull/$PR_NUMBER/head"
+          test "$(git rev-parse FETCH_HEAD)" = "$HEAD_SHA" || { echo "PR 头提交对不上（推送太快？下一次推送会重跑）"; exit 1; }
+          git -c http.extraheader="$header" fetch -q --no-tags origin "$BASE_SHA"
+          git -c advice.detachedHead=false checkout -q --detach "$HEAD_SHA"
+          git cat-file -e "$BASE_SHA^{commit}"
+
+          # 考卷 / 评判文件换成目标分支的版本（目录先删再取，PR 新加的文件也不留）
+          for d in claude/eval evolve; do
+            rm -rf "$d"
+            if git cat-file -e "$BASE_SHA:$d" 2>/dev/null; then git checkout -q "$BASE_SHA" -- "$d"; fi
+          done
+          for f in package.json .ankotti/evolve.json claude/tsconfig.json claude/test/unit/eval-compare.test.mjs; do
+            if git cat-file -e "$BASE_SHA:$f" 2>/dev/null; then git checkout -q "$BASE_SHA" -- "$f"; else rm -f "$f"; fi
+          done
+          git show "$BASE_SHA:claude/package.json" > "$W/base-package.json"
+          node -e '
+            const fs = require("node:fs");
+            const [base, head] = process.argv.slice(1).map((p) => JSON.parse(fs.readFileSync(p, "utf8")));
+            for (const k of ["dependencies", "devDependencies", "optionalDependencies"]) {
+              if (head[k]) base[k] = head[k]; else delete base[k];
+            }
+            fs.writeFileSync(process.argv[2], JSON.stringify(base, null, 2) + "\n");
+          ' "$W/base-package.json" claude/package.json
+          # 仓库里的 .npmrc 不认（换源 / 开安装脚本）
+          rm -f .npmrc claude/.npmrc
+          echo "考卷文件取自目标分支 ${BASE_SHA}，被测代码取自 PR 头提交 ${HEAD_SHA}"
+          git status --short | head -50
+
+          # 沙箱脚本放在被测代码碰不到的地方（沙箱里只挂 eval-work）
+          cat > "$GITHUB_WORKSPACE/bin/sandbox.sh" <<'SANDBOX'
+          #!/bin/sh
+          # 用法：sandbox.sh net|offline <工作目录> <命令…>
+          set -eu
+          mode=$1; dir=$2; shift 2
+          W="$GITHUB_WORKSPACE/eval-work"
+          net=--unshare-net
+          [ "$mode" = net ] && net=
+          exec bwrap --die-with-parent --new-session --unshare-pid --unshare-ipc --unshare-uts --unshare-cgroup-try $net \
+            --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --tmpfs /run \
+            --tmpfs /var/lib/baolei-build-runner --tmpfs "$HOME" --ro-bind "$HOME/.local" "$HOME/.local" \
+            --bind "$W" "$W" \
+            --clearenv --setenv PATH "$PATH" --setenv HOME "$HOME" --setenv LANG C.UTF-8 --setenv CI 1 \
+            --setenv XDG_RUNTIME_DIR /tmp --setenv npm_config_cache "$W/npm-cache" \
+            --setenv npm_config_registry "${npm_config_registry:-}" \
+            --setenv PLAYWRIGHT_DOWNLOAD_HOST "${PLAYWRIGHT_DOWNLOAD_HOST:-}" \
+            --setenv PLAYWRIGHT_BROWSERS_PATH "$W/ms-playwright" \
+            --chdir "$dir" "$@"
+          SANDBOX
+          chmod 500 "$GITHUB_WORKSPACE/bin/sandbox.sh"
+
+      - name: 装依赖和浏览器（沙箱，只能连公司下载节点）
+        run: |
+          set -eu
+          R="$GITHUB_WORKSPACE/eval-work/repo"
+          SB="$GITHUB_WORKSPACE/bin/sandbox.sh"
+          "$SB" net "$R/claude" npm ci --ignore-scripts --no-audit --no-fund
+          "$SB" net "$R/claude" node node_modules/patchright/cli.js install chromium
+
+      - name: 考卷 pnpm eval（沙箱，没有网络）
+        run: |
+          set -eu
+          R="$GITHUB_WORKSPACE/eval-work/repo"
+          "$GITHUB_WORKSPACE/bin/sandbox.sh" offline "$R" pnpm eval
+
+      - name: 清理
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/eval-work" "$GITHUB_WORKSPACE/bin"

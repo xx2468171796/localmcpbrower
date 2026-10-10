@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "why": "浏览器 MCP 的考卷清单（裁判层，只有人能改）。考卷由 .gitea/workflows/evolve-eval.yml 在构建机沙箱里跑：考卷文件取自目标分支，被测代码取自 PR；堡垒机补丁门槛要求 correctness.commands 里有 .ankotti/evolve.json 的 eval.command。",
+  "setup": ["cd claude && npm ci --ignore-scripts --no-audit --no-fund", "node claude/node_modules/patchright/cli.js install chromium"],
+  "correctness": {
+    "runs": 1,
+    "why": "pnpm eval = tsc 编译 + claude/eval/run.mjs 跑 50 道本地考卷，对照 claude/eval/baseline.json 放行或拦下（退出码非 0 = 不通过）",
+    "commands": ["pnpm eval"]
+  },
+  "benchmarks": [],
+  "timeoutSec": 1800,
+  "protected": [
+    "evolve/**",
+    ".gitea/**",
+    ".github/**",
+    ".ankotti/evolve.json",
+    "claude/eval/**",
+    "claude/test/unit/eval-compare.test.mjs",
+    "package.json",
+    "claude/package.json",
+    "claude/tsconfig.json"
+  ]
+}
