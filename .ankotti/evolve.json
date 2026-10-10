@@ -12,6 +12,14 @@
     }
   ],
   "eval": { "command": "pnpm eval", "baseline": "claude/eval/baseline.json", "results": "claude/eval/results.json" },
+  "build": {
+    "kind": "pnpm",
+    "install": "cd claude && npm ci --ignore-scripts --no-audit --no-fund",
+    "command": "cd claude && node node_modules/typescript/bin/tsc && node scripts/pack-release.mjs --out ../release && cp \"../release/localmcpbrower-$ANKOTTI_RELEASE_VERSION.tgz\" ../release/localmcpbrower.tgz",
+    "artifact": "release/localmcpbrower.tgz",
+    "versionFrom": "claude/package.json",
+    "timeoutMin": 20
+  },
   "protected": [
     "claude/eval/**",
     "claude/test/unit/eval-compare.test.mjs",
