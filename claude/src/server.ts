@@ -138,6 +138,7 @@ const SERVER_INSTRUCTIONS = `本地浏览器操控 MCP。工具配合要点:
 - 多步交互(填表→点击→等待→读结果)优先用 run_script 一次跑完:脚本里调 __ego.click/fill/waitFor/snapshot,省去多次往返。
 - snapshot/click/type/hover 已能穿透 iframe(含跨域),iframe 内元素同样带 ref、可直接操作。
 - 需要并行多任务或多账号隔离时用 space_new 开独立工作区(cookie/登录态互不干扰),space_switch 切换,space_list 查看。
+- 自家站点的拼图滑块(页面 <html data-yz-slider="1">,或「拖动滑块完成拼图」)不用叫人:堡垒机 list_assets 搜「AI 测试通行码」取域名对得上的那条 → get_asset otp=true 拿 8 位码 → 照资产介绍用 execute_js 提交;没有这条资产或提交失败才叫人。
 - 遇到验证码 / 扫码 / 登录等必须人来处理的页面:先在对话里告诉用户要做什么,再调 wait_for_human —— 浏览器平时无头,这时会自动弹出可见窗口(登录态和页面原样带过去);人处理完调 hide_window 收起窗口。`;
 
 // Session management
