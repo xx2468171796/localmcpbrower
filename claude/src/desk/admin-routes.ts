@@ -10,7 +10,7 @@ import { timingSafeEqual } from 'node:crypto';
 import express, { type NextFunction, type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
 import type { DeskGate } from './gate.js';
-import type { EventRing, ToolEvent } from './events.js';
+import type { EventRing } from './events.js';
 
 export interface AdminDeps {
   ring: EventRing;
@@ -157,8 +157,17 @@ const MAX_STREAMS = 20;
 const MAX_BACKLOG_BYTES = 1_000_000;
 let openStreams = 0;
 
-/** SSE:先补发 since 之后的,再实时推;15 秒一次心跳,防代理断开空闲连接 */
-function streamEvents(req: Request, res: Response, ring: EventRing, since: number): void {
+/** 当前打开的实时事件流个数(测试用) */
+export function openStreamCount(): number {
+  return openStreams;
+}
+
+/**
+ * SSE:先补发 since 之后的,再实时推;15 秒一次心跳,防代理断开空闲连接。
+ * 断开(对方关、积压过多被我们踢、写出错)只走一个 shutdown:置 closed、退订、停心跳、destroy —— 之后的事件 / 心跳
+ * 一律不再写。以前积压时只 res.end() 不置 closed,后面的事件继续 write → write after end → 未捕获错误 → 进程退出。
+ */
+export function streamEvents(_req: Request, res: Response, ring: EventRing, since: number): void {
   if (openStreams >= MAX_STREAMS) { apiError(res, 503, 'TOO_MANY_STREAMS', `实时事件流最多 ${MAX_STREAMS} 个连接`); return; }
   openStreams++;
   res.status(200).set({
@@ -169,19 +178,25 @@ function streamEvents(req: Request, res: Response, ring: EventRing, since: numbe
   });
   res.flushHeaders();
   let closed = false;
-  const send = (e: ToolEvent): void => {
-    if (closed) return;
-    if (res.writableLength > MAX_BACKLOG_BYTES) { res.end(); return; }
-    res.write(`id: ${e.id}\nevent: ${e.kind}\ndata: ${JSON.stringify(e)}\n\n`);
-  };
-  for (const e of ring.since(since, 2000)) send(e);
-  const unsubscribe = ring.subscribe(send);
-  const beat = setInterval(() => { if (!closed) res.write(': ping\n\n'); }, 15_000);
-  res.on('close', () => {
+  let unsubscribe: () => void = () => {};
+  let beat: NodeJS.Timeout | undefined;
+  const shutdown = (): void => {
     if (closed) return;
     closed = true;
     openStreams--;
     clearInterval(beat);
     unsubscribe();
-  });
+    if (!res.destroyed) res.destroy();
+  };
+  const write = (chunk: string): void => {
+    if (closed || res.writableEnded || res.destroyed) { shutdown(); return; }
+    if (res.writableLength > MAX_BACKLOG_BYTES) { shutdown(); return; }
+    res.write(chunk);
+  };
+  res.on('error', () => shutdown());
+  res.on('close', () => shutdown());
+  for (const e of ring.since(since, 2000)) write(`id: ${e.id}\nevent: ${e.kind}\ndata: ${JSON.stringify(e)}\n\n`);
+  if (closed) return;
+  unsubscribe = ring.subscribe((e) => write(`id: ${e.id}\nevent: ${e.kind}\ndata: ${JSON.stringify(e)}\n\n`));
+  beat = setInterval(() => write(': ping\n\n'), 15_000);
 }

@@ -13,6 +13,7 @@ import { parseInput, settle, sig } from './common.js';
 import { evalStable, itemsScript } from './extract.js';
 import { parseSitemapLocs } from './pure.js';
 import { longTaskBudgetMs, sleep, withTimeout } from './timing.js';
+import { deskGate } from '../desk/runtime.js';
 
 type FetchResult = { url: string; title?: string; content?: string; status?: number; success: boolean; error?: string };
 
@@ -193,11 +194,22 @@ export async function discoverUrls(input: unknown): Promise<ToolResult<{
     const page = await getBrowserManager().getPage();
     const request = page.context().request;
     const root = new URL(url);
-    /** 抓取文本,8 秒超时,失败返回空 */
+    /**
+     * 抓取文本,8 秒超时,失败返回空。
+     * 这是服务端直接发的请求,不经过浏览器的 route(工位白名单就挡不到它):每一跳(含 robots 里写的任意 sitemap 地址、
+     * 重定向目标)都自己过一遍白名单,不许的当没抓到。
+     */
     const fetchText = async (target: string): Promise<string> => {
       try {
-        const resp = await withTimeout(request.get(target, { timeout: 8000, failOnStatusCode: false }), 9000, '抓取', { signal: currentSignal() });
-        return resp.ok() ? await withTimeout(resp.text(), 8000, '读取响应') : '';
+        let at = target;
+        for (let hop = 0; hop <= 5; hop++) {
+          if (!deskGate.allows(at)) return '';
+          const resp = await withTimeout(request.get(at, { timeout: 8000, failOnStatusCode: false, maxRedirects: 0 }), 9000, '抓取', { signal: currentSignal() });
+          const loc = resp.headers()['location'];
+          if (resp.status() >= 300 && resp.status() < 400 && loc) { at = new URL(loc, at).href; continue; }
+          return resp.ok() ? await withTimeout(resp.text(), 8000, '读取响应') : '';
+        }
+        return '';
       } catch (e) {
         if (e instanceof ToolError && e.code === 'CANCELLED') throw e;
         return '';

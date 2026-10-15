@@ -53,9 +53,14 @@ export class EventRing {
     return e;
   }
 
-  /** id 大于 since 的事件(最多 limit 条,取最新的那段) */
+  /**
+   * id 大于 since 的事件(最多 limit 条,取最新的那段)。
+   * since 比当前最大 id 还大 = 订阅方记的是上一个进程的 id(本服务重启过,id 从 1 重新数):从头补发,
+   * 否则它会一直等一个永远到不了的 id,重启后的事件全部漏掉。
+   */
   since(since = 0, limit = 500): ToolEvent[] {
-    const out = this.buf.filter((e) => e.id > since);
+    const from = since > this.lastId ? 0 : since;
+    const out = this.buf.filter((e) => e.id > from);
     return out.length > limit ? out.slice(out.length - limit) : out;
   }
 

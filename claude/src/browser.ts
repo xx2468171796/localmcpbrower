@@ -29,6 +29,7 @@ import * as fs from 'fs';
 import type { ConsoleLogEntry, NetworkRequestEntry, BrowserConfig } from './types.js';
 import { EGO_HELPER_SRC } from './injected.js';
 import { MAIN_WORLD_SRC, DRAIN_SRC, buildHtmlInjector } from './inject.js';
+import { browserEnv } from './browser-env.js';
 import { currentSessionId } from './context.js';
 import { killProcessTreeSync } from './portkill.js';
 import { deskConfig } from './desk/config.js';
@@ -594,7 +595,11 @@ class BrowserManager {
         ignoreDefaultArgs: ['--enable-automation', ...(ext?.ignoreDefaultArgs ?? [])],
         // 性能优化选项
         bypassCSP: true,                    // 绕过 CSP，加速页面加载
-        ignoreHTTPSErrors: true,            // 忽略 HTTPS 错误，避免卡住
+        // 本机单用忽略 HTTPS 错误(内网自签站点照常打开);托管工位不忽略:证书有问题的页面上,
+        // fill_secret 的站点核对就没有意义(中间人能冒充任何站点)。fill_secret 自己另有证书校验(secrets/tls-check.ts)
+        ignoreHTTPSErrors: !deskConfig.managed,
+        // 浏览器只拿去掉了令牌 / 密码类变量的环境副本(browser-env.ts)
+        env: browserEnv(),
         javaScriptEnabled: true,
         acceptDownloads: true,
         // 平台对应 UA(macOS / Linux / Windows 各自匹配),只在无头时给
@@ -642,8 +647,10 @@ class BrowserManager {
     });
     await context.route('**/*', async (route) => {
       const req = route.request();
-      if (req.resourceType() === 'document' && !deskGate.allows(req.url())) {
-        deskRing.push({ kind: 'gate', space: sp.name, url: req.url(), detail: 'blocked_by_allowlist' });
+      // 本服务自己的地址:任何类型的请求都拦(页面落到本服务来源上就能同源调 /admin)
+      const self = deskGate.isSelf(req.url());
+      if (self || (req.resourceType() === 'document' && !deskGate.allows(req.url()))) {
+        deskRing.push({ kind: 'gate', space: sp.name, url: req.url(), detail: self ? 'blocked_self' : 'blocked_by_allowlist' });
         await route.abort('blockedbyclient').catch(() => { /* 已被别处处理 */ });
         return;
       }

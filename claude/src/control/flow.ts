@@ -32,7 +32,7 @@ type AnyTool = (input: unknown) => Promise<ToolResult<unknown>>;
 export interface FlowHooks {
   /** 可调用的工具(名字 → 实现);不在表里的步骤直接判错 */
   tools: ReadonlyMap<string, AnyTool>;
-  /** 每步执行前(过闸门、查取消);抛错即中止流程 */
+  /** 每步执行前(过闸门、查取消);step.args 已是替换过 {{变量}} 的实参(白名单要查真正要用的网址)。抛错即中止流程 */
   beforeStep?: (step: FlowStep, index: number) => Promise<void>;
   /** 每步结束后(记事件) */
   afterStep?: (step: FlowStep, index: number, result: ToolResult<unknown>, ms: number) => void;
@@ -63,7 +63,9 @@ export async function runFlow(input: unknown, hooks: FlowHooks): Promise<ToolRes
   const deadline = Date.now() + timeoutMs;
   const vars: Record<string, unknown> = {};
   const outcomes: FlowStepOutcome[] = [];
-  for (const [index, step] of steps.entries()) {
+  for (const [index, raw] of steps.entries()) {
+    // 先替换 {{变量}} 再过闸门:白名单 / 暂停检查必须看到真正要用的实参(引用前一步结果的网址也要查)
+    const step: FlowStep = { ...raw, args: substitute(raw.args ?? {}, vars) as Record<string, unknown> };
     if (Date.now() > deadline) return flowFailed(outcomes, steps.length, vars, 'TIMEOUT', `流程超过 ${timeoutMs}ms,停在第 ${index + 1} 步之前`);
     try {
       await hooks.beforeStep?.(step, index);
@@ -71,7 +73,7 @@ export async function runFlow(input: unknown, hooks: FlowHooks): Promise<ToolRes
       const code = e instanceof ToolError ? e.code : 'INTERNAL';
       return flowFailed(outcomes, steps.length, vars, code, `第 ${index + 1} 步(${step.tool})没能开始:${e instanceof Error ? e.message : String(e)}`);
     }
-    const outcome = await runStep(step, index, vars, hooks);
+    const outcome = await runStep(step, index, hooks);
     outcomes.push(outcome);
     if (outcome.ok && step.as) vars[step.as] = outcome.data;
     if (!outcome.ok && !step.continueOnError) {
@@ -81,9 +83,9 @@ export async function runFlow(input: unknown, hooks: FlowHooks): Promise<ToolRes
   return { success: true, data: { completed: outcomes.filter((o) => o.ok).length, total: steps.length, steps: outcomes, vars } };
 }
 
-async function runStep(step: FlowStep, index: number, vars: Record<string, unknown>, hooks: FlowHooks): Promise<FlowStepOutcome> {
+async function runStep(step: FlowStep, index: number, hooks: FlowHooks): Promise<FlowStepOutcome> {
   const tool = hooks.tools.get(step.tool) as AnyTool;
-  const args = substitute(step.args ?? {}, vars);
+  const args = step.args ?? {};
   const t0 = Date.now();
   let last: ToolResult<unknown> = { success: false, error: '未执行' };
   let attempts = 0;

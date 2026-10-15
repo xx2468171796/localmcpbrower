@@ -99,3 +99,19 @@ test('extension launch patch: auto skips headless, off disables, on forces', () 
   assert.equal(extensionLaunchPatch(false, { BROWSER_EXTENSION: 'off' }), null);
   assert.equal(extensionLaunchPatch(true, { BROWSER_EXTENSION: 'on' }).needsFullChromium, true);
 });
+
+// ── M2(b):闸门看到的是替换过 {{变量}} 的实参 ──
+test('runFlow: beforeStep sees substituted args (allowlist checks the real url)', async () => {
+  const checked = [];
+  const tools = new Map([
+    ['extract_links', ok({ links: [{ href: 'https://evil.example/x' }] })],
+    ['navigate', ok({})],
+  ]);
+  const r = await runFlow({ steps: [
+    { tool: 'extract_links', as: 'L' },
+    { tool: 'navigate', args: { url: '{{L.links.0.href}}' } },
+  ] }, { tools, beforeStep: async (s) => { checked.push(s.args?.url); if (String(s.args?.url).includes('evil')) throw new ToolError('DOMAIN_BLOCKED', 'no'); } });
+  assert.equal(r.success, false);
+  assert.equal(r.code, 'DOMAIN_BLOCKED');
+  assert.deepEqual(checked, [undefined, 'https://evil.example/x']);
+});

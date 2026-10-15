@@ -25,26 +25,34 @@ export const CdpSendSchema = z.object({
 /**
  * 默认开放的域(白名单,不是黑名单):都是「当前页面里」的能力,和 execute_js / 现有工具同一权限级别。
  * 不在表里的域(Browser / Target / SystemInfo / Storage / IO / Fetch / Tethering / ServiceWorker …)要 ALLOW_BROWSER_CDP=1。
+ * DOMStorage / IndexedDB / CacheStorage 不开放:它们按「任意来源」读写存储,能读到别的站点(含公司系统)的登录令牌。
  */
 const PAGE_DOMAINS: ReadonlySet<string> = new Set([
-  'Accessibility', 'Animation', 'Audits', 'CSS', 'DOM', 'DOMDebugger', 'DOMSnapshot', 'DOMStorage', 'Emulation',
-  'IndexedDB', 'CacheStorage', 'Input', 'LayerTree', 'Log', 'Media', 'Network', 'Overlay', 'Page', 'Performance',
+  'Accessibility', 'Animation', 'Audits', 'CSS', 'DOM', 'DOMDebugger', 'DOMSnapshot', 'Emulation',
+  'Input', 'LayerTree', 'Log', 'Media', 'Network', 'Overlay', 'Page', 'Performance',
   'PerformanceTimeline', 'Runtime', 'Debugger', 'HeapProfiler', 'Profiler', 'WebAudio',
 ]);
 
 /**
- * 白名单域里也要单独挡的命令:它们能越过本服务的文件 / 路径 / 白名单保护。
+ * 白名单域里也要单独挡的命令:它们能越过本服务的文件 / 路径 / 白名单 / 跨站保护。
  *   - 读本机任意文件:DOM.setFileInputFiles、带 files 的 Input.dispatchDragEvent、Network.loadNetworkResource
  *   - 写任意位置:Page.setDownloadBehavior
  *   - 打开 file:// 或白名单外网站:Page.navigate 另查(见 checkPageCommand)
  *   - 关 / 崩页面:Page.close、Page.crash
+ *   - 读任意站点的 cookie(含 HttpOnly 的登录会话):Network.getCookies(可传任意 urls)、Network.getAllCookies
+ *   - 自建隔离世界:Page.createIsolatedWorld(拿到不受页面限制的执行环境,再配合其它命令越权)
+ * 带 DOMStorage / IndexedDB / CacheStorage / Storage 前缀的命令由上面的域白名单挡掉;这里也列出,防以后误加回域白名单。
  */
-const DENIED = new Set(['DOM.setFileInputFiles', 'Network.loadNetworkResource', 'Page.setDownloadBehavior', 'Page.close', 'Page.crash']);
+const DENIED = new Set([
+  'DOM.setFileInputFiles', 'Network.loadNetworkResource', 'Page.setDownloadBehavior', 'Page.close', 'Page.crash',
+  'Network.getCookies', 'Network.getAllCookies', 'Page.createIsolatedWorld',
+]);
+const DENIED_DOMAINS: ReadonlySet<string> = new Set(['DOMStorage', 'IndexedDB', 'CacheStorage', 'Storage']);
 
 /** 页面级命令的额外检查;不放行抛 ToolError */
 export function checkPageCommand(method: string, params: Record<string, unknown> | undefined): void {
   const domain = method.split('.')[0] ?? '';
-  if (!PAGE_DOMAINS.has(domain) || DENIED.has(method)) {
+  if (!PAGE_DOMAINS.has(domain) || DENIED_DOMAINS.has(domain) || DENIED.has(method)) {
     throw new ToolError('UNSUPPORTED', `${method} 会越过本服务的文件 / 网站保护或影响整个浏览器,默认不开放;确实需要请让人在这台服务上设 ALLOW_BROWSER_CDP=1`);
   }
   if (method === 'Input.dispatchDragEvent') {

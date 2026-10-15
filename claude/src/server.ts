@@ -105,6 +105,9 @@ function buildAllowLists(): { hosts: string[]; origins: string[] } {
   return { hosts: [...hosts], origins: [...origins] };
 }
 const ALLOWED = buildAllowLists();
+/** 本服务自己的来源(http://<允许的 Host>);/admin 不接受它们,被操控的页面也不许打开这些地址 */
+const SELF_ORIGINS: ReadonlySet<string> = new Set(ALLOWED.hosts.map((h) => `http://${h}`));
+if (!STDIO) deskGate.setSelfHosts(ALLOWED.hosts);
 
 /** 定长比较，避免 token 校验被计时侧信道逐字节试出来 */
 function tokenMatches(candidate: string): boolean {
@@ -797,7 +800,12 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
 
 function createApp(): express.Application {
   const app = express();
-  app.use(express.json({ limit: '10mb' }));
+  // /admin 用自己的 64kb 解析器(admin-routes.ts):全局 10mb 解析器要是先跑,那个上限就形同虚设
+  const bigJson = express.json({ limit: '10mb' });
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    if (req.path === '/admin' || req.path.startsWith('/admin/')) { next(); return; }
+    bigJson(req, res, next);
+  });
 
   // CORS：从 '*' 收紧到白名单。带 Origin 的请求一定来自浏览器页面，
   // 不在白名单直接 403（这也是 DNS rebinding 的第一道拦截）；
@@ -856,7 +864,8 @@ function createApp(): express.Application {
     gate: deskGate,
     adminToken: deskConfig.adminToken ?? '',
     allowedHosts: ALLOWED.hosts,
-    allowedOrigins: ALLOWED.origins,
+    // 去掉本服务自己的来源:被操控的页面一旦落到本服务的地址上,带的就是这个 Origin,不能凭它调 /admin
+    allowedOrigins: ALLOWED.origins.filter((o) => !SELF_ORIGINS.has(o)),
     deskId: deskConfig.deskId ?? undefined,
     version: SERVER_VERSION,
     state: () => getBrowserManager().snapshotState(),

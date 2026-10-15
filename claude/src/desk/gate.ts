@@ -40,6 +40,7 @@ export class DeskGate {
   private reason?: string;
   private waiters = new Set<Waiter>();
   private allow: string[] = [];
+  private self = new Set<string>();
 
   /** 本次暂停的模式;resume 后回到 defaultMode(pause 时临时指定的 reject 不会粘住以后的暂停) */
   private mode: PauseMode;
@@ -110,11 +111,31 @@ export class DeskGate {
   }
 
   /**
-   * 网址是否放行。白名单为空 = 不限。
+   * 本服务自己的地址(host:port,和 Host 白名单同一份)。被操控的页面一律不许打开它们:
+   * 页面落到本服务的来源上,就能以「同源」身份调 /admin(解除暂停、改白名单、截图)。不受白名单是否为空影响。
+   */
+  setSelfHosts(hosts: readonly string[]): void {
+    this.self = new Set(hosts.map((h) => h.trim().toLowerCase()).filter(Boolean));
+  }
+
+  /** 网址是否指向本服务自己 */
+  isSelf(url: string): boolean {
+    if (this.self.size === 0) return false;
+    try {
+      const u = new URL(url);
+      return /^(https?|wss?):$/.test(u.protocol) && this.self.has(u.host.toLowerCase());
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 网址是否放行。本服务自己的地址永远不放行;白名单为空 = 其余不限。
    * 非空时默认拒绝:http(s) / ws(s) 按主机名比对;页面内部用的 about: / data: / blob: 放行;
    * file: / ftp: / view-source: / chrome: 等其它协议一律拒绝(否则白名单形同虚设)。
    */
   allows(url: string): boolean {
+    if (this.isSelf(url)) return false;
     if (this.allow.length === 0) return true;
     let host: string;
     try {
@@ -130,6 +151,9 @@ export class DeskGate {
 
   /** 不放行就抛 DOMAIN_BLOCKED(给 navigate / new_tab / batch_fetch 等先查一遍) */
   checkUrl(url: string): void {
+    if (this.isSelf(url)) {
+      throw new ToolError('DOMAIN_BLOCKED', `「${url}」是本浏览器服务自己的地址,被操控的页面不许打开它`);
+    }
     if (!this.allows(url)) {
       throw new ToolError('DOMAIN_BLOCKED', `「${url}」不在本工位允许访问的网站里(白名单:${this.allow.join('、')})`);
     }

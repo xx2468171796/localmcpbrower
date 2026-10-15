@@ -149,6 +149,12 @@ test('cdp page policy: allow-list domains, deny file/upload/download escapes', (
     ['IO.read', {}],
     ['Fetch.enable', {}],
     ['Storage.clearDataForOrigin', {}],
+    ['DOMStorage.getDOMStorageItems', {}],
+    ['IndexedDB.requestData', {}],
+    ['CacheStorage.requestEntries', {}],
+    ['Network.getCookies', { urls: ['https://bank.example'] }],
+    ['Network.getAllCookies', {}],
+    ['Page.createIsolatedWorld', { frameId: 'x' }],
   ]) assert.throws(() => checkPageCommand(m, p), (e) => e.code === 'UNSUPPORTED', m);
 });
 
@@ -171,4 +177,62 @@ test('gate: readonly tool that navigates is held during takeover; reject mode re
   g.pause({ mode: 'reject' });
   g.resume();
   assert.equal(g.status().mode, 'wait');
+});
+
+// ── L3:Last-Event-ID 比当前最大 id 还大 = 服务重启过,从头补发 ──
+test('EventRing.since: a since beyond lastId (previous process) restarts from 0', () => {
+  const ring = new EventRing();
+  ring.push({ kind: 'gate', detail: 'a' });
+  ring.push({ kind: 'gate', detail: 'b' });
+  assert.deepEqual(ring.since(500).map((e) => e.detail), ['a', 'b']);
+  assert.deepEqual(ring.since(1).map((e) => e.detail), ['b']);
+  assert.deepEqual(ring.since(2), []);
+});
+
+// ── M4:被操控的页面不许打开本服务自己的地址(不管白名单是否为空) ──
+test('gate: self hosts are always blocked', () => {
+  const g = new DeskGate();
+  g.setSelfHosts(['127.0.0.1:3215', 'localhost:3215', '[::1]:3215']);
+  assert.equal(g.allows('http://127.0.0.1:3215/admin/resume'), false);
+  assert.equal(g.allows('http://LOCALHOST:3215/'), false);
+  assert.equal(g.allows('http://[::1]:3215/'), false);
+  assert.equal(g.allows('http://127.0.0.1:3216/'), true);
+  assert.throws(() => g.checkUrl('http://127.0.0.1:3215/'), (e) => e.code === 'DOMAIN_BLOCKED');
+  g.setAllowlist(['127.0.0.1']);
+  assert.equal(g.allows('http://127.0.0.1:3215/'), false);
+  assert.equal(g.allows('http://127.0.0.1:8080/'), true);
+});
+
+// ── H3:SSE 积压过多被踢后,后续事件 / 心跳不再写(以前 write after end → 进程退出) ──
+import { EventEmitter } from 'node:events';
+import { streamEvents, openStreamCount } from '../../dist/desk/admin-routes.js';
+function fakeRes() {
+  const res = new EventEmitter();
+  Object.assign(res, {
+    writes: 0, writableLength: 0, writableEnded: false, destroyed: false, ended: false,
+    status() { return res; }, set() { return res; }, flushHeaders() {},
+    write() { if (res.writableEnded || res.destroyed) throw new Error('write after end'); res.writes++; return true; },
+    end() { res.writableEnded = true; },
+    destroy() { res.destroyed = true; queueMicrotask(() => res.emit('close')); },
+  });
+  return res;
+}
+test('SSE: backlog over limit shuts the stream down cleanly; later events are not written', async () => {
+  const ring = new EventRing();
+  const res = fakeRes();
+  const before = openStreamCount();
+  streamEvents({}, res, ring, 0);
+  assert.equal(openStreamCount(), before + 1);
+  ring.push({ kind: 'gate', detail: 'x' });
+  assert.equal(res.writes, 1);
+  res.writableLength = 2_000_000;
+  ring.push({ kind: 'gate', detail: 'y' });
+  assert.equal(res.destroyed, true);
+  res.writableLength = 0;
+  assert.doesNotThrow(() => ring.push({ kind: 'gate', detail: 'z' }));
+  assert.equal(res.writes, 1);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(openStreamCount(), before);
+  // 出错事件不再是未处理错误
+  assert.doesNotThrow(() => res.emit('error', new Error('EPIPE')));
 });

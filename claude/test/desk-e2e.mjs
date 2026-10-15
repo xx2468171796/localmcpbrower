@@ -41,6 +41,8 @@ async function startSite() {
     else if (u.pathname === '/redir') { res.statusCode = 302; res.setHeader('location', u.searchParams.get('to') ?? '/b'); res.end(); }
     else if (u.pathname === '/frames') res.end(page('<iframe id="f" srcdoc="<input id=p2 type=password>"></iframe><iframe id="d" src="data:text/html,<input id=p3 type=password>"></iframe>'));
     else if (u.pathname === '/ro') res.end(page('<input id="ro" type="password" readonly disabled>'));
+    else if (u.pathname === '/ta') res.end(page(`<textarea id="t"></textarea><input id="txt" type="text"><form action="http://localhost:${port}/steal"><input id="pf" type="password"></form>`));
+    else if (u.pathname === '/embed') res.end(page(`<iframe id="f" src="http://127.0.0.1:${port}/login"></iframe>`));
     else if (u.pathname === '/login') res.end(page('<input id="u" name="user"><input id="p" type="password" name="pass"><button id="go" onclick="document.title=\'submitted\'">登录</button>'));
     else { res.statusCode = 404; res.end(page('404')); }
   });
@@ -189,6 +191,30 @@ async function main() {
     // srcdoc 在隔离世界里读到的来源是 null:按「宁可不填」处理(登录框放在 srcdoc 里极少见)
     const srcdoc = await call('fill_secret', { asset: '9', selector: '#p2' });
     check('srcdoc iframe 读不到确定来源时拒填', srcdoc.raw?.code === 'SECRET_ORIGIN_MISMATCH', `code=${srcdoc.raw?.code}`);
+    // 元素限制:密码不进 textarea / 普通文本框;表单提交到别的来源不填
+    await call('navigate', { url: `${site.base}/ta` });
+    const ta = await call('fill_secret', { asset: '9', selector: '#t' });
+    check('密码不填 textarea', ta.raw?.code === 'ELEMENT_NOT_ACTIONABLE', `code=${ta.raw?.code}`);
+    const txt = await call('fill_secret', { asset: '9', selector: '#txt' });
+    check('密码不填普通文本框', txt.raw?.code === 'ELEMENT_NOT_ACTIONABLE', `code=${txt.raw?.code}`);
+    const pf = await call('fill_secret', { asset: '9', selector: '#pf' });
+    check('表单提交到别的来源不填', pf.raw?.code === 'SECRET_ORIGIN_MISMATCH', `code=${pf.raw?.code}`);
+    // 资产填的账号不进 snapshot;逐字键入也填得进
+    await call('navigate', { url: `${site.base}/login` });
+    await call('fill_secret', { asset: '9', field: 'account', selector: '#u' });
+    const snapAcc = await call('snapshot', {});
+    check('资产填的账号不进 snapshot', !snapAcc.text.includes('alice') && snapAcc.text.includes('已填资产'), snapAcc.text.slice(0, 300));
+    const typed = await call('fill_secret', { asset: '9', selector: '#p', typing: true });
+    const typedVal = await call('execute_js', { script: `return document.querySelector('#p').value === ${JSON.stringify(SECRET)}` });
+    check('逐字键入填得进', typed.raw?.success === true && typedVal.raw?.data?.result === true, typed.raw?.error ?? '');
+    // 上层页面不是登记站点(别的站把登录页嵌进 iframe):拒填
+    await call('navigate', { url: `http://localhost:${site.port}/embed` });
+    await sleep(500);
+    const embedded = await call('fill_secret', { asset: '9', selector: '#p' });
+    check('被别的站嵌进 iframe 时拒填', embedded.raw?.code === 'SECRET_ORIGIN_MISMATCH', `code=${embedded.raw?.code} ${embedded.raw?.error ?? ''}`);
+    // 被操控的页面打不开本服务自己的地址
+    const selfNav = await call('navigate', { url: `${srv.base}/livez` });
+    check('页面打不开本服务自己的地址', selfNav.raw?.code === 'DOMAIN_BLOCKED', `code=${selfNav.raw?.code}`);
 
     // CDP 直通
     const cdp = await call('cdp_send', { method: 'Runtime.evaluate', params: { expression: '6*7', returnByValue: true } });

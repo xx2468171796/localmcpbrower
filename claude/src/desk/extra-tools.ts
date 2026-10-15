@@ -10,6 +10,7 @@ import { CdpSendSchema, cdpSend } from '../control/cdp.js';
 import { RunFlowSchema, runFlow, type FlowHooks } from '../control/flow.js';
 import { ExtBlockSchema, ExtDownloadsSchema, extBlockRules, extDownloads, extTabs, recordStart, recordStatus, recordStop } from '../control/extension.js';
 import { FillSecretSchema, LoginWithAssetSchema, fillSecret, loginWithAsset } from '../secrets/fill-secret.js';
+import { ToolError } from '../errors.js';
 import type { ToolResult } from '../types.js';
 import { errorOf, preflight, trackCall, withCode, type RawResult } from './instrument.js';
 
@@ -45,7 +46,7 @@ export function registerExtraTools(server: McpServer, wrap: Wrap, text: Text, re
 
   server.registerTool('fill_secret', {
     title: '用堡垒机资产填写',
-    description: '把堡垒机资产里的密码 / 账号 / 两步验证码 / 自定义字段直接填进输入框,明文不经过你。登录公司系统时用它,不要自己 get_asset 拿明文再 type。只有当前页面站点和资产登记的地址对得上才会填(防止填到别的网站)。资产名或 id 用堡垒机 list_assets 查。',
+    description: '把堡垒机资产里的密码 / 账号 / 两步验证码 / 自定义字段直接填进输入框,明文不经过你。登录公司系统时用它,不要自己 get_asset 拿明文再 type。只有当前页面(含上层 iframe 页面)站点和资产登记的地址对得上才会填(精确主机名,登记成 *.域名 才认子域名);密码只填密码框,不填 textarea / contenteditable。资产名或 id 用堡垒机 list_assets 查。',
     inputSchema: FillSecretSchema,
     annotations: ann('用堡垒机资产填写', false),
   }, wrap(async (args: unknown) => text(await fillSecret(args))));
@@ -75,7 +76,14 @@ export function registerExtraTools(server: McpServer, wrap: Wrap, text: Text, re
         return r;
       });
     }
-    const hooks: FlowHooks = { tools, beforeStep: (step) => preflight({ tool: step.tool, session: sessionId, args: step.args, signal }) };
+    const hooks: FlowHooks = {
+      tools,
+      // 调用方取消了就别再开始下一步;step.args 已替换过 {{变量}},闸门 / 白名单查的是实参
+      beforeStep: async (step) => {
+        if (signal?.aborted) throw new ToolError('CANCELLED', '调用方已取消本次流程');
+        await preflight({ tool: step.tool, session: sessionId, args: step.args, signal });
+      },
+    };
     return text(await runFlow(args, hooks));
   }));
 
