@@ -4,7 +4,7 @@
 # 做的事:
 #   1. 共用只读代码检出 /opt/ai-desk/browser-mcp(root 所有):clone / git pull --ff-only → npm ci → npm run build
 #      Chromium 装到 /opt/ai-desk/ms-playwright(所有工位共用,只读)
-#   2. 装 systemd 模板单元(desk@.target + desk-*@.service + ai-desk-firewall.service)和 /usr/local/sbin/deskctl
+#   2. 装 systemd 模板单元(desk@.target + desk-*@.service + ai-desk-firewall.service)、/usr/local/sbin/deskctl、desk-smoke
 #   3. 装防火墙规则 /etc/ai-desk/nftables.nft 并启用 ai-desk-firewall(只管 8080–8099 / 3215–3234)
 # 不碰已有工位的数据和密钥;代码更新后要 `deskctl restart <id>`(或逐个)才生效。
 # 拉代码用 /etc/ai-desk/git-credentials(root 600,deploy-ai-desk 只读令牌;首次从 /home/desk/.git-credentials 拷)。
@@ -56,6 +56,7 @@ fi
 
 install -m 644 "$HERE"/units/desk@.target "$HERE"/units/desk-*@.service "$HERE"/units/ai-desk-firewall.service /etc/systemd/system/
 install -m 750 "$HERE/deskctl" /usr/local/sbin/deskctl
+install -m 750 "$HERE/desk-smoke.sh" /usr/local/sbin/desk-smoke
 systemctl daemon-reload
 
 if [ "$FIREWALL" = 1 ]; then

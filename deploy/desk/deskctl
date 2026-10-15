@@ -231,7 +231,7 @@ status_one() {
   fi
   state=$(printf 'Authorization: Bearer %s\n' "$(env_get ADMIN_TOKEN "$f")" | curl -fsS -m 5 -H @- "http://$HOST_IP:$port/admin/state" 2>/dev/null || true)
   if [ -n "$state" ]; then
-    echo "  /admin/state $(jq -r '"闸门 \(.gate.state)(\(.gate.mode)) 在途 \(.inFlight // 0 | if type=="object" then (.count // 0) else . end) 白名单 \(.gate.allowlist|length) 条 最新事件 \(.lastEventId)"' <<<"$state" 2>/dev/null || echo "取到了但解析失败")"
+    echo "  /admin/state $(jq -r '"闸门 \(.gate.state)(\(.gate.mode)) 在途 \(.inFlight // [] | if type=="array" then length elif type=="object" then (.count // 0) else . end) 白名单 \(.gate.allowlist|length) 条 最新事件 \(.lastEventId)"' <<<"$state" 2>/dev/null || echo "取到了但解析失败")"
   else
     echo "  /admin/state 取不到"
   fi
