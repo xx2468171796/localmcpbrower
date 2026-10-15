@@ -1,0 +1,10 @@
+# 一个 AI 浏览器工位的全部单元(第 4 期,见 docs/architecture.md §11)。由 deskctl 启用 / 启停,别手改实例。
+# 启停 / 重启这个 target 会带上下面 5 个单元(它们都 PartOf= 本 target)。
+[Unit]
+Description=AI desk %i (xvfb + wm + wallpaper + selkies + browser MCP)
+Wants=desk-xvfb@%i.service desk-wm@%i.service desk-wallpaper@%i.service desk-selkies@%i.service desk-browser-mcp@%i.service
+After=network-online.target ai-desk-firewall.service
+Wants=network-online.target
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,28 @@
+#!/usr/sbin/nft -f
+# 工位机防火墙(第 4 期,docs/architecture.md §11):工位端口只许 Hermes 宿主机和本机访问。
+#   Selkies 画面 8080–8099、浏览器 MCP 3215–3234 —— 来源只许 回环 / 本机 192.168.110.239 / ubuntu-244 192.168.10.244,其余丢弃。
+# 只管这两段端口,不碰 22(堡垒机 192.168.110.246 和母机 PVE 照常 SSH)和别的服务。
+# 独立的表 inet ai_desk,不 flush 整个规则集;由 ai-desk-firewall.service 开机加载。
+# 装在 /etc/ai-desk/nftables.nft;改了以后 systemctl restart ai-desk-firewall。
+
+table inet ai_desk
+delete table inet ai_desk
+
+table inet ai_desk {
+	set desk_clients_v4 {
+		type ipv4_addr
+		elements = { 192.168.10.244, 192.168.110.239 }
+	}
+
+	chain input {
+		type filter hook input priority filter - 10; policy accept;
+		tcp dport { 8080-8099, 3215-3234 } jump desk_ports
+		udp dport { 8080-8099, 3215-3234 } jump desk_ports
+	}
+
+	chain desk_ports {
+		iifname "lo" accept
+		ip saddr @desk_clients_v4 accept
+		counter drop
+	}
+}
