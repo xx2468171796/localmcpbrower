@@ -1,7 +1,7 @@
 // 堡垒机资产解析与防外泄站点比对的单测(样例文字照 baolei 3.2.0 get_asset 的真实输出格式)
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseAssetText, parseOtpText, assetHosts, hostMatches, BaoleiAssets } from '../../dist/secrets/baolei-assets.js';
+import { parseAssetText, parseOtpText, assetHosts, assetHostRules, hostMatches, isUseOnSchemaError, BaoleiAssets } from '../../dist/secrets/baolei-assets.js';
 import { classifyError } from '../../dist/errors.js';
 
 const REVEALED = `    Asset 430 · 服务 · ai-desk · 远程画面 Selkies 登录密码 · owner admin · 运行中
@@ -52,22 +52,38 @@ test('parseOtpText', () => {
   assert.equal(parseOtpText('no otp configured'), null);
 });
 
-test('assetHosts: messy Chinese addresses', () => {
-  assert.deepEqual(assetHosts({ address: 'http://192.168.110.246:3001（外网 http://s3.alonelife.top:32109）', tags: [] }), ['192.168.110.246', 's3.alonelife.top']);
-  assert.deepEqual(assetHosts({ address: 'http://127.0.0.1:5193/admin/（本地开发；上线后为 <域名>/admin/）', tags: [] }), ['127.0.0.1']);
+test('assetHosts: messy Chinese addresses; ports kept when written; tags never count', () => {
+  assert.deepEqual(assetHosts({ address: 'http://192.168.110.246:3001（外网 http://s3.alonelife.top:32109）' }), ['192.168.110.246:3001', 's3.alonelife.top:32109']);
+  assert.deepEqual(assetHosts({ address: 'http://127.0.0.1:5193/admin/（本地开发；上线后为 <域名>/admin/）' }), ['127.0.0.1:5193']);
   assert.deepEqual(assetHosts({ address: 'https://5fd.zygskins.cn', tags: ['yanzheng', 'AI测试通行码'] }), ['5fd.zygskins.cn']);
-  assert.deepEqual(assetHosts({ address: '127.0.0.1:5432/ankotti_os_staging（sz 共享 PG）', tags: [] }), ['127.0.0.1']);
-  assert.deepEqual(assetHosts({ address: '飞牛 /opt/baolei/.env 的 GITEA_TOKEN', tags: [] }), []);
-  assert.deepEqual(assetHosts({ address: '', tags: ['shop.example.com', 'x'] }), ['shop.example.com']);
+  assert.deepEqual(assetHosts({ address: '127.0.0.1:5432/ankotti_os_staging（sz 共享 PG）' }), ['127.0.0.1:5432']);
+  assert.deepEqual(assetHosts({ address: '飞牛 /opt/baolei/.env 的 GITEA_TOKEN' }), []);
+  // 自由填写的 tags 不算登记站点(谁都能往 tags 里写个域名)
+  assert.deepEqual(assetHosts({ address: '', tags: ['shop.example.com', 'x'] }), []);
+  assert.deepEqual(assetHosts({ address: 'https://*.example.com 和 example.com' }), ['*.example.com', 'example.com']);
 });
 
-test('hostMatches: subdomains yes, lookalikes no, IPs exact', () => {
-  assert.equal(hostMatches('5fd.zygskins.cn', ['5fd.zygskins.cn']), true);
-  assert.equal(hostMatches('www.example.com', ['example.com']), true);
-  assert.equal(hostMatches('example.com.evil.io', ['example.com']), false);
-  assert.equal(hostMatches('evilexample.com', ['example.com']), false);
-  assert.equal(hostMatches('192.168.110.239', ['192.168.110.239']), true);
-  assert.equal(hostMatches('1.192.168.110.239', ['192.168.110.239']), false);
+test('assetHosts: data.hosts from the new bastion, including IPs / localhost (L5)', () => {
+  assert.deepEqual(assetHosts({ address: '', hosts: ['192.168.1.5', 'localhost:8080', 'a.com', '*.b.com', '[::1]:3000'] }), ['192.168.1.5', 'localhost:8080', 'a.com', '*.b.com', '[::1]:3000']);
+  assert.deepEqual(assetHosts({ address: 'http://localhost:5173/login' }), ['localhost:5173']);
+});
+
+const at = (u) => new URL(u);
+test('hostMatches: exact host by default, *. for subdomains, ports when registered', () => {
+  const rules = (address, hosts) => assetHostRules({ address, hosts });
+  assert.equal(hostMatches(at('https://5fd.zygskins.cn/login'), rules('https://5fd.zygskins.cn')), true);
+  assert.equal(hostMatches(at('https://www.example.com'), rules('https://example.com')), false);
+  assert.equal(hostMatches(at('https://www.example.com'), rules('https://*.example.com')), true);
+  assert.equal(hostMatches(at('https://example.com'), rules('https://*.example.com')), false);
+  assert.equal(hostMatches(at('https://example.com.evil.io'), rules('', ['*.example.com', 'example.com'])), false);
+  assert.equal(hostMatches(at('https://evilexample.com'), rules('', ['*.example.com'])), false);
+  assert.equal(hostMatches(at('http://192.168.110.239:8080'), rules('https://192.168.110.239:8080')), true);
+  assert.equal(hostMatches(at('http://192.168.110.239:9090'), rules('https://192.168.110.239:8080')), false);
+  assert.equal(hostMatches({ hostname: '1.192.168.110.239', port: '', protocol: 'http:' }, rules('192.168.110.239')), false);
+  assert.equal(hostMatches(at('http://192.168.110.239:1234'), rules('', ['192.168.110.239'])), true);
+  assert.equal(hostMatches(at('http://localhost:3000'), rules('', ['localhost:3000'])), true);
+  assert.equal(hostMatches(at('https://a.com'), rules('a.com:443')), true);
+  assert.equal(hostMatches(at('https://a.com:8443'), rules('a.com:443')), false);
 });
 
 test('BaoleiAssets: not configured → SECRET_UNAVAILABLE', async () => {
@@ -146,4 +162,74 @@ test('old bastion rejecting use_on: retried without it', async () => {
   };
   assert.equal((await new BaoleiAssets(T, f).info('430', true, 'https://x.com')).secret, 'S3cret!pass');
   assert.equal(seen.length, 2);
+});
+
+// ── H4:旧版不认 use_on 的回退只认窄的 schema 报错,绝不吞掉 ASSET_USE_* ──
+test('isUseOnSchemaError: narrow signature only', () => {
+  assert.equal(isUseOnSchemaError('Input validation error: Unrecognized key: "use_on"'), true);
+  assert.equal(isUseOnSchemaError("Unrecognized key(s) in object: 'use_on'"), true);
+  assert.equal(isUseOnSchemaError('unknown argument use_on'), true);
+  assert.equal(isUseOnSchemaError('ASSET_USE_ORIGIN use_on https://evil.com 不是登记站点 unknown key use_on'), false);
+  assert.equal(isUseOnSchemaError('ASSET_USE_PENDING request=r1 use_on=https://x.com'), false);
+  assert.equal(isUseOnSchemaError('invalid argument: asset'), false);
+  assert.equal(isUseOnSchemaError('use_on rejected'), false);
+});
+
+test('ASSET_USE_ORIGIN mentioning use_on is NOT retried without use_on', async () => {
+  const seen = [];
+  const f = async (_u, init) => {
+    const a = JSON.parse(init.body).params.arguments;
+    seen.push(a);
+    return 'use_on' in a
+      ? sse({ isError: true, content: [{ type: 'text', text: 'ASSET_USE_ORIGIN use_on=https://evil.com: unknown key use_on host' }] })
+      : sse({ content: [{ type: 'text', text: REVEALED }] });
+  };
+  await assert.rejects(new BaoleiAssets(T, f).info('430', true, 'https://evil.com'), (e) => e.code === 'SECRET_ORIGIN_MISMATCH');
+  assert.equal(seen.length, 1);
+});
+
+test('fallback without use_on happens at most once, and pending polls keep the effective args', async () => {
+  const seen = [];
+  const f = async (_u, init) => {
+    seen.push(JSON.parse(init.body).params.arguments);
+    return sse({ isError: true, content: [{ type: 'text', text: 'Input validation error: Unrecognized key: "use_on"' }] });
+  };
+  await assert.rejects(new BaoleiAssets(T, f).info('1', true, 'https://x.com'), (e) => e.code === 'SECRET_UNAVAILABLE');
+  assert.equal(seen.length, 2);
+  assert.equal('use_on' in seen[1], false);
+});
+
+// ── M1:等批准期间调用被取消 / 到期 → SECRET_PENDING_APPROVAL,不再继续轮询 ──
+test('pending approval stops when the call signal aborts', async () => {
+  let n = 0;
+  const pending = async () => { n++; return sse({ isError: true, content: [{ type: 'text', text: 'ASSET_USE_PENDING request=r9' }] }); };
+  const ac = new AbortController();
+  setTimeout(() => ac.abort(), 50);
+  const t0 = Date.now();
+  await assert.rejects(new BaoleiAssets(T, pending, 60_000, 20).info('1', true, 'https://x.com', ac.signal), (e) => e.code === 'SECRET_PENDING_APPROVAL' && /r9/.test(e.message));
+  assert.ok(Date.now() - t0 < 2000);
+  const before = n;
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(n, before);
+});
+
+import { SECRET_TOOL_BUDGET_MS, APPROVAL_WAIT_MS } from '../../dist/secrets/baolei-assets.js';
+import { deadlineFor } from '../../dist/desk/instrument.js';
+test('fill_secret / login_with_asset deadline covers two approval waits', () => {
+  assert.ok(SECRET_TOOL_BUDGET_MS >= APPROVAL_WAIT_MS * 2);
+  assert.ok(deadlineFor('fill_secret', {}, 120_000) > SECRET_TOOL_BUDGET_MS);
+  assert.ok(deadlineFor('login_with_asset', {}, 120_000) > SECRET_TOOL_BUDGET_MS);
+});
+
+import { browserEnv, isSensitiveEnvName } from '../../dist/browser-env.js';
+test('browserEnv drops token / password / bastion / selkies variables only', () => {
+  const env = browserEnv({ PATH: '/bin', HOME: '/h', DISPLAY: ':1', MCP_AUTH_TOKEN: 'a', ADMIN_TOKEN: 'b', BAOLEI_MCP_TOKEN: 'c', BAOLEI_MCP_URL: 'd', SELKIES_BASIC_AUTH_PASSWORD: 'e', SELKIES_PORT: '1', AWS_SECRET_ACCESS_KEY: 'f', OPENAI_API_KEY: 'g', DB_PASSWD: 'h', USER_DATA_DIR: '/p', X: undefined });
+  assert.deepEqual(Object.keys(env).sort(), ['DISPLAY', 'HOME', 'PATH', 'USER_DATA_DIR']);
+  assert.equal(isSensitiveEnvName('PLAYWRIGHT_BROWSERS_PATH'), false);
+});
+
+import { stripCallLog } from '../../dist/errors.js';
+test('stripCallLog removes the Playwright call log (it echoes typed text)', () => {
+  assert.equal(stripCallLog('locator.fill: Timeout 5000ms exceeded.\nCall log:\n  - fill("hunter2")'), 'locator.fill: Timeout 5000ms exceeded.');
+  assert.equal(stripCallLog('plain error'), 'plain error');
 });

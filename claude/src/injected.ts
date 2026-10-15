@@ -66,7 +66,9 @@ export const SNAPSHOT_WALKER_FN = `function egoSnapshot(interactiveOnly, cap, st
     if (!n) {
       // 密码框的值绝不进快照(以前没标签的密码框会把明文密码当名字输出)
       var itype = (el.getAttribute('type') || '').toLowerCase();
-      if (el.tagName.toLowerCase() === 'input' && itype === 'password') n = el.value ? '(已填密码)' : '';
+      // fill_secret 填过的框(账号 / 自定义字段也算):值来自堡垒机,不回给 AI(标记见 secrets/fill-target.ts)
+      if (el.getAttribute('data-ego-secret') === '1') n = el.value ? '(已填资产)' : '';
+      else if (el.tagName.toLowerCase() === 'input' && itype === 'password') n = el.value ? '(已填密码)' : '';
       else if (el.tagName.toLowerCase() === 'input' && itype !== 'hidden' && el.value) n = el.value;
       else n = (el.textContent || '').replace(/\\s+/g, ' ').trim();
     }

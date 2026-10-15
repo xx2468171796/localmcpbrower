@@ -46,6 +46,21 @@ export class ToolError extends Error {
   }
 }
 
+/**
+ * 去掉 Playwright 报错末尾的「Call log:」调用日志:里面会原样带着 fill("<输入内容>") / type("<…>"),
+ * 输入框内容(可能是密码)不能借报错回到 AI 或进时间线。
+ */
+export function stripCallLog(message: string): string {
+  const i = message.search(/\n?\s*Call log:/i);
+  return i >= 0 ? message.slice(0, i).trimEnd() : message;
+}
+
+/** 同 failFrom,但先去掉调用日志(输入类工具用) */
+export function failFromQuiet(err: unknown): ToolErrorResult {
+  const r = failFrom(err);
+  return { ...r, error: stripCallLog(r.error) };
+}
+
 /** catch 块统一出口:带码错误保留码,其它按文字归类 */
 export function failFrom(err: unknown): ToolErrorResult {
   if (err instanceof ToolError) return fail(err.code, err.message);

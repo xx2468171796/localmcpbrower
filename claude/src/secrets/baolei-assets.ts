@@ -14,12 +14,26 @@ import { baoleiEndpoint, type TelemetryTarget } from '../telemetry.js';
 import { ToolError } from '../errors.js';
 import { packageVersion } from '../activity.js';
 
+export { assetHostRules, assetHosts, hostMatches, parseHostRule, requiresHttps, ruleText, type HostRule } from './asset-hosts.js';
+
+/** 资产要求「每次使用要主人批准」时单次最多等多久;fill_secret / login_with_asset 的调用期限按它的两倍留(见 desk/instrument.ts) */
+export const APPROVAL_WAIT_MS = 90_000;
+/**
+ * fill_secret / login_with_asset 一次调用的总预算:最多两次等批准(资产值 + 两步验证码)再加页面操作的余量。
+ * 超过就不再往页面里写;调用期限(desk/instrument.ts deadlineFor)按它再留余量,保证先到的是本工具自己的
+ * SECRET_PENDING_APPROVAL,而不是统一期限的 TIMEOUT(那时底层可能还在等、批下来后又去填)。
+ */
+export const SECRET_TOOL_BUDGET_MS = APPROVAL_WAIT_MS * 2 + 20_000;
+
 export interface AssetInfo {
   id: string;
   name: string;
   address: string;
   account: string;
+  /** 自由填写的标签:只作展示,**不参与**站点比对 */
   tags: string[];
+  /** 新版堡垒机给的登记站点(data.hosts);旧版文字格式没有,站点只从 address 推 */
+  hosts: string[];
   /** reveal 时才有:secret 和各字段(加密字段也会解开) */
   secret?: string;
   fields: Record<string, string>;
@@ -34,7 +48,7 @@ export function parseAssetText(text: string): AssetInfo | null {
   const lines = text.split(/\r?\n/);
   const head = /^\s*Asset\s+(\d+)\s+·\s+[^·]+·\s+(.+?)(\s+·\s+project\s|\s+·\s+owner\s|$)/.exec(lines[0] ?? '');
   if (!head) return null;
-  const info: AssetInfo = { id: head[1] ?? '', name: (head[2] ?? '').trim(), address: '', account: '', tags: [], fields: {} };
+  const info: AssetInfo = { id: head[1] ?? '', name: (head[2] ?? '').trim(), address: '', account: '', tags: [], hosts: [], fields: {} };
   for (const line of lines.slice(1)) {
     if (!line.trim() || /^\s*(Intro version|```)/.test(line)) break;
     const m = /^\s{2,}([^:：]+?):\s(.*)$/.exec(line);
@@ -58,36 +72,6 @@ export function parseOtpText(text: string): { code: string; validSec: number; ne
   return { code: m[1], validSec: Number(m[2]), next: m[3] };
 }
 
-/**
- * 资产登记的站点:从 address(可能写成「http://a:1（外网 http://b）」这种)和 tags 里抽出所有主机名。
- * 只认像网址 / 域名 / IP 的片段。
- */
-export function assetHosts(info: Pick<AssetInfo, 'address' | 'tags'>): string[] {
-  const hosts = new Set<string>();
-  const add = (raw: string): void => {
-    try {
-      const h = new URL(raw.includes('://') ? raw : `http://${raw}`).hostname.toLowerCase();
-      if (h && (h.includes('.') || h === 'localhost')) hosts.add(h);
-    } catch { /* 不是网址 */ }
-  };
-  for (const m of info.address.matchAll(/[a-z][a-z0-9+.-]*:\/\/[^\s()（）,，;；<>"']+/gi)) add(m[0]);
-  for (const m of info.address.matchAll(/(?:^|[\s(（,，])((?:[a-z0-9-]+\.)+[a-z]{2,}|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?(?=$|[\s/)）,，;；])/gi)) if (m[1]) add(m[1]);
-  for (const t of info.tags) if (/^(?:[a-z0-9-]+\.)+[a-z]{2,}$/i.test(t)) add(t);
-  return [...hosts];
-}
-
-/** 资产地址里写了网址、且全是 https → 页面也必须是 https(防止降级到明文 http 的同名站点) */
-export function requiresHttps(info: Pick<AssetInfo, 'address'>): boolean {
-  const schemes = [...info.address.matchAll(/\b([a-z][a-z0-9+.-]*):\/\//gi)].map((m) => (m[1] ?? '').toLowerCase());
-  return schemes.length > 0 && schemes.every((s) => s === 'https');
-}
-
-/** 页面主机名是否属于资产登记的站点(同名或子域名;IP 只认完全相同) */
-export function hostMatches(pageHost: string, hosts: string[]): boolean {
-  const h = pageHost.toLowerCase();
-  return hosts.some((a) => h === a || (!/^\d+(\.\d+){3}$/.test(a) && h.endsWith(`.${a}`)));
-}
-
 type Fetcher = (url: string, init: RequestInit) => Promise<Response>;
 
 /**
@@ -108,12 +92,38 @@ export interface BaoleiAssetData {
 
 interface CallResult { text: string; data: BaoleiAssetData | null; isError: boolean }
 
+/**
+ * 旧版堡垒机不认 use_on 时的报错特征:只认「未知 / 多余的键 …… use_on」这一种 schema 报错。
+ * 不能放宽:新版的 ASSET_USE_* 答复(要批准 / 被拒 / 站点不符)文字里也可能带 use_on,
+ * 被误当成「旧版不认」去掉 use_on 重试,就绕过了堡垒机的站点核对。
+ */
+const USE_ON_SCHEMA_ERROR = /\b(unrecognized|unknown|unexpected|additional)\b[^\n]{0,40}\b(keys?|propert(?:y|ies)|arg(?:ument)?s?|param(?:eter)?s?)\b[^\n]{0,40}\buse_on\b/i;
+
+export function isUseOnSchemaError(text: string): boolean {
+  return !/ASSET_USE_/.test(text) && USE_ON_SCHEMA_ERROR.test(text);
+}
+
+/** 可被取消的等待:取消时立即返回(由调用方决定抛什么) */
+function pause(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) { resolve(); return; }
+    const done = (): void => { clearTimeout(timer); signal?.removeEventListener('abort', done); resolve(); };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener('abort', done, { once: true });
+  });
+}
+
+function pendingError(r: CallResult, waitedSec: number, why: string): ToolError {
+  const id = r.data?.pending?.requestId ?? /request=(\S+)/.exec(r.text)?.[1] ?? '';
+  return new ToolError('SECRET_PENDING_APPROVAL', `这个账号每次使用都要主人批准,已推送到主人手机(请求 ${id}),${why}(已等 ${waitedSec} 秒);批准后再调一次即可,别换别的办法`);
+}
+
 export class BaoleiAssets {
   constructor(
     private readonly target: TelemetryTarget | null = baoleiEndpoint(process.env, os.homedir()),
     private readonly fetcher: Fetcher = fetch,
     /** 资产要求「每次使用要主人批准」时,最多等多久(期间每 pollMs 重试一次) */
-    private readonly approvalWaitMs = 90_000,
+    private readonly approvalWaitMs = APPROVAL_WAIT_MS,
     private readonly pollMs = 5_000,
   ) {}
 
@@ -121,17 +131,17 @@ export class BaoleiAssets {
     return this.target !== null;
   }
 
-  /** useOn = 要填进去的页面(来源);新版堡垒机据此在服务端再核对站点、记审计 */
-  async info(asset: string, reveal: boolean, useOn?: string): Promise<AssetInfo> {
-    const r = await this.call({ asset, reveal }, useOn);
+  /** useOn = 要填进去的页面(来源);新版堡垒机据此在服务端再核对站点、记审计。signal = 本次工具调用的取消信号 */
+  async info(asset: string, reveal: boolean, useOn?: string, signal?: AbortSignal): Promise<AssetInfo> {
+    const r = await this.call({ asset, reveal }, useOn, signal);
     if (r.data && (r.data.name || r.data.id !== undefined)) return fromData(r.data, asset);
     const info = parseAssetText(r.text);
     if (!info) throw new ToolError('SECRET_UNAVAILABLE', `堡垒机没有返回资产「${asset}」的信息:${firstLine(r.text)}`);
     return info;
   }
 
-  async otp(asset: string, useOn?: string): Promise<string> {
-    const r = await this.call({ asset, otp: true }, useOn);
+  async otp(asset: string, useOn?: string, signal?: AbortSignal): Promise<string> {
+    const r = await this.call({ asset, otp: true }, useOn, signal);
     const o = r.data?.otp;
     const parsed = o?.code ? { code: o.code, validSec: o.remaining ?? 30, next: o.next } : parseOtpText(r.text);
     if (!parsed) throw new ToolError('SECRET_UNAVAILABLE', `资产「${asset}」取不到两步验证码:${firstLine(r.text)}`);
@@ -141,23 +151,27 @@ export class BaoleiAssets {
 
   /**
    * get_asset,带上 use_on;处理三种新版堡垒机的答复:
-   *   ASSET_USE_PENDING  资产要主人批准 → 每 pollMs 重试,最多等 approvalWaitMs(主人在手机上一批就接着填)
+   *   ASSET_USE_PENDING  资产要主人批准 → 每 pollMs 重试,最多等 approvalWaitMs(主人在手机上一批就接着填);
+   *                      期间调用被取消 / 到期 → SECRET_PENDING_APPROVAL
    *   ASSET_USE_DENIED   主人拒绝 → 停
    *   ASSET_USE_ORIGIN   堡垒机核对站点不符 → 拒填
-   * 旧版堡垒机不认 use_on 时去掉它再试一次。
+   * 旧版堡垒机不认 use_on(只认窄的 schema 报错特征,见 isUseOnSchemaError)时去掉它重试一次。
    */
-  private async call(args: Record<string, unknown>, useOn?: string): Promise<CallResult> {
-    const withUse = useOn ? { ...args, use_on: useOn } : args;
-    let r = await this.rpc(withUse);
-    if (r.isError && useOn && /use_on|unrecognized|unknown (key|arg)|invalid (arg|param)/i.test(r.text)) r = await this.rpc(args);
-    const deadline = Date.now() + this.approvalWaitMs;
+  private async call(args: Record<string, unknown>, useOn?: string, signal?: AbortSignal): Promise<CallResult> {
+    let effective = useOn ? { ...args, use_on: useOn } : args;
+    let r = await this.rpc(effective, signal);
+    if (r.isError && useOn && isUseOnSchemaError(r.text)) {
+      effective = args;
+      r = await this.rpc(effective, signal);
+    }
+    const started = Date.now();
+    const deadline = started + this.approvalWaitMs;
     while (r.isError && /^\s*ASSET_USE_PENDING/.test(r.text)) {
-      if (Date.now() + this.pollMs > deadline) {
-        const id = r.data?.pending?.requestId ?? /request=(\S+)/.exec(r.text)?.[1] ?? '';
-        throw new ToolError('SECRET_PENDING_APPROVAL', `这个账号每次使用都要主人批准,已推送到主人手机(请求 ${id}),${Math.round(this.approvalWaitMs / 1000)} 秒内还没批;批准后再调一次即可,别换别的办法`);
-      }
-      await new Promise((res) => setTimeout(res, this.pollMs));
-      r = await this.rpc(withUse);
+      const waited = Math.round((Date.now() - started) / 1000);
+      if (Date.now() + this.pollMs > deadline) throw pendingError(r, waited, `${Math.round(this.approvalWaitMs / 1000)} 秒内还没批`);
+      await pause(this.pollMs, signal);
+      if (signal?.aborted) throw pendingError(r, waited, '这次调用已到期或被取消时还没批');
+      r = await this.rpc(effective, signal);
     }
     if (!r.isError) return r;
     if (/^\s*ASSET_USE_DENIED/.test(r.text)) throw new ToolError('SECRET_UNAVAILABLE', '主人拒绝了这次使用这个账号;别重试,告诉用户');
@@ -166,7 +180,7 @@ export class BaoleiAssets {
   }
 
   /** 调堡垒机 MCP 的 get_asset(无状态:一次 tools/call 即可) */
-  private async rpc(args: Record<string, unknown>): Promise<CallResult> {
+  private async rpc(args: Record<string, unknown>, signal?: AbortSignal): Promise<CallResult> {
     if (!this.target) {
       throw new ToolError('SECRET_UNAVAILABLE', '这台机器没配堡垒机密钥(BAOLEI_MCP_URL + BAOLEI_MCP_TOKEN,或 ~/.claude.json 里的 baolei MCP),取不了资产');
     }
@@ -181,7 +195,7 @@ export class BaoleiAssets {
         'user-agent': `localmcpbrower-desk/${packageVersion()}`,
       },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_asset', arguments: args } }),
-      signal: AbortSignal.timeout(15_000),
+      signal: signal ? AbortSignal.any([AbortSignal.timeout(15_000), signal]) : AbortSignal.timeout(15_000),
     });
     if (!res.ok) throw new ToolError('SECRET_UNAVAILABLE', `堡垒机返回 HTTP ${res.status}`);
     const body = await res.text();
@@ -200,7 +214,8 @@ function fromData(d: BaoleiAssetData, ref: string): AssetInfo {
     name: d.name ?? ref,
     address: d.address ?? '',
     account: d.account ?? '',
-    tags: d.hosts ?? [],
+    tags: [],
+    hosts: Array.isArray(d.hosts) ? d.hosts.filter((h): h is string => typeof h === 'string') : [],
     ...(d.secret ? { secret: d.secret } : {}),
     fields: d.fields ?? {},
   };

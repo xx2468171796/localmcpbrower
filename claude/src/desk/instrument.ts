@@ -4,7 +4,8 @@
  * HTTP 腿、pipe 腿、stdio 的所有工具调用都经过这里,所以时间线和接管对它们一视同仁。
  */
 
-import { ToolError, classifyError, type ErrorCode } from '../errors.js';
+import { ToolError, classifyError, stripCallLog, type ErrorCode } from '../errors.js';
+import { SECRET_TOOL_BUDGET_MS } from '../secrets/baolei-assets.js';
 import { summarizeArgs } from './events.js';
 import { deskGate, deskRing } from './runtime.js';
 import { deskConfig } from './config.js';
@@ -47,7 +48,11 @@ export async function preflight(meta: CallMeta): Promise<void> {
 /** 等人的工具:本来就要等几分钟到半小时,不设总期限 */
 const HUMAN_TOOLS: ReadonlySet<string> = new Set(['wait_for_human', 'request_human', 'hide_window']);
 /** 这些工具没传超时参数时自己的默认超时(毫秒) */
-const OWN_DEFAULT_MS: Readonly<Record<string, number>> = { run_flow: 300_000, run_script: 30_000, execute_js: 30_000 };
+const OWN_DEFAULT_MS: Readonly<Record<string, number>> = {
+  run_flow: 300_000, run_script: 30_000, execute_js: 30_000,
+  // 可能要等主人批准两次(各 90 秒):期限必须盖住工具自己的预算,否则期限先到、底层批下来后还会去填
+  fill_secret: SECRET_TOOL_BUDGET_MS, login_with_asset: SECRET_TOOL_BUDGET_MS,
+};
 const DEADLINE_MARGIN_MS = 15_000;
 
 /**
@@ -100,7 +105,7 @@ export function trackCall(meta: CallMeta): (r: RawResult | null, ms: number) => 
     deskRing.push({
       kind: 'call_end', callId, session: meta.session, tool: meta.tool, ms: Math.round(ms),
       ok: r?.success ?? false,
-      ...(r && !r.success ? { code: r.code, error: (r.error ?? '').slice(0, 300) } : {}),
+      ...(r && !r.success ? { code: r.code, error: stripCallLog(r.error ?? '').slice(0, 300) } : {}),
       ...(typeof url === 'string' ? { url } : {}),
     });
   };

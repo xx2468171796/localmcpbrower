@@ -83,6 +83,8 @@
   const SENSITIVE_AUTOCOMPLETE = /(current-password|new-password|one-time-code|cc-number|cc-csc|cc-exp)/i;
   const SENSITIVE_NAME = /pass|pwd|secret|token|otp|totp|2fa|mfa|captcha|验证码|密码|口令|cvv|cvc|card/i;
   function isSecret(el) {
+    // fill_secret 填过的框(值来自堡垒机,账号 / 自定义字段也算)
+    if (el.getAttribute('data-ego-secret') === '1') return true;
     if (el.type === 'password') return true;
     if (SENSITIVE_AUTOCOMPLETE.test(el.getAttribute('autocomplete') || '')) return true;
     const label = [el.name, el.id, el.getAttribute('aria-label'), el.getAttribute('placeholder'), el.getAttribute('data-testid')].join(' ');

@@ -5,7 +5,7 @@
 
 import type { Frame, Page } from 'patchright';
 import { getBrowserManager } from '../browser.js';
-import { failFrom, ToolError } from '../errors.js';
+import { failFrom, failFromQuiet, ToolError } from '../errors.js';
 import { PDF_DIR, SCREENSHOT_DIR } from '../paths.js';
 import { resolveReadPath, uploadAllowRoots } from '../safe-path.js';
 import { throwIfCancelled } from '../context.js';
@@ -98,7 +98,7 @@ export async function type(input: unknown): Promise<ToolResult<TypeResult & { le
     const password = await isPasswordField(frame, selector);
     return { success: true, data: { selector, typed: true, length: args.text.length, password } };
   } catch (error) {
-    return failFrom(error);
+    return failFromQuiet(error);
   }
 }
 
@@ -188,14 +188,14 @@ export async function fillForm(input: unknown): Promise<ToolResult<{ filled: num
         await fillField(page, field);
       } catch (e) {
         // 报清楚是哪一个字段失败、前面已填了几个;不带字段值(可能是密码)
-        const base = failFrom(e);
+        const base = failFromQuiet(e);
         throw new ToolError(base.code ?? 'INTERNAL', `第 ${i + 1} 个字段(${field.selector})填写失败,前 ${filled} 个已填好:${base.error}`);
       }
       filled++;
     }
     return { success: true, data: { filled } };
   } catch (error) {
-    return failFrom(error);
+    return failFromQuiet(error);
   }
 }
 
