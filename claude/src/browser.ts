@@ -32,6 +32,9 @@ import { MAIN_WORLD_SRC, DRAIN_SRC, buildHtmlInjector } from './inject.js';
 import { currentSessionId } from './context.js';
 import { killProcessTreeSync } from './portkill.js';
 import { deskConfig } from './desk/config.js';
+import { extensionLaunchPatch } from './control/extension-launch.js';
+import { linuxTreeRss } from './proc-tree.js';
+import { deskGate, deskRing } from './desk/runtime.js';
 import { READ_UA_DEFAULTS_SRC, bundledChromiumVersion, headfulMetadata, majorOf, platformUserAgent, uaVersionToken, type UaDefaults, type UaMetadata } from './user-agent.js';
 import { RecycledSessions, idleLimitMinutes, maxOpenSpaces, needsSentinel } from './space-policy.js';
 
@@ -557,9 +560,12 @@ class BrowserManager {
     // Windows 专属：无需额外启动参数，通用参数已足够
     const winArgs: string[] = [];
     const platformArgs = IS_LINUX ? linuxArgs : IS_MAC ? macArgs : IS_WIN ? winArgs : [];
+    // 自带扩展(录制 / 浏览器内网络规则 / 全标签页):默认只在完整版 Chromium(有头)里加载,见 control/extension.ts
+    const ext = extensionLaunchPatch(headless);
     const launchArgs = [
-      ...commonArgs,
+      ...commonArgs.filter((a) => !ext?.removeArgs.includes(a)),
       ...platformArgs,
+      ...(ext?.args ?? []),
       `--window-size=${this.config.viewportWidth},${this.config.viewportHeight}`
     ];
 
@@ -580,11 +586,12 @@ class BrowserManager {
         // patchright 在无显式 channel 时，即使 headless:false 也可能悄悄选中
         // chrome-headless-shell（阉割掉窗口渲染的专用二进制），导致有头模式实际不弹窗。
         // 显式指定 channel 强制走完整版 chrome.exe，真正弹出可见窗口。
-        ...(headless ? {} : { channel: 'chromium' as const }),
+        // 无头要加载扩展(BROWSER_EXTENSION=on)时也得用完整版:headless shell 不支持扩展,改走新无头模式
+        ...(headless && !ext?.needsFullChromium ? {} : { channel: 'chromium' as const }),
         slowMo: this.config.slowMo,
         viewport: null,
         args: launchArgs,
-        ignoreDefaultArgs: ['--enable-automation'],
+        ignoreDefaultArgs: ['--enable-automation', ...(ext?.ignoreDefaultArgs ?? [])],
         // 性能优化选项
         bypassCSP: true,                    // 绕过 CSP，加速页面加载
         ignoreHTTPSErrors: true,            // 忽略 HTTPS 错误，避免卡住
@@ -627,7 +634,17 @@ class BrowserManager {
     //
     // 装在 **context** 级:页面级 route(set_block_rules)优先匹配,放行时调 route.fallback()
     // 就会落到这里,两者互不冲突。若改成页面级,两个 '**/*' handler 的优先级会打架。
-    await context.route('**/*', buildHtmlInjector([MAIN_WORLD_SRC, EGO_HELPER_SRC]));
+    // 先过工位白名单:点链接 / 页面脚本跳到名单外的站点(含 iframe)在这里拦下,不只拦工具参数里的网址
+    const inject = buildHtmlInjector([MAIN_WORLD_SRC, EGO_HELPER_SRC]);
+    await context.route('**/*', async (route) => {
+      const req = route.request();
+      if (req.resourceType() === 'document' && !deskGate.allows(req.url())) {
+        deskRing.push({ kind: 'gate', space: sp.name, url: req.url(), detail: 'blocked_by_allowlist' });
+        await route.abort('blockedbyclient').catch(() => { /* 已被别处处理 */ });
+        return;
+      }
+      await inject(route);
+    });
 
     // 浏览器被外部关掉(用户点 X / 崩溃)时把 space 打回未启动态,
     // 下次请求自动重建;各会话的日志缓冲保留,只清失效的页面引用(并标记「被清掉过」)。
@@ -1302,6 +1319,28 @@ class BrowserManager {
       };
     }));
     return { spaces };
+  }
+
+  /**
+   * 管理员看一眼:截工作区里当前活动的那一页(PNG)。浏览器没开着返回 null,不拉起、不改 lastUsed。
+   * 活动页 = 最后一个会话的活动标签页;没有会话归属时取 context 里最后一页。
+   */
+  public async screenshotActive(space = DEFAULT_SPACE): Promise<Buffer | null> {
+    const sp = this.spaces.get(space);
+    if (!sp?.context) return null;
+    const owned = [...sp.sessions.values()].map((st) => st.pages[st.activeIndex]).filter((p): p is Page => p !== undefined && !p.isClosed());
+    const page = owned[owned.length - 1] ?? sp.context.pages().filter((p) => !p.isClosed()).pop();
+    if (!page) return null;
+    return page.screenshot({ type: 'png', timeout: 10_000 });
+  }
+
+  /** 资源指标:各工作区 Chromium 进程树内存(Linux 读 /proc;其它系统暂报 null)+ 本进程内存 */
+  public async metrics(): Promise<{ node: NodeJS.MemoryUsage; spaces: Array<{ name: string; alive: boolean; chromiumPid: number | null; rssBytes: number | null; processes: number | null }> }> {
+    const spaces = [...this.spaces.values()].map((sp) => {
+      const tree = sp.chromiumPid && IS_LINUX ? linuxTreeRss(sp.chromiumPid) : null;
+      return { name: sp.name, alive: sp.context !== null, chromiumPid: sp.chromiumPid, rssBytes: tree?.rss ?? null, processes: tree?.count ?? null };
+    });
+    return { node: process.memoryUsage(), spaces };
   }
 
   /** 当前存活的会话数(跨所有 space 去重) */

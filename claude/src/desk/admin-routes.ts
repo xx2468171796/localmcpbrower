@@ -19,9 +19,9 @@ export interface AdminDeps {
   deskId?: string;
   version: string;
   /** 只读快照,绝不拉起浏览器 */
-  state: () => unknown;
+  state: () => Promise<unknown>;
   screenshot: (space?: string) => Promise<Buffer | null>;
-  restart: (space: string) => Promise<void>;
+  restart: (space: string) => Promise<unknown>;
   metrics: () => Promise<unknown>;
 }
 
@@ -70,8 +70,12 @@ export function createAdminRouter(deps: AdminDeps): Router {
     next();
   });
 
-  r.get('/state', (_req, res) => {
-    res.json({ deskId: deps.deskId ?? null, version: deps.version, gate: deps.gate.status(), inFlight: deps.ring.inFlight(), lastEventId: deps.ring.lastId, browser: deps.state() });
+  r.get('/state', async (_req, res) => {
+    try {
+      res.json({ deskId: deps.deskId ?? null, version: deps.version, gate: deps.gate.status(), inFlight: deps.ring.inFlight(), lastEventId: deps.ring.lastId, browser: await deps.state() });
+    } catch (e) {
+      apiError(res, 500, 'INTERNAL', e instanceof Error ? e.message : String(e));
+    }
   });
 
   r.get('/events', (req, res) => {

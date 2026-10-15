@@ -10,6 +10,7 @@
 
 import type { CDPSession, Page } from 'patchright';
 import { getBrowserManager } from '../browser.js';
+import { deskConfig } from '../desk/config.js';
 import { ToolError, fail, failFrom } from '../errors.js';
 import type { ToolResult } from '../types.js';
 import { z } from 'zod';
@@ -36,8 +37,8 @@ function sessionFor(page: Page): Promise<CDPSession> {
   return s;
 }
 
-export function browserCdpAllowed(env: Record<string, string | undefined> = process.env): boolean {
-  return /^(1|true|yes|on)$/i.test(env['ALLOW_BROWSER_CDP'] ?? '');
+export function browserCdpAllowed(): boolean {
+  return deskConfig.allowBrowserCdp;
 }
 
 export async function cdpSend(input: unknown): Promise<ToolResult<{ method: string; result: unknown }>> {

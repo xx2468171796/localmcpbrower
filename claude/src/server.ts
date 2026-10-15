@@ -29,6 +29,11 @@ import { buildHumanRequest, readHumanAck } from './elicit.js';
 import { createToolTelemetry, RetryTracker, sampleOf, type ToolCallSample } from './telemetry.js';
 import type { HealthCheckResult } from './types.js';
 import { Activity, packageVersion } from './activity.js';
+import { deskConfig } from './desk/config.js';
+import { deskGate, deskRing } from './desk/runtime.js';
+import { errorOf, preflight, trackCall, withCode, withDeadline, type RawResult } from './desk/instrument.js';
+import { registerExtraTools } from './desk/extra-tools.js';
+import { createAdminRouter } from './desk/admin-routes.js';
 import {
   NavigateSchema, ClickSchema, TypeSchema, ScreenshotSchema,
   ExecuteJsSchema, ScrollSchema, WaitForSelectorSchema,
@@ -206,37 +211,60 @@ const telemetry = createToolTelemetry(SERVER_VERSION, STDIO ? 'stdio' : PIPE_SER
 // 工具调用活动(两条腿合计):/health 报给本机自动更新器,它只在空闲时换版本
 const activity = new Activity();
 
-function humanizeOutput(server: McpServer): void {
+type RawHandler = (...a: unknown[]) => Promise<{ content?: Array<{ type: string; text?: string }>; _meta?: Record<string, unknown>; isError?: boolean }>;
+
+/** 本会话里每个工具的原始 handler(未排版):run_flow 按名字调它们 */
+type ToolRegistry = Map<string, RawHandler>;
+
+function rawResultOf(out: Awaited<ReturnType<RawHandler>> | undefined): { index: number; parsed: RawResult | undefined } {
+  const index = out?.content?.findIndex((c) => c.type === 'text') ?? -1;
+  if (index < 0 || !out?.content) return { index, parsed: undefined };
+  try {
+    const p = JSON.parse(out.content[index]?.text ?? '') as unknown;
+    return { index, parsed: p && typeof p === 'object' && typeof (p as { success?: unknown }).success === 'boolean' ? p as RawResult : undefined };
+  } catch {
+    return { index, parsed: undefined };
+  }
+}
+
+function humanizeOutput(server: McpServer, sessionId: string, registry: ToolRegistry): void {
   const retries = new RetryTracker(); // 每个会话一个:重试率按会话算
   const record = (sample: ToolCallSample): void => { if (telemetry) telemetry.record(retries.mark(sample)); };
   const register = server.registerTool.bind(server) as (...a: unknown[]) => unknown;
   (server as unknown as { registerTool: (...a: unknown[]) => unknown }).registerTool = (name: unknown, config: unknown, handler: unknown) => {
-    const title = (config as { title?: string }).title ?? String(name);
-    const fn = handler as (...a: unknown[]) => Promise<{ content?: Array<{ type: string; text?: string }>; _meta?: Record<string, unknown> }>;
+    const tool = String(name);
+    const title = (config as { title?: string }).title ?? tool;
+    const fn = handler as RawHandler;
+    registry.set(tool, fn);
     return register(name, config, async (...args: unknown[]) => {
       const t0 = performance.now();
       const end = activity.begin();
-      let out: Awaited<ReturnType<typeof fn>>;
+      const meta = { tool, session: sessionId, args: args[0], signal: (args[1] as { mcpReq?: { signal?: AbortSignal } } | undefined)?.mcpReq?.signal };
+      const done = trackCall(meta);
+      let out: Awaited<ReturnType<RawHandler>>;
       try {
-        out = await fn(...args);
+        // 闸门(人接管中 / 白名单)和调用期限都在这里:两条腿、所有工具一视同仁
+        await preflight(meta);
+        out = await withDeadline(fn(...args), tool);
       } catch (e) {
-        record({ tool: String(name), ok: false, ms: Math.round(performance.now() - t0), bytes: 0, truncated: false });
-        throw e;
+        out = text(errorOf(e));
       } finally {
         end();
       }
       const ms = performance.now() - t0;
-      const i = out?.content?.findIndex((c) => c.type === 'text') ?? -1;
-      let parsed: unknown;
-      if (i >= 0) { try { parsed = JSON.parse(out.content![i]!.text ?? ''); } catch { parsed = undefined; } }
-      if (!parsed || typeof parsed !== 'object' || typeof (parsed as { success?: unknown }).success !== 'boolean') {
-        record(sampleOf(String(name), out, ms));
+      const { index, parsed: raw } = rawResultOf(out);
+      if (!raw || !out.content) {
+        done(null, ms);
+        record(sampleOf(tool, out, ms));
         return out;
       }
-      const content = [...out.content!];
-      content[i] = { type: 'text', text: formatResult(title, parsed as { success: boolean; data?: unknown; error?: string }, ms) };
-      const result = { ...out, content, _meta: { ...(out._meta ?? {}), [RAW_META_KEY]: parsed } };
-      record(sampleOf(String(name), result, ms, parsed));
+      const parsed = withCode(raw);
+      if (getBrowserManager().consumeRecycled(sessionId)) parsed.recycled = true;
+      done(parsed, ms);
+      const content = [...out.content];
+      content[index] = { type: 'text', text: formatResult(title, parsed, ms) };
+      const result = { ...out, content, ...(parsed.success ? {} : { isError: true }), _meta: { ...(out._meta ?? {}), [RAW_META_KEY]: parsed } };
+      record(sampleOf(tool, result, ms, parsed));
       return result;
     });
   };
@@ -247,7 +275,8 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
     { name: 'claudemcp-browser', title: '本地浏览器操控', version: SERVER_VERSION },
     { instructions: SERVER_INSTRUCTIONS }
   );
-  humanizeOutput(server);
+  const registry: ToolRegistry = new Map();
+  humanizeOutput(server, sessionId, registry);
 
   /**
    * 从 MCP 请求上下文里取出进度上报器。
@@ -747,6 +776,9 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
     annotations: { title: '提取正文', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => structured(await tools.extractArticle(args))));
 
+  // 3.0:CDP 直通、堡垒机取密钥、流程、录制、扩展(见 desk/extra-tools.ts)
+  registerExtraTools(server, wrap, text, registry, sessionId);
+
   return server;
 }
 
@@ -799,6 +831,24 @@ function createApp(): express.Application {
   // 鉴权只挡 MCP 数据面；/health 留给 PM2/探活脚本，不含敏感信息
   app.use('/mcp', requireAuth);
   app.use('/connections', requireAuth);
+
+  // 只看进程活着,绝不拉起浏览器(/health 会拉起,管理服务轮询它会让空闲回收永远不生效)
+  app.get('/livez', (_req: Request, res: Response) => {
+    res.json({ status: 'ok', version: SERVER_VERSION, deskId: deskConfig.deskId, uptime: Date.now() - startTime, browserAlive: getBrowserManager().isAlive(), ...activity.snapshot() });
+  });
+
+  // 管理接口(工位管理服务 / Hermes 面板 / 人):独立的 ADMIN_TOKEN;没设时只许本机访问
+  app.use('/admin', createAdminRouter({
+    ring: deskRing,
+    gate: deskGate,
+    adminToken: deskConfig.adminToken ?? '',
+    deskId: deskConfig.deskId ?? undefined,
+    version: SERVER_VERSION,
+    state: () => getBrowserManager().snapshotState(),
+    screenshot: (space) => getBrowserManager().screenshotActive(space),
+    restart: (space) => getBrowserManager().restartSpace(space),
+    metrics: () => getBrowserManager().metrics(),
+  }));
 
   // Health
   app.get('/health', async (_req: Request, res: Response) => {
@@ -1132,6 +1182,11 @@ async function runHttp(): Promise<void> {
   //
   // 这样「拉新代码」和「改客户端注册」彻底解耦:没改注册的机器照常用 HTTP,
   // 改了的走新协议。全机群切换期间不会出现半边不可用。
+  // 托管工位(PIPE_DISABLE=1)只走 HTTP:管道是本机单用的接入方式,工位都是远程调用
+  if (deskConfig.pipeDisable) {
+    console.log('[Server] PIPE_DISABLE=1:不起 pipe 腿');
+    return;
+  }
   try {
     const leg = startPipeLeg({
       service: PIPE_SERVICE,

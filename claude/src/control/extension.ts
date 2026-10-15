@@ -1,16 +1,9 @@
 /**
- * 自带扩展(第二层控制):加载、找到它的 Service Worker、以及录制 / 网络规则 / 标签页 / 下载这几个工具。
- *
- * 开关 BROWSER_EXTENSION:
- *   auto(默认)= 只在完整版 Chromium 里加载(有头窗口,本机弹窗和虚拟机工位都是);无头的 headless shell 不支持扩展,跳过;
- *   on  = 无头也加载(无头改用完整版 Chromium 的新无头模式,更重一点);
- *   off = 不加载。
+ * 自带扩展(第二层控制):找到它的 Service Worker,以及录制 / 网络规则 / 标签页 / 下载这几个工具。
+ * 加载参数在 extension-launch.ts(browser.ts 用它,拆开避免成环)。
  * MCP 调扩展不走消息协议:worker.evaluate() 直接调后台挂在 self.__desk 上的函数。
  */
 
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import fs from 'node:fs';
 import type { BrowserContext, Worker } from 'patchright';
 import { z } from 'zod';
 import { getBrowserManager } from '../browser.js';
@@ -18,40 +11,7 @@ import { ToolError, fail, failFrom } from '../errors.js';
 import type { ToolResult } from '../types.js';
 import type { FlowStep } from './flow.js';
 
-export type ExtensionMode = 'auto' | 'on' | 'off';
-
-/** dist/control/extension.js → claude/extension */
-export const EXTENSION_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'extension');
-
-export function extensionMode(env: Record<string, string | undefined> = process.env): ExtensionMode {
-  const v = (env['BROWSER_EXTENSION'] ?? 'auto').trim().toLowerCase();
-  if (/^(off|0|false|no)$/.test(v)) return 'off';
-  if (/^(on|1|true|yes)$/.test(v)) return 'on';
-  return 'auto';
-}
-
-export interface ExtensionLaunchPatch {
-  /** 追加到启动参数 */
-  args: string[];
-  /** 要从启动参数里去掉的(本仓库自己加的和 patchright 默认加的 --disable-extensions) */
-  removeArgs: string[];
-  ignoreDefaultArgs: string[];
-  /** 需要完整版 Chromium(channel: 'chromium');无头时意味着改用新无头模式 */
-  needsFullChromium: boolean;
-}
-
-/** 给 BrowserManager 启动浏览器时用:返回 null = 这次不加载扩展 */
-export function extensionLaunchPatch(headless: boolean, env: Record<string, string | undefined> = process.env): ExtensionLaunchPatch | null {
-  const mode = extensionMode(env);
-  if (mode === 'off' || (mode === 'auto' && headless)) return null;
-  if (!fs.existsSync(path.join(EXTENSION_DIR, 'manifest.json'))) return null;
-  return {
-    args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`],
-    removeArgs: ['--disable-extensions'],
-    ignoreDefaultArgs: ['--disable-extensions'],
-    needsFullChromium: true,
-  };
-}
+export { EXTENSION_DIR, extensionLaunchPatch, extensionMode } from './extension-launch.js';
 
 /** 找扩展的后台 Service Worker;刚启动时它可能还没起来,最多等 timeoutMs */
 export async function deskWorker(context: BrowserContext, timeoutMs = 5000): Promise<Worker> {
