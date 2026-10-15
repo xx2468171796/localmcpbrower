@@ -4,6 +4,13 @@
 
 import { z } from 'zod';
 
+/** 只认 http(s) 的网址:z.url() 只校验语法,file:// / javascript: 也能过 */
+const httpUrl = () => z.url('必须是有效的 URL').refine((u) => /^https?:\/\//i.test(u), { message: '只允许 http:// 或 https://' });
+
+/** 脚本超时(毫秒):默认 30 秒,最多 300 秒 */
+const scriptTimeout = z.number().int().min(100).max(300000).optional()
+  .describe('脚本最长运行毫秒数，默认 30000，最多 300000；超时返回 TIMEOUT 并停掉仍在跑的脚本');
+
 export const NavigateSchema = z.object({
   url: z.string().url('必须是有效的 URL')
     // 只认 http(s)。原来只校验 URL **语法**,于是 file:///C:/Windows/win.ini 能被打开
@@ -25,19 +32,21 @@ export const TypeSchema = z.object({
 });
 
 export const ScreenshotSchema = z.object({
-  name: z.string().optional().describe('截图文件名（不含扩展名），不填则自动生成'),
+  name: z.string().optional().describe('截图文件名（不含扩展名、不能带路径），文件固定存到截图目录；不填则自动生成'),
   fullPage: z.boolean().default(false).describe('是否截取整页（含滚动区域），默认仅当前视口'),
   format: z.enum(['jpeg', 'png']).default('jpeg').describe('图片格式，jpeg 编码更快（默认），png 无损但更慢'),
   quality: z.number().min(1).max(100).default(80).describe('JPEG 压缩质量 1-100（仅 jpeg 格式生效），默认 80')
 });
 
 export const ExecuteJsSchema = z.object({
-  script: z.string().min(1, 'script 不能为空').describe('要在页面上下文执行的 JavaScript 代码，返回值会被序列化返回')
+  script: z.string().min(1, 'script 不能为空').describe('要在页面上下文执行的 JavaScript 代码，返回值会被序列化返回'),
+  timeoutMs: scriptTimeout
 });
 
 /** run_script：一次跑完，脚本内可用 __ego.* 助手 */
 export const RunScriptSchema = z.object({
-  script: z.string().min(1, 'script 不能为空').describe('要在页面上下文一次性执行的 JS。可用 __ego 助手：__ego.snapshot()/click(selOrRef)/fill(selOrRef,val)/waitFor(sel,ms)/text(sel)/attr(sel,name)/exists(sel)/sleep(ms)/$(sel)/$$(sel)。支持顶层 await 与 return，返回值序列化回传。')
+  script: z.string().min(1, 'script 不能为空').describe('要在页面上下文一次性执行的 JS。可用 __ego 助手：__ego.snapshot()/click(selOrRef)/fill(selOrRef,val)/waitFor(sel,ms)/text(sel)/attr(sel,name)/exists(sel)/sleep(ms)/$(sel)/$$(sel)。支持顶层 await 与 return，返回值序列化回传。'),
+  timeoutMs: scriptTimeout
 });
 
 /** Task Space 名称参数 */
@@ -53,7 +62,7 @@ export const SpaceNewSchema = SpaceNameSchema.extend({
 export const ScrollSchema = z.object({
   x: z.number().optional().describe('水平滚动到的像素位置'),
   y: z.number().optional().describe('垂直滚动到的像素位置'),
-  selector: z.string().optional().describe('滚动到该元素可见处的 CSS 选择器，与 x/y 二选一')
+  selector: z.string().optional().describe('只给 selector：把该元素滚进视口；同时给 x/y：在这个可滚动容器里滚到 (x, y)。不给 selector 时滚窗口（窗口滚不动会自动改滚页面的主滚动容器）')
 });
 
 export const WaitForSelectorSchema = z.object({
@@ -84,14 +93,14 @@ export const SnapshotSchema = z.object({
 
 /** 站点 URL 发现 */
 export const DiscoverUrlsSchema = z.object({
-  url: z.url().describe('站点根/入口 URL，会从此页面及其 sitemap/robots.txt 发现地址'),
+  url: httpUrl().describe('站点根/入口 URL，会从此页面及其 sitemap/robots.txt 发现地址'),
   maxUrls: z.number().int().positive().default(300).describe('最多返回的 URL 数量，默认 300'),
   sameDomainOnly: z.boolean().default(true).describe('仅保留与入口 URL 同域名的地址，默认 true'),
   includeSitemap: z.boolean().default(true).describe('是否解析 robots.txt 与 sitemap.xml 发现更多地址，默认 true')
 });
 
 export const ExtractArticleSchema = z.object({
-  url: z.url().optional().describe('可选，提供则先跳转到该网址再提取，不填则提取当前页面')
+  url: httpUrl().optional().describe('可选，提供则先跳转到该网址再提取，不填则提取当前页面')
 });
 
 export const SelectOptionSchema = z.object({
@@ -104,7 +113,7 @@ export const FillFormSchema = z.object({
   fields: z.array(z.object({
     selector: z.string().min(1).describe('表单字段的 CSS 选择器'),
     value: z.string().describe('要填入的值'),
-    type: z.enum(['text', 'select', 'checkbox']).default('text').describe('字段类型：文本框/下拉框/复选框')
+    type: z.enum(['text', 'select', 'checkbox', 'radio']).default('text').describe('字段类型：文本框/下拉框（原生或自绘）/复选框（value 为 true/false）/单选（选中该项）')
   })).describe('要批量填写的表单字段列表')
 });
 
@@ -114,7 +123,7 @@ export const GetPageContentSchema = z.object({
 });
 
 export const PdfExportSchema = z.object({
-  path: z.string().min(1, 'path 不能为空').describe('PDF 输出文件的保存路径;相对路径存到浏览器 MCP 数据目录的 pdf/ 下'),
+  path: z.string().min(1, 'path 不能为空').describe('PDF 输出文件名或路径，扩展名固定 .pdf。相对路径存到浏览器 MCP 数据目录的 pdf/ 下（不能用 ../ 跳出）；托管工位上绝对路径只能指向截图 / PDF / 下载目录'),
   fullPage: z.boolean().default(true).describe('是否导出整页内容')
 });
 
@@ -157,11 +166,11 @@ export const DragAndDropSchema = z.object({
 
 export const FileUploadSchema = z.object({
   selector: z.string().min(1, 'selector is required').describe('input[type=file] 元素的 CSS 选择器'),
-  filePath: z.string().min(1, 'filePath is required').describe('要上传文件的本地绝对路径')
+  filePath: z.string().min(1, 'filePath is required').describe('要上传文件的本地绝对路径。托管工位（或设了 UPLOAD_ALLOW_DIRS）上只允许数据目录 uploads/、截图、PDF、下载目录及 UPLOAD_ALLOW_DIRS 里的文件。selector 也可以是点了会弹文件选择框的按钮')
 });
 
 export const NewTabSchema = z.object({
-  url: z.string().optional().describe('新标签页打开的网址，不填则打开空白页')
+  url: httpUrl().optional().describe('新标签页打开的网址（http/https），不填则打开空白页')
 });
 
 export const TabIndexSchema = z.object({
@@ -170,7 +179,7 @@ export const TabIndexSchema = z.object({
 
 export const InterceptRequestsSchema = z.object({
   urlPattern: z.string().min(1, 'urlPattern is required').describe('要匹配的 URL 模式（支持通配符）'),
-  action: z.enum(['block', 'log', 'modify']).describe('匹配后的动作：拦截/记录/修改')
+  action: z.enum(['block', 'log', 'modify', 'off']).describe('匹配后的动作：block 拦截；log / modify 放行（请求记录用 get_network 看）；off 撤掉这个模式的拦截。只作用于当前标签页')
 });
 
 export type NavigateInput = z.infer<typeof NavigateSchema>;
@@ -222,7 +231,7 @@ export const ExtractDataSchema = z.object({
 export const BatchFetchSchema = z.object({
   // 与 NavigateSchema 同理:z.url() 只校验语法,不限 scheme
   urls: z.array(z.url().refine((u) => /^https?:\/\//i.test(u), { message: '只允许 http:// 或 https://' }))
-    .min(1).max(20).describe('要抓取的 URL 列表，最多 20 个'),
+    .min(1).max(50).describe('要抓取的 URL 列表，最多 50 个；快到调用期限时停止并返回已抓到的部分（incomplete=true）'),
   waitFor: z.string().optional().describe('每个页面等待出现的选择器'),
   extractSelector: z.string().optional().describe('要提取内容的选择器，不填则返回 title+url'),
   delay: z.number().int().min(0).max(5000).default(500).describe('每个标签页两次请求的间隔毫秒，防止被封'),
@@ -231,7 +240,7 @@ export const BatchFetchSchema = z.object({
 
 /** 分页爬取 */
 export const CrawlPagesSchema = z.object({
-  startUrl: z.url().describe('起始 URL'),
+  startUrl: httpUrl().describe('起始 URL'),
   nextPageSelector: z.string().describe('下一页按钮/链接的选择器'),
   itemSelector: z.string().describe('每条数据的容器选择器'),
   fields: z.array(z.object({
@@ -240,7 +249,7 @@ export const CrawlPagesSchema = z.object({
     attribute: z.string().optional().describe('提取属性值，不填则提取文本'),
     type: z.enum(['text', 'html', 'attr']).default('text').describe('提取方式：text 文本 / html 内部HTML / attr 属性')
   })).describe('要提取的字段'),
-  maxPages: z.number().int().positive().max(50).default(5).describe('最多爬取页数'),
+  maxPages: z.number().int().positive().max(100).default(5).describe('最多爬取页数（上限 100）；快到调用期限时停止并返回已爬到的部分（incomplete=true）'),
   delay: z.number().int().min(0).max(5000).default(800).describe('翻页间隔毫秒')
 });
 

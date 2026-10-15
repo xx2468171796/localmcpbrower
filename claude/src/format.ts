@@ -28,6 +28,8 @@ const LABEL: Record<string, string> = {
   total: '总数', pages: '页数', selected: '已选中', filled: '已填', clicked: '已点击', path: '路径', value: '值',
   byline: '作者', excerpt: '摘要', length: '字数', textPreview: '预览', success: '成功', spaces: '工作区',
   name: '名称', reason: '原因', elapsedSec: '等待秒数', width: '宽', height: '高', format: '格式',
+  requestedUrl: '请求网址', moved: '已移动', password: '密码框', newTab: '新标签页', download: '下载', navigated: '已跳转',
+  incomplete: '未完成', skipped: '跳过', stoppedReason: '停止原因', values: '选中值', container: '滚动容器', code: '错误码',
 };
 const label = (k: string) => LABEL[k] ?? k;
 
