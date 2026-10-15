@@ -12,6 +12,7 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { ToolError } from './errors.js';
 
 /**
  * 进度上报器。由 server.ts 的 wrap 从 MCP 请求上下文构造后放进 ALS,
@@ -66,7 +67,12 @@ export function cancelOpt(): { signal?: AbortSignal } {
  * 不然 AI 取消了请求,浏览器还会把几十页跑完,白占标签页、还会改动页面状态。
  */
 export function throwIfCancelled(): void {
-  if (mcpCtx.getStore()?.signal?.aborted) throw new Error('调用方已取消本次请求');
+  if (mcpCtx.getStore()?.signal?.aborted) throw new ToolError('CANCELLED', '调用方已取消本次请求');
+}
+
+/** 当前调用的取消信号(没有则 undefined);传给 timing.ts 的 sleep / withTimeout */
+export function currentSignal(): AbortSignal | undefined {
+  return mcpCtx.getStore()?.signal;
 }
 
 export function reportProgress(progress: number, total?: number, message?: string): void {
