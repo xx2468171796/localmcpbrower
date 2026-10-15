@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 工位冒烟(root 跑):带该工位的 MCP 令牌按 MCP 协议 navigate 一个网址,读回标题;Selkies 带 / 不带密码各打一次;
-# 再以工位用户身份截它自己的虚拟屏到 /home/desk-<id>/data/shots/desk-smoke.png。
+# 并以工位用户身份截它自己的虚拟屏到 /home/desk-<id>/data/shots/desk-smoke.png。
 #   bash desk-smoke.sh <id> [网址]
 # 令牌只经 root 700 临时目录里的头文件交给 curl,不进命令行,也不打印。
 set -euo pipefail
@@ -27,13 +27,14 @@ curl -sS -H @"$T/h" -o /dev/null -X POST "$E" -d '{"jsonrpc":"2.0","method":"not
 echo "工具数 $(curl -sS -H @"$T/h" -X POST "$E" -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | grep -o '"name":"[a-z_]*"' | sort -u | wc -l)"
 curl -sS -H @"$T/h" -X POST "$E" -d "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"navigate\",\"arguments\":{\"url\":\"$URL\"}}}" \
   | grep -o '"title\\\{0,1\}":\\\{0,1\}"[^"\\]\{0,80\}' | head -1 | sed 's/^/navigate → /'
+
+# 会话还开着时截屏(会话关掉、最后一页关了 Chrome 会退出,画面只剩壁纸)
+sleep 1
+SHOT=/home/desk-$ID/data/shots/desk-smoke.png
+runuser -u "desk-$ID" -- env DISPLAY="$DISP" XAUTHORITY="/home/desk-$ID/.Xauthority" import -window root "$SHOT" && identify "$SHOT"
 curl -sS -H @"$T/h" -o /dev/null -X DELETE "$E" || true
 
 printf 'user = "admin:%s"\n' "$(get SELKIES_BASIC_AUTH_PASSWORD)" > "$T/c"
 echo "Selkies 无密码 → HTTP $(curl -sk -o /dev/null -w '%{http_code}' "https://127.0.0.1:$SPORT/")(应为 401)"
 echo "Selkies 带密码 → HTTP $(curl -sk -K "$T/c" -o /dev/null -w '%{http_code}' "https://127.0.0.1:$SPORT/")(应为 200)"
-
-sleep 1
-SHOT=/home/desk-$ID/data/shots/desk-smoke.png
-runuser -u "desk-$ID" -- env DISPLAY="$DISP" XAUTHORITY="/home/desk-$ID/.Xauthority" import -window root "$SHOT" && identify "$SHOT"
 echo "SMOKE_DONE $ID"
