@@ -18,11 +18,11 @@ EnvironmentFile=/etc/ai-desk/desks/%i.env
 UnsetEnvironment=MCP_AUTH_TOKEN ADMIN_TOKEN BAOLEI_MCP_URL BAOLEI_MCP_TOKEN
 # 内网只许 Hermes 宿主机 ubuntu-244 连进来 / 回包
 IPAddressDeny=10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 fc00::/7 fe80::/10
-IPAddressAllow=192.168.10.244
+IPAddressAllow=192.168.10.244 192.168.110.239
 Environment=XDG_RUNTIME_DIR=/run/desk-%i
 RuntimeDirectory=desk-%i
 RuntimeDirectoryMode=0700
-ExecStartPre=/bin/sh -c 'for i in $(seq 1 50); do xdpyinfo >/dev/null 2>&1 && exit 0; sleep 0.2; done; exit 1'
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 50); do timeout 2 xdpyinfo >/dev/null 2>&1 && exit 0; sleep 0.2; done; exit 1'
 ExecStart=/usr/bin/selkies --addr=0.0.0.0 --enable-https=true --enable-resize=false --encoder=h264enc --framerate=60,30-60 --video-crf=20,12-22 --video-fullcolor=true --use-paint-over-quality=true --video-paintover-crf=12,5-20 --audio-enabled=false --microphone-enabled=false --gamepad-enabled=false --basic-auth-user=admin
 Restart=always
 RestartSec=3

@@ -27,9 +27,9 @@ EnvironmentFile=/etc/ai-desk/desks/%i.env
 # Selkies 的密码与本服务无关;MCP / 管理令牌和堡垒机密钥由 node 读走,不传给 Chromium(browser.ts 过滤子进程环境)
 UnsetEnvironment=SELKIES_BASIC_AUTH_PASSWORD SELKIES_BASIC_AUTH_VIEWONLY_PASSWORD
 # 出站不许进内网(页面里的提示注入 / 被攻破的渲染进程别拿工位当跳板扫内网);
-# 例外:Hermes 宿主机 ubuntu-244(要接进来的连接)和堡垒机(fill_secret 取密钥)。DNS 走本机 127.0.0.53。
+# 例外:Hermes 宿主机 ubuntu-244(要接进来的连接)、堡垒机(fill_secret 取密钥)、本机网卡地址(deskctl / smoke 从本机连;别的工位端口另有 nft 按用户挡)。DNS 走本机 127.0.0.53。
 IPAddressDeny=10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 fc00::/7 fe80::/10
-IPAddressAllow=192.168.10.244 192.168.110.246
+IPAddressAllow=192.168.10.244 192.168.110.246 192.168.110.239
 ExecStart=/usr/local/bin/node dist/server.js
 Restart=always
 RestartSec=3
