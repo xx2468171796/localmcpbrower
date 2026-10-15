@@ -14,6 +14,7 @@
  */
 
 import { execSync, spawnSync } from 'child_process';
+import { deskConfig } from './desk/config.js';
 
 const IS_WIN = process.platform === 'win32';
 const IS_MAC = process.platform === 'darwin';
@@ -369,15 +370,22 @@ function killPortWindows(port: number): void {
   // 不再用 findstr 预筛（子串匹配会把 :32110 当成 :3211），整份输出交给精确解析。
   // 取全量表就有了旧实现没有的失败模式：连接数极多的机器（数万条 TIME_WAIT）会超过
   // execSync 默认 1 MiB 的 maxBuffer 抛 ENOBUFS，端口清理直接失效 —— 显式放宽到 16 MiB。
-  const output = execSync('netstat -ano', { encoding: 'utf-8', timeout: 5000, maxBuffer: 16 * 1024 * 1024 });
+  // windowsHide:PM2 / 计划任务下跑时不闪黑框
+  const output = execSync('netstat -ano', { encoding: 'utf-8', timeout: 5000, maxBuffer: 16 * 1024 * 1024, windowsHide: true });
   for (const pid of parseWindowsListenerPids(output, port)) {
-    if (pid === String(process.pid)) continue;
+    // 父进程同 POSIX 分支一样排除:端口若是父进程(启动器)持有的,/T 会把它连同我们自己一起杀掉
+    if (pid === String(process.pid) || pid === String(process.ppid)) continue;
     // /T 连同**子进程树**一起杀：旧 server 被 TerminateProcess 硬杀时它的 exit 钩子
     // 一个都不会跑，不带 /T 就要靠 chromium 自己发现 CDP 管道断开才退出；
     // 浏览器卡住（模态框 / 渲染进程无响应）时就会留下持有 profile 锁的孤儿。
     // 前提是 PID 挑得准 —— 挑错了 /T 会把误杀面从一个进程放大到一整棵树。
-    try { execSync(`taskkill /F /T /PID ${pid}`, { timeout: 5000 }); } catch {}
+    try { execSync(`taskkill /F /T /PID ${pid}`, { timeout: 5000, windowsHide: true, stdio: 'ignore' }); } catch {}
   }
+}
+
+/** 启动时要不要清端口(KILL_PORT_ON_START,默认要);killPortProcess 自己会看,server.ts 不用另判 */
+export function portKillEnabled(): boolean {
+  return deskConfig.killPortOnStart;
 }
 
 /**
@@ -385,6 +393,12 @@ function killPortWindows(port: number): void {
  * 清不掉的话后面 listen 会 EADDRINUSE,那条路径自己有重试和报错)。
  */
 export async function killPortProcess(port: number): Promise<void> {
+  // KILL_PORT_ON_START=0(托管工位):端口被占就让 listen 自己报 EADDRINUSE,绝不去杀 ——
+  // 同机几个工位并排跑,端口配错时杀掉的是邻居工位
+  if (!portKillEnabled()) {
+    console.log(`[Server] KILL_PORT_ON_START=0,不清理端口 ${port} 上的进程`);
+    return;
+  }
   // 端口先做整数校验再进 shell 命令:既挡住命令注入,也顺手挡住 NaN 拼出的畸形命令
   if (!Number.isInteger(port) || port < 1 || port > 65535) return;
   try {

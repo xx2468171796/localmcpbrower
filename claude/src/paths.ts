@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { deskConfig } from './desk/config.js';
 
 const IS_WIN = process.platform === 'win32';
 
@@ -87,8 +88,16 @@ export function profileDir(configured: string | undefined): string {
   return isUnder(p, LEGACY_ROOT) ? path.join(DATA_ROOT, path.relative(LEGACY_ROOT, p)) : p;
 }
 
+/**
+ * 老位置搬家只给本机单用的服务做。托管工位(DESK_ID)的目录是管理服务指定的独立目录,
+ * 老位置(安装目录 storage/)属于同机的本机服务 —— 搬过来等于抢走它的登录态,
+ * removeLegacyLeftover 更会把它正在用的 profile 删掉。
+ */
+const MIGRATE_LEGACY = !deskConfig.managed;
+
 /** target 在老位置的对应目录,且还需要搬(老的在、新的还没有);不用搬返回 null */
 export function legacyOf(target: string): string | null {
+  if (!MIGRATE_LEGACY) return null;
   if (!isUnder(target, DATA_ROOT) || path.resolve(DATA_ROOT) === path.resolve(LEGACY_ROOT)) return null;
   const legacy = path.join(LEGACY_ROOT, path.relative(DATA_ROOT, target));
   return fs.existsSync(legacy) && !fs.existsSync(target) ? legacy : null;
@@ -129,6 +138,7 @@ export function adoptLegacy(target: string): string {
  * 还被占着就留到下次(服务启动时和每日清理都会再试)。新位置不存在时不碰——那说明还没搬。
  */
 export function removeLegacyLeftover(target: string): void {
+  if (!MIGRATE_LEGACY) return;
   if (!isUnder(target, DATA_ROOT) || path.resolve(DATA_ROOT) === path.resolve(LEGACY_ROOT)) return;
   const legacy = path.join(LEGACY_ROOT, path.relative(DATA_ROOT, target));
   if (!fs.existsSync(legacy) || !fs.existsSync(target)) return;
