@@ -149,13 +149,39 @@
 | **1 修稳 + 隔离** | 6 个 bug（UA 读真实版本 + Client Hints、哨兵页、`/livez`、调用期限 + `run_script` 超时、管道探测误删、路径收口）；托管模式环境变量；`isError` + 错误码；回收开关 + `recycled`；47 个工具逐个过一遍（超时、等待、错误、上限） | `pnpm eval` 不低于基线；Windows 本机 + Linux 虚拟机各跑冒烟；同机 3 实例隔离测试 |
 | **2 看得见、接得住** | `EventRing` + `/admin/*`；`DeskGate` 暂停 / 白名单；`cdp_send`；`structuredContent`；**堡垒机 `fill_secret` / `login_with_asset`** | 同上 + 暂停 / 恢复 / 白名单 / 事件流 / 防外泄的单元与集成测试 |
 | **3 第二层控制** | 自带 Chrome 扩展（全标签页、下载、浏览器级网络规则、操作录制）；`run_flow` | 有头 / 无头都能加载扩展；录制的流程能不经 AI 回放 |
-| 4 工位管理服务（新仓库） | 增删改查工位、汇总监测、自动拉起、MCP 工具；可视工位（有头 + 虚拟屏 + Selkies）/ 后台工位（无头）/ 按需挂屏 | 一条命令开出 / 关掉一个工位，资源全部回收 |
+| 4 工位管理（`deploy/desk/`，见 §11） | 一人一个工位：systemd 模板单元 + `deskctl` 增删查改、轮换、状态；每工位独立 Linux 用户；端口只许 Hermes 宿主机访问；堡垒机当控制面 | 一条命令开出 / 关掉一个工位，资源全部回收；两个工位互相读不到对方登录态 |
 | 5 Hermes 面板 | 左聊天右画面 + 时间线 + 接管按钮 | 你在 hm-admin 里边聊边看边接管 |
 | 6 编排 | fork n8n，加「浏览器工位」节点 | 定时流程跑通「登录 → 导出 → 通知」 |
 
 第三层（自编译 Chromium）不排期：只在某个网站用前两层确实过不去时再评估。
 
-## 10. 约束
+## 11. 工位管理（第 4 期，2026-10-15 定）
+
+**选型（small）**：不另起带数据库的「工位管理服务」。现在只有几个人、一台工位机（ai-desk，PVE VM170），
+工位 = 工位机上一组 systemd 模板单元，`deskctl`（bash，root 跑）负责增删查改；**控制面用堡垒机**（权限、审计、远程执行现成：
+人或 AI 经堡垒机 `run_command` 调 `deskctl`，以后在 baolei 加 `desk_*` MCP 工具包一层）。
+升级条件：工位机超过一台、或要按人自助开工位 / 计费时，再做独立服务（届时 deskctl 的状态文件就是迁移来源）。
+
+**一个工位**（id = 小写字母数字，通常 = 主人的 Hermes 实例名，如 `admin`）：
+| 组成 | 单元 / 位置 | 说明 |
+|---|---|---|
+| Linux 用户 | `desk-<id>` | 每工位独立用户：浏览器 profile、截图、下载互相读不到（家目录 700） |
+| 虚拟屏 | `desk-xvfb@<id>`：Xvfb `:<n>`（n = 工位序号）1920x1080 | |
+| 窗口管理 + 壁纸 | `desk-wm@<id>`、`desk-wallpaper@<id>` | |
+| 画面 | `desk-selkies@<id>`：HTTPS `:8080+n` | 主密码 / 只看密码按工位生成 |
+| 浏览器 MCP | `desk-browser-mcp@<id>`：`192.168.110.239:3215+n` | 托管模式：`DESK_ID=<id>`、独立数据目录、MCP 令牌、ADMIN_TOKEN、`PIPE_DISABLE=1`、`KILL_PORT_ON_START=0`、`IDLE_CLOSE_MIN=0`；可选 `BAOLEI_MCP_URL/TOKEN`（该人的「服务代填」服务密钥） |
+| 配置 | `/etc/ai-desk/desks/<id>.env`（root 600）| 端口、显示号、令牌、目录；单元经 EnvironmentFile 读 |
+| 数据 | `/home/desk-<id>/data/{profile,data,shots}` | |
+
+**deskctl 命令**：`create <id> [--owner 人]`（分配序号 / 端口、建用户、生成令牌、写 env、起单元、等 /livez）·`list`·`status [<id>]`（单元状态 + /livez + /admin/state 摘要）·
+`restart <id>`·`rotate <id> [mcp|admin|selkies]`·`set-baolei <id>`（从 stdin 读服务密钥）·`show-secrets <id>`（只给 root，给接 Hermes 的脚本用）·`delete <id> [--keep-data]`。
+可重复执行（幂等）；序号分配记在 `/etc/ai-desk/desks/registry`。
+
+**网络**：工位机 nftables 只许 Hermes 宿主机（ubuntu-244）和本机访问 8080–8099、3215–3234；其余内网来源拒绝。
+**接 Hermes**：ai-workforce-ops 的 `desk-proxy.sh enable <实例>` + 网关 drop-in（20-ai-desk.conf）按 `deskctl show-secrets <id>` 的值写，一人一套（见 ubuntu-244 专题页「AI 助理接工位浏览器」）。
+**旧工位 main** 迁成 `admin`（序号 0，端口 8080 / 3215 不变，数据目录搬到 `/home/desk-admin/data`），Hermes 侧地址不变只换令牌文件。
+
+## 12. 约束
 
 - 裁判层（`claude/eval/**`、各 `package.json`、`claude/tsconfig.json`、`.ankotti/evolve.json`、CI）AI 不改；`/health` 字段与 `browserAlive: true` 行为不改；`_meta['localmcp/result']` 与 `{success,data,error}` 外形不改。
 - 改了工具行为 → 更新 `USAGE.md`；改了安装 / 配置 → 更新 `UPDATE-PROMPT.md` 与 `mcp.mjs config`。
