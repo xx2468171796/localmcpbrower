@@ -99,6 +99,20 @@ HTTP 模式在 Claude Code 里 `/mcp` 重连即可生效；stdio 模式下次会
 - **遥测**：每次工具调用记 `{tool, ok, ms, bytes, truncated, retry}`，攒批异步发到堡垒机（首批 10 秒、之后每分钟，退出前尽量补发一次）（只有工具名和数字，不带参数、网址、页面内容；
   发不出去不影响工具）。本机配了 baolei MCP 密钥时默认开，`BROWSER_TELEMETRY=0` 关；自定义上报地址时必须同时给 `BROWSER_TELEMETRY_TOKEN`（baolei 密钥只发往 baolei 自己）；上报地址和格式见 `claude/src/telemetry.ts` 头部。
 
+## AI 浏览器工位（工位机，第 4 期）
+
+一人一个浏览器工位，跑在工位机 ai-desk 上；源文件在 [`deploy/desk/`](./deploy/desk/)：
+
+| 文件 | 作用 |
+|---|---|
+| `deskctl` | 工位增删查改：`create` / `list` / `status` / `restart` / `rotate` / `set-baolei` / `show-secrets` / `delete`（root 跑，装到 `/usr/local/sbin/deskctl`） |
+| `install.sh` | 装 / 更新：共用只读代码检出 + 构建、Chromium、systemd 单元、deskctl、防火墙 |
+| `units/` | `desk@.target` + `desk-{xvfb,wm,wallpaper,selkies,browser-mcp}@.service` 模板（每工位独立 Linux 用户 + 沙箱）、`ai-desk-firewall.service` |
+| `nftables/ai-desk.nft` | 工位端口 8080–8099 / 3215–3234 只许 Hermes 宿主机和本机 |
+| `desk-smoke.sh` | 单个工位冒烟（MCP navigate + 截屏 + Selkies 鉴权） |
+
+用法见 [`USAGE.md`](./USAGE.md) 第五节「工位机运维」，设计见 [`docs/architecture.md`](./docs/architecture.md) §11。
+
 ## 文档
 
 - [`UPDATE-PROMPT.md`](./UPDATE-PROMPT.md) —— **发给其他机器的升级提示词**（整段贴给那台机器的 AI，它自己从 Gitea 拉取并全自主装好）

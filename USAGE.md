@@ -378,7 +378,7 @@ space_close({ name: "job1" })   # 关闭并释放（default 不可关）
 | `ALLOW_BROWSER_CDP=1` | 允许 cdp_send 发浏览器级命令 |
 | `BROWSER_EXTENSION` | 自带扩展：`auto`（默认，只在有窗口的完整版 Chromium 里加载）/ `on`（无头也加载，改用新无头模式）/ `off` |
 | `IDLE_CLOSE_MIN` 等 | 空闲回收，0 = 永不回收（长流程建议 0） |
-| `DEVTOOLS_PORT` | 浏览器远程调试端口（按工位分配，别撞） |
+| `DEVTOOLS_PORT` | 浏览器远程调试端口（多工位同机时**别开**：回环端口无鉴权，邻居能接管；真要开按工位分配，别撞） |
 | `BAOLEI_MCP_URL` + `BAOLEI_MCP_TOKEN` | fill_secret 用的堡垒机地址和密钥（不设则按 ~/.claude.json、~/.codex/config.toml 找本机的） |
 | `UPLOAD_ALLOW_DIRS` / `OUTPUT_ALLOW_DIRS` / `STRICT_PATHS=1` | 上传 / 导出允许的额外目录；严格路径 |
 
@@ -396,3 +396,29 @@ space_close({ name: "job1" })   # 关闭并释放（default 不可关）
 | `GET /admin/metrics` | Chromium 进程树内存（Linux）、本进程内存 |
 
 验证：`node claude/test/desk-e2e.mjs`（无头，任何机器）；`HEADED=1` 另测自带扩展（Linux 需要 DISPLAY）。
+
+### 工位机运维：deskctl（第 4 期，一人一个工位）
+
+工位机 ai-desk（192.168.110.239）上每个工位 = Linux 用户 `desk-<id>` + `desk@<id>.target`（`desk-xvfb@` / `desk-wm@` /
+`desk-wallpaper@` / `desk-selkies@` / `desk-browser-mcp@`）+ `/etc/ai-desk/desks/<id>.env`（root 600）。源文件在 `deploy/desk/`，
+设计见 `docs/architecture.md` §11。经堡垒机 `run_command` 以 root 执行：
+
+| 命令 | 作用 |
+|---|---|
+| `deskctl create <id> [--owner 人] [--index n] [--import 文件] [--no-start]` | 开工位：分配序号 n（显示 `:20+n`、画面 `8080+n`、MCP `3215+n`）、建用户、生成令牌 / 密码、起单元、等 `/livez`。可重复执行，已有密钥不换 |
+| `deskctl list` / `deskctl status [<id>]` | 列表；状态 = 5 个单元 + `/livez` + `/admin/state`（闸门、在途）+ Selkies 应答 |
+| `deskctl restart <id>` | 整个工位重启（虚拟屏到浏览器） |
+| `deskctl rotate <id> [mcp\|admin\|selkies\|all]` | 换密钥并重启对应单元；之后要同步 Hermes 和堡垒机资产 |
+| `deskctl set-baolei <id> [--url 地址]` | 从 stdin 读该工位的堡垒机服务密钥（fill_secret 用），空 = 去掉 |
+| `deskctl show-secrets <id> [--format env\|panel\|gateway]` | **只给接 Hermes 的脚本用**：`gateway` = `BROWSER_DESK_MCP_KEY=…`，`panel` = 面板代理的 6 项 `AI_DESK_*` |
+| `deskctl delete <id> [--keep-data] --yes` | 停单元、删用户和数据（`--keep-data` 把家目录改名留给 root） |
+| `desk-smoke <id> [网址]` | 冒烟：带令牌 navigate、读标题、截该工位虚拟屏、Selkies 带 / 不带密码各一次 |
+
+- **装 / 更新代码**：`bash /opt/ai-desk/browser-mcp/deploy/desk/install.sh [--branch 分支]` —— 共用只读检出 `/opt/ai-desk/browser-mcp`
+  （root 所有）拉代码、构建、装 Chromium 到 `/opt/ai-desk/ms-playwright`、装单元和 deskctl、加载防火墙；之后逐个 `deskctl restart <id>`。
+- **隔离**：家目录 700、各单元 `ProtectHome=tmpfs` 只绑自己的家、`PrivateTmp`、`ProtectProc=invisible`；X 用 Xauthority 小甜饼（不再 `-ac`，
+  否则别的工位用户能经抽象 socket 连上别人的屏）；Selkies 密码走环境变量不进命令行；不开 Chromium 调试端口。
+- **防火墙**：`ai-desk-firewall.service` 加载 `/etc/ai-desk/nftables.nft`（表 `inet ai_desk`）：8080–8099、3215–3234 只许回环、本机和
+  ubuntu-244（192.168.10.244），其余丢弃；不碰 22。人看画面一律走 Hermes 控制台「AI 的屏幕」（`hm-<实例>--screen.zygskins.cn`）。
+- **接 Hermes**：在 ubuntu-244 上按专题页「AI 助理接工位浏览器」写 `<实例>.desk.env`、`<实例>.panel.env`、drop-in `20-ai-desk.conf`、
+  `mcp_servers.browser`，再 `desk-proxy.sh enable <实例>`；值来自 `deskctl show-secrets <id> --format gateway|panel`，机器到机器传，别落到别处。

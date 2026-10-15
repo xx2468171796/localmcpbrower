@@ -77,7 +77,7 @@
 | `USER_DATA_DIR` / `LOCALMCP_DATA_DIR` / `SCREENSHOT_DIR` | 安装目录推断 | 托管模式**必填** | 登录态、截图、清理范围各自独立 |
 | `ADMIN_TOKEN` | 空 = `/admin/*` 只许本机回环 | 必填（缺了拒绝启动） | 管理接口独立令牌；另外所有 `/admin/*` 都校验 Host（防 DNS 重绑定）并拒绝带外来 Origin 的请求（被操控的浏览器本身就在本机，网页能直接打 127.0.0.1） |
 | `IDLE_CLOSE_MIN` 等 | 现值 | 0（不回收） | 长流程不被悄悄清空 |
-| `DEVTOOLS_PORT` | 9222 | 按工位分配 | 调试端口不撞 |
+| `DEVTOOLS_PORT` | 9222（仅 `DEVTOOLS=true`） | 不设（第 4 期定：回环上的调试端口没有鉴权，同机别的工位用户能直接接管浏览器） | 真要开须按工位分配，不撞 |
 | `BROWSER_TELEMETRY` | 现状 | 标签带 `DESK_ID` | 遥测可区分工位 |
 
 ## 5. 对外接口
@@ -162,24 +162,28 @@
 人或 AI 经堡垒机 `run_command` 调 `deskctl`，以后在 baolei 加 `desk_*` MCP 工具包一层）。
 升级条件：工位机超过一台、或要按人自助开工位 / 计费时，再做独立服务（届时 deskctl 的状态文件就是迁移来源）。
 
-**一个工位**（id = 小写字母数字，通常 = 主人的 Hermes 实例名，如 `admin`）：
+**一个工位**（id 匹配 `^[a-z][a-z0-9]{0,26}$`，通常 = 主人的 Hermes 实例名，如 `admin`；最长 27 位是因为 Linux 用户名 `desk-<id>` 最长 32）：
 | 组成 | 单元 / 位置 | 说明 |
 |---|---|---|
 | Linux 用户 | `desk-<id>` | 每工位独立用户：浏览器 profile、截图、下载互相读不到（家目录 700） |
-| 虚拟屏 | `desk-xvfb@<id>`：Xvfb `:<n>`（n = 工位序号）1920x1080 | |
+| 单元组 | `desk@<id>.target` | Wants 下面 5 个单元，它们都 `PartOf=` 它：启停 / 重启 target = 整个工位 |
+| 虚拟屏 | `desk-xvfb@<id>`：Xvfb `:<20+n>`（n = 工位序号）1920x1080 | 显示号从 20 起，避开旧单工位的 `:0` 和验证用的 `:9`。**不用 `-ac`**：X 的抽象 socket 不受 PrivateTmp 隔离，别的工位用户也连得上，必须靠 `~/.Xauthority` 小甜饼（deskctl 生成，FamilyWild） |
 | 窗口管理 + 壁纸 | `desk-wm@<id>`、`desk-wallpaper@<id>` | |
-| 画面 | `desk-selkies@<id>`：HTTPS `:8080+n` | 主密码 / 只看密码按工位生成 |
+| 画面 | `desk-selkies@<id>`：HTTPS `:8080+n` | 主密码 / 只看密码按工位生成，经环境变量 `SELKIES_BASIC_AUTH_PASSWORD` / `SELKIES_BASIC_AUTH_VIEWONLY_PASSWORD` 给（不放命令行，`ps` 看得见）；自签证书各工位一份（`~/.local/state/selkies/`） |
 | 浏览器 MCP | `desk-browser-mcp@<id>`：`192.168.110.239:3215+n` | 托管模式：`DESK_ID=<id>`、独立数据目录、MCP 令牌、ADMIN_TOKEN、`PIPE_DISABLE=1`、`KILL_PORT_ON_START=0`、`IDLE_CLOSE_MIN=0`；可选 `BAOLEI_MCP_URL/TOKEN`（该人的「服务代填」服务密钥） |
 | 配置 | `/etc/ai-desk/desks/<id>.env`（root 600）| 端口、显示号、令牌、目录；单元经 EnvironmentFile 读 |
 | 数据 | `/home/desk-<id>/data/{profile,data,shots}` | |
+| 代码 / Chromium | `/opt/ai-desk/browser-mcp`、`/opt/ai-desk/ms-playwright` | 所有工位共用一份，root 所有、只读；`deploy/desk/install.sh` 拉代码构建 |
+| 沙箱 | 每个单元 | `NoNewPrivileges`、`ProtectSystem=strict`、`ProtectHome=tmpfs` + 只绑自己的家目录、`PrivateTmp`、`ProtectProc=invisible`、无 capability；浏览器单元 `MemoryMax=3G`；不设 `DEVTOOLS_PORT`（回环上的调试端口没鉴权，邻居能接管） |
 
-**deskctl 命令**：`create <id> [--owner 人]`（分配序号 / 端口、建用户、生成令牌、写 env、起单元、等 /livez）·`list`·`status [<id>]`（单元状态 + /livez + /admin/state 摘要）·
-`restart <id>`·`rotate <id> [mcp|admin|selkies]`·`set-baolei <id>`（从 stdin 读服务密钥）·`show-secrets <id>`（只给 root，给接 Hermes 的脚本用）·`delete <id> [--keep-data]`。
-可重复执行（幂等）；序号分配记在 `/etc/ai-desk/desks/registry`。
+**deskctl 命令**：`create <id> [--owner 人] [--index n] [--import 文件] [--no-start]`（分配序号 / 端口、建用户、生成令牌、写 env、起单元、等 /livez；`--import` 从旧 env 文件沿用令牌，迁移用）·`list`·`status [<id>]`（单元状态 + /livez + /admin/state 摘要）·
+`restart <id>`·`rotate <id> [mcp|admin|selkies|all]`·`set-baolei <id> [--url]`（从 stdin 读服务密钥）·`show-secrets <id> [--format env|panel|gateway]`（只给 root，给接 Hermes 的脚本用）·`delete <id> [--keep-data] --yes`。
+可重复执行（幂等）；序号分配记在 `/etc/ai-desk/desks/registry`。另有 `desk-smoke <id>` 冒烟。
 
-**网络**：工位机 nftables 只许 Hermes 宿主机（ubuntu-244）和本机访问 8080–8099、3215–3234；其余内网来源拒绝。
+**网络**：工位机 nftables（独立表 `inet ai_desk`，`ai-desk-firewall.service` 开机加载）只许 Hermes 宿主机（ubuntu-244，192.168.10.244）、本机和回环访问 8080–8099、3215–3234；其余来源丢弃；22 不动。
 **接 Hermes**：ai-workforce-ops 的 `desk-proxy.sh enable <实例>` + 网关 drop-in（20-ai-desk.conf）按 `deskctl show-secrets <id>` 的值写，一人一套（见 ubuntu-244 专题页「AI 助理接工位浏览器」）。
-**旧工位 main** 迁成 `admin`（序号 0，端口 8080 / 3215 不变，数据目录搬到 `/home/desk-admin/data`），Hermes 侧地址不变只换令牌文件。
+**旧工位 main** 迁成 `admin`（序号 0，端口 8080 / 3215 不变，数据目录搬到 `/home/desk-admin/data`），令牌 / 密码原样沿用，Hermes 侧什么都不用改。
+2026-10-15 已完成：停机 6.4 秒；同日开 `leixin`（序号 1）、`wanghaohao`（序号 2）并接上各自的 Hermes。
 
 ## 12. 约束
 
