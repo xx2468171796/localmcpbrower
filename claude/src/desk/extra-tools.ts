@@ -38,7 +38,7 @@ function unwrap(out: McpOut): ToolResult<unknown> {
 export function registerExtraTools(server: McpServer, wrap: Wrap, text: Text, registry: ReadonlyMap<string, RawHandler>, sessionId: string): void {
   server.registerTool('cdp_send', {
     title: '发 CDP 命令',
-    description: '直接向当前标签页发 Chrome DevTools Protocol 命令(method 如 Emulation.setGeolocationOverride、Network.emulateNetworkConditions、Performance.getMetrics、DOM.getDocument),拿到 CDP 原始返回。现有工具做不到的浏览器能力用它;常规点击 / 输入 / 读页面仍用对应工具。浏览器级命令(Browser.* / Target.* 等)默认不开放。',
+    description: '直接向当前标签页发 Chrome DevTools Protocol 命令(method 如 Emulation.setGeolocationOverride、Network.emulateNetworkConditions、Performance.getMetrics、DOM.getDocument),拿到 CDP 原始返回。现有工具做不到的浏览器能力用它;常规点击 / 输入 / 读页面仍用对应工具。只开放页面级的域;读写本机文件、打开 file://、改下载目录、浏览器级(Browser.* / Target.* 等)的命令默认不开放,会返回 UNSUPPORTED,别想办法绕。',
     inputSchema: CdpSendSchema,
     annotations: ann('发 CDP 命令', false, true),
   }, wrap(async (args: unknown) => text(await cdpSend(args))));

@@ -39,8 +39,28 @@ export function urlsIn(args: unknown, depth = 0): string[] {
 
 /** 调用前:闸门 + 白名单。不放行抛 ToolError */
 export async function preflight(meta: CallMeta): Promise<void> {
-  await deskGate.admit(meta.tool, meta.signal);
-  for (const u of urlsIn(meta.args)) deskGate.checkUrl(u);
+  const urls = urlsIn(meta.args);
+  await deskGate.admit(meta.tool, meta.signal, urls.length > 0);
+  for (const u of urls) deskGate.checkUrl(u);
+}
+
+/** 等人的工具:本来就要等几分钟到半小时,不设总期限 */
+const HUMAN_TOOLS: ReadonlySet<string> = new Set(['wait_for_human', 'request_human', 'hide_window']);
+/** 这些工具没传超时参数时自己的默认超时(毫秒) */
+const OWN_DEFAULT_MS: Readonly<Record<string, number>> = { run_flow: 300_000, run_script: 30_000, execute_js: 30_000 };
+const DEADLINE_MARGIN_MS = 15_000;
+
+/**
+ * 这次调用的总期限:全局 TOOL_DEADLINE_MS 和「工具自己声明的超时 + 余量」取大的 ——
+ * run_flow 默认 5 分钟、wait_for_selector 可以等 5 分钟,不能被统一的 2 分钟腰斩(腰斩后底层还在点、在填)。
+ * 0 = 不限。
+ */
+export function deadlineFor(tool: string, args: unknown, base = deskConfig.toolDeadlineMs): number {
+  if (!base || HUMAN_TOOLS.has(tool)) return 0;
+  const a = (args && typeof args === 'object' ? args : {}) as Record<string, unknown>;
+  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0);
+  const own = num(a['timeoutMs']) || num(a['timeout']) || num(a['timeoutSec']) * 1000 || (OWN_DEFAULT_MS[tool] ?? 0);
+  return own ? Math.max(base, own + DEADLINE_MARGIN_MS) : base;
 }
 
 /** 在期限内跑完;超时返回 TIMEOUT(工具本身可能还在收尾,各工具自己的超时会让它结束) */

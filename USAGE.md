@@ -267,7 +267,7 @@ space_close({ name: "job1" })   # 关闭并释放（default 不可关）
 ### 3.0 新增（10 个）
 | 工具 | 参数 | 说明 |
 |------|------|------|
-| `cdp_send` | method, params?, timeoutMs? | 直接发 CDP 命令（页面级）；浏览器级（Browser.* / Target.* 等）要服务端 `ALLOW_BROWSER_CDP=1` |
+| `cdp_send` | method, params?, timeoutMs? | 直接发 CDP 命令。默认只开放页面级的域（白名单），读写本机文件 / 打开 file:// / 改下载目录 / 浏览器级的命令都不开放，要服务端 `ALLOW_BROWSER_CDP=1` |
 | `fill_secret` | asset, field?, ref/selector, typing? | 用堡垒机资产填输入框，明文不回给 AI，站点对不上拒填 |
 | `login_with_asset` | asset, user?, pass?, otp?, submit?, typing? | 一次填账号 / 密码 / 两步码并提交 |
 | `run_flow` | steps[], timeoutMs? | 多步流程一次跑完，跨导航；`{{变量.路径}}` 引用前面结果 |
@@ -372,7 +372,7 @@ space_close({ name: "job1" })   # 关闭并释放（default 不可关）
 | `DESK_ID` | 设了即托管模式；此时 `USER_DATA_DIR` / `LOCALMCP_DATA_DIR` / `SCREENSHOT_DIR` **必填**（每个工位独立，缺了拒绝启动） |
 | `KILL_PORT_ON_START=0` | 启动时不清理端口上的进程（免得杀掉邻居） |
 | `PIPE_DISABLE=1` | 不起 pipe 腿，只走 HTTP |
-| `ADMIN_TOKEN` | `/admin/*` 的 Bearer 令牌；不设时只许本机访问 |
+| `ADMIN_TOKEN` | `/admin/*` 的 Bearer 令牌；托管模式必填，不设时只许本机访问；任何时候都校验 Host、拒绝带外来 Origin 的网页请求 |
 | `TOOL_DEADLINE_MS` | 单次工具调用总期限，默认 120000，0 = 不限 |
 | `PAUSE_WAIT_MAX_MS` | 人接管时 AI 的调用最多等多久，默认 600000；0 = 不等直接返回 DESK_PAUSED |
 | `ALLOW_BROWSER_CDP=1` | 允许 cdp_send 发浏览器级命令 |

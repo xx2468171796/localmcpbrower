@@ -75,6 +75,12 @@ export function assetHosts(info: Pick<AssetInfo, 'address' | 'tags'>): string[] 
   return [...hosts];
 }
 
+/** 资产地址里写了网址、且全是 https → 页面也必须是 https(防止降级到明文 http 的同名站点) */
+export function requiresHttps(info: Pick<AssetInfo, 'address'>): boolean {
+  const schemes = [...info.address.matchAll(/\b([a-z][a-z0-9+.-]*):\/\//gi)].map((m) => (m[1] ?? '').toLowerCase());
+  return schemes.length > 0 && schemes.every((s) => s === 'https');
+}
+
 /** 页面主机名是否属于资产登记的站点(同名或子域名;IP 只认完全相同) */
 export function hostMatches(pageHost: string, hosts: string[]): boolean {
   const h = pageHost.toLowerCase();

@@ -38,6 +38,9 @@ async function startSite() {
     res.setHeader('content-type', 'text/html; charset=utf-8');
     if (u.pathname === '/a') res.end(page(`<a id="in" href="/b">B</a> <a id="out" href="http://localhost:${port}/b">外站</a>`));
     else if (u.pathname === '/b') res.end(page('<h1 id="b">page b</h1>'));
+    else if (u.pathname === '/redir') { res.statusCode = 302; res.setHeader('location', u.searchParams.get('to') ?? '/b'); res.end(); }
+    else if (u.pathname === '/frames') res.end(page('<iframe id="f" srcdoc="<input id=p2 type=password>"></iframe><iframe id="d" src="data:text/html,<input id=p3 type=password>"></iframe>'));
+    else if (u.pathname === '/ro') res.end(page('<input id="ro" type="password" readonly disabled>'));
     else if (u.pathname === '/login') res.end(page('<input id="u" name="user"><input id="p" type="password" name="pass"><button id="go" onclick="document.title=\'submitted\'">登录</button>'));
     else { res.statusCode = 404; res.end(page('404')); }
   });
@@ -154,6 +157,12 @@ async function main() {
     const where = await call('execute_js', { script: 'return location.host' });
     // 被拦的主页面跳转会停在 Chrome 的拦截错误页(chromewebdata)或原页面,总之没到外站
     check('白名单拦点链接跳外站', !String(where.raw?.data?.result ?? '').startsWith('localhost'), `停在 ${where.raw?.data?.result}`);
+    // 经可信站点的开放跳转去外站:每一跳都要重新过白名单
+    await call('navigate', { url: `${site.base}/redir?to=${encodeURIComponent(`http://localhost:${site.port}/b`)}` });
+    const afterRedir = await call('execute_js', { script: 'return location.host + "|" + (document.querySelector("#b") ? "B" : "-")' });
+    check('白名单拦跳转后的外站', !String(afterRedir.raw?.data?.result ?? '').startsWith('localhost') && !String(afterRedir.raw?.data?.result ?? '').endsWith('|B'), `落在 ${afterRedir.raw?.data?.result}`);
+    const innerRedir = await call('navigate', { url: `${site.base}/redir?to=/b` });
+    check('站内跳转照常', innerRedir.raw?.success === true && String(innerRedir.raw?.data?.url ?? '').endsWith('/b'), innerRedir.raw?.data?.url);
     await admin(srv.base, '/allowlist', { method: 'PUT', body: JSON.stringify({ domains: [] }) });
 
     // 堡垒机取密钥:填得进、明文不外露、站点不对拒填
@@ -168,12 +177,39 @@ async function main() {
     await call('navigate', { url: `http://localhost:${site.port}/login` });
     const mismatch = await call('fill_secret', { asset: '9', selector: '#p' });
     check('站点对不上拒填', mismatch.raw?.code === 'SECRET_ORIGIN_MISMATCH', `code=${mismatch.raw?.code}`);
+    // 填失败时(只读框)Playwright 报错里带 fill("<值>"),绝不能原样回来
+    await call('navigate', { url: `${site.base}/ro` });
+    const ro = await call('fill_secret', { asset: '9', selector: '#ro' });
+    check('填失败时结果里没有明文', ro.raw?.success === false && !JSON.stringify(ro.r).includes(SECRET), `code=${ro.raw?.code}`);
+    // 不透明来源(data:)的 iframe 拒填;srcdoc 继承本站来源,可以填
+    await call('navigate', { url: `${site.base}/frames` });
+    await sleep(500);
+    const dataFrame = await call('fill_secret', { asset: '9', selector: '#p3' });
+    check('data: iframe 拒填', dataFrame.raw?.code === 'SECRET_ORIGIN_MISMATCH', `code=${dataFrame.raw?.code}`);
+    // srcdoc 在隔离世界里读到的来源是 null:按「宁可不填」处理(登录框放在 srcdoc 里极少见)
+    const srcdoc = await call('fill_secret', { asset: '9', selector: '#p2' });
+    check('srcdoc iframe 读不到确定来源时拒填', srcdoc.raw?.code === 'SECRET_ORIGIN_MISMATCH', `code=${srcdoc.raw?.code}`);
 
     // CDP 直通
     const cdp = await call('cdp_send', { method: 'Runtime.evaluate', params: { expression: '6*7', returnByValue: true } });
     check('cdp_send 页面级命令可用', cdp.raw?.data?.result?.result?.value === 42);
     const cdpNo = await call('cdp_send', { method: 'Browser.close' });
     check('cdp_send 浏览器级默认拒绝', cdpNo.raw?.code === 'UNSUPPORTED' && srv.child.exitCode === null);
+    const cdpFile = await call('cdp_send', { method: 'Page.navigate', params: { url: 'file:///etc/hosts' } });
+    check('cdp_send 不许打开 file://', cdpFile.raw?.code === 'UNSUPPORTED', `code=${cdpFile.raw?.code}`);
+    const cdpUpload = await call('cdp_send', { method: 'DOM.setFileInputFiles', params: { files: ['/etc/hosts'], nodeId: 1 } });
+    check('cdp_send 不许绕过上传目录', cdpUpload.raw?.code === 'UNSUPPORTED');
+    // 网页对本机管理接口发跨站请求(带 Origin)必须被拒,哪怕令牌对
+    const csrf = await admin(srv.base, '/pause', { method: 'POST', headers: { origin: 'https://evil.example' }, body: '{}' });
+    check('管理接口拒绝网页跨站请求', csrf.status === 403);
+    // fetch 不让改 Host 头,用 http.request 伪造 DNS 重绑定后的 Host
+    const rebind = await new Promise((resolve) => {
+      const u = new URL(`${srv.base}/admin/state`);
+      const rq = http.request({ host: u.hostname, port: u.port, path: u.pathname, headers: { host: 'evil.example', authorization: `Bearer ${ADMIN}` } }, (rs) => { rs.resume(); resolve(rs.statusCode); });
+      rq.on('error', () => resolve(-1));
+      rq.end();
+    });
+    check('管理接口拒绝外来 Host(DNS 重绑定)', rebind === 403, `status=${rebind}`);
 
     // run_flow:跨导航、变量引用
     const flow = await call('run_flow', { steps: [

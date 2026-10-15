@@ -119,3 +119,56 @@ test('normalizeDomain', () => {
   assert.equal(normalizeDomain('http://x.y:8080/p'), 'x.y');
   assert.equal(normalizeDomain(''), null);
 });
+
+// ── 2026-10-15 独立审查后的修复 ──
+import { deadlineFor } from '../../dist/desk/instrument.js';
+import { checkPageCommand } from '../../dist/control/cdp.js';
+
+test('deadlineFor: human tools unlimited, own timeout + margin wins, 0 = unlimited', () => {
+  assert.equal(deadlineFor('wait_for_human', { timeoutSec: 1800 }, 120_000), 0);
+  assert.equal(deadlineFor('click', {}, 120_000), 120_000);
+  assert.equal(deadlineFor('run_flow', {}, 120_000), 315_000);
+  assert.equal(deadlineFor('run_flow', { timeoutMs: 900_000 }, 120_000), 915_000);
+  assert.equal(deadlineFor('wait_for_selector', { timeout: 300_000 }, 120_000), 315_000);
+  assert.equal(deadlineFor('execute_js', { timeoutMs: 5000 }, 120_000), 120_000);
+  assert.equal(deadlineFor('navigate', {}, 0), 0);
+});
+
+test('cdp page policy: allow-list domains, deny file/upload/download escapes', () => {
+  assert.doesNotThrow(() => checkPageCommand('Runtime.evaluate', { expression: '1' }));
+  assert.doesNotThrow(() => checkPageCommand('Emulation.setGeolocationOverride', {}));
+  assert.doesNotThrow(() => checkPageCommand('Page.navigate', { url: 'https://example.com' }));
+  for (const [m, p] of [
+    ['Page.navigate', { url: 'file:///etc/passwd' }],
+    ['DOM.setFileInputFiles', { files: ['/x'] }],
+    ['Page.setDownloadBehavior', { behavior: 'allow', downloadPath: '/tmp' }],
+    ['Network.loadNetworkResource', { url: 'file:///x' }],
+    ['Input.dispatchDragEvent', { data: { files: ['/x'] } }],
+    ['Browser.close', {}],
+    ['Target.closeTarget', {}],
+    ['IO.read', {}],
+    ['Fetch.enable', {}],
+    ['Storage.clearDataForOrigin', {}],
+  ]) assert.throws(() => checkPageCommand(m, p), (e) => e.code === 'UNSUPPORTED', m);
+});
+
+test('allowlist: non-empty list denies file:/ftp:/view-source:, keeps about:/data:', () => {
+  const g = new DeskGate();
+  assert.equal(g.allows('file:///etc/passwd'), true); // 空名单 = 不限(本机单用不变)
+  g.setAllowlist(['a.com']);
+  assert.equal(g.allows('file:///etc/passwd'), false);
+  assert.equal(g.allows('ftp://a.com/x'), false);
+  assert.equal(g.allows('view-source:https://a.com'), false);
+  assert.equal(g.allows('about:blank'), true);
+  assert.equal(g.allows('https://a.com./x'), true);
+});
+
+test('gate: readonly tool that navigates is held during takeover; reject mode resets on resume', async () => {
+  const g = new DeskGate(30);
+  g.pause();
+  await g.admit('extract_article'); // 不带网址:只读,放行
+  await assert.rejects(g.admit('extract_article', undefined, true), (e) => e.code === 'DESK_PAUSED');
+  g.pause({ mode: 'reject' });
+  g.resume();
+  assert.equal(g.status().mode, 'wait');
+});

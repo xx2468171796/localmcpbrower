@@ -121,6 +121,8 @@ export function parseDeskConfig(env: Env): DeskConfig {
       cfg.userDataDir ? null : 'USER_DATA_DIR(登录态 profile 目录)',
       cfg.dataDir ? null : 'LOCALMCP_DATA_DIR(数据 / 临时文件目录)',
       cfg.screenshotDir ? null : 'SCREENSHOT_DIR(截图目录)',
+      // 工位常在反向代理后面,那时所有请求都像来自本机回环,「没令牌只许本机」挡不住人
+      cfg.adminToken ? null : 'ADMIN_TOKEN(管理接口令牌)',
     ].filter((m): m is string => m !== null);
     if (missing.length) {
       throw new Error(

@@ -635,7 +635,11 @@ class BrowserManager {
     // 装在 **context** 级:页面级 route(set_block_rules)优先匹配,放行时调 route.fallback()
     // 就会落到这里,两者互不冲突。若改成页面级,两个 '**/*' handler 的优先级会打架。
     // 先过工位白名单:点链接 / 页面脚本跳到名单外的站点(含 iframe)在这里拦下,不只拦工具参数里的网址
-    const inject = buildHtmlInjector([MAIN_WORLD_SRC, EGO_HELPER_SRC]);
+    const inject = buildHtmlInjector([MAIN_WORLD_SRC, EGO_HELPER_SRC], {
+      allows: (url) => deskGate.allows(url),
+      restricting: () => deskGate.status().allowlist.length > 0,
+      onBlocked: (url) => { deskRing.push({ kind: 'gate', space: sp.name, url, detail: 'blocked_by_allowlist' }); },
+    });
     await context.route('**/*', async (route) => {
       const req = route.request();
       if (req.resourceType() === 'document' && !deskGate.allows(req.url())) {

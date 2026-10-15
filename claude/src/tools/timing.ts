@@ -90,7 +90,10 @@ export async function retryOnNavigation<T>(fn: () => Promise<T>, settle: () => P
  * 之前**带着已抓到的部分结果**返回,而不是被一刀切成 TIMEOUT、什么都拿不到。
  */
 export function longTaskBudgetMs(env: NodeJS.ProcessEnv = process.env): number {
-  const deadline = Number(env['TOOL_DEADLINE_MS']);
+  const raw = (env['TOOL_DEADLINE_MS'] ?? '').trim();
+  const deadline = Number(raw);
+  // 显式 0 = 不限期:批量 / 翻页按 30 分钟兜底(防跑飞),而不是悄悄落回默认的 2 分钟
+  if (raw !== '' && deadline === 0) return 30 * 60_000;
   const total = Number.isFinite(deadline) && deadline > 0 ? deadline : 120_000;
   return Math.max(10_000, total - 15_000);
 }

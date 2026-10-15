@@ -93,3 +93,10 @@ test('classifyError maps common patchright / Chinese errors', () => {
   assert.equal(classifyError('page.evaluate: ReferenceError: foo is not defined'), 'SCRIPT_ERROR');
   assert.equal(classifyError('something odd'), 'INTERNAL');
 });
+
+import { requiresHttps } from '../../dist/secrets/baolei-assets.js';
+test('requiresHttps: only when every listed URL is https', () => {
+  assert.equal(requiresHttps({ address: 'https://a.com/login' }), true);
+  assert.equal(requiresHttps({ address: 'https://a.com（内网 http://10.0.0.1）' }), false);
+  assert.equal(requiresHttps({ address: 'a.com' }), false);
+});

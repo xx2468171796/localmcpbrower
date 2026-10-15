@@ -4,13 +4,14 @@
  * 47 个工具覆盖不到的事(模拟设备 / 地理位置 / 网络限速、读性能指标、改下载行为、拿 DOM 快照……)
  * 不用等人加工具,AI 直接发 CDP 命令。命令发在**当前标签页**的 CDP 会话上。
  *
- * 浏览器级的命令会影响整个浏览器甚至关掉它(Browser.close / Target.closeTarget / SystemInfo.*),
- * 默认不许发,设 ALLOW_BROWSER_CDP=1 才放开。
+ * 只开放页面级的域(白名单),并单独挡掉能读写本机文件、打开 file://、绕过网站白名单的命令 ——
+ * 否则一条 Page.navigate file:///…/.claude.json 就能读到本机的堡垒机密钥。设 ALLOW_BROWSER_CDP=1 才全部放开。
  */
 
 import type { CDPSession, Page } from 'patchright';
 import { getBrowserManager } from '../browser.js';
 import { deskConfig } from '../desk/config.js';
+import { deskGate } from '../desk/runtime.js';
 import { ToolError, fail, failFrom } from '../errors.js';
 import type { ToolResult } from '../types.js';
 import { z } from 'zod';
@@ -21,8 +22,41 @@ export const CdpSendSchema = z.object({
   timeoutMs: z.number().int().min(100).max(120_000).optional(),
 });
 
-/** 会动到整个浏览器的域 / 命令:需要 ALLOW_BROWSER_CDP */
-const BROWSER_LEVEL = /^(Browser|Target|SystemInfo|Tethering|Storage)\.|^Page\.(close|crash)$/;
+/**
+ * 默认开放的域(白名单,不是黑名单):都是「当前页面里」的能力,和 execute_js / 现有工具同一权限级别。
+ * 不在表里的域(Browser / Target / SystemInfo / Storage / IO / Fetch / Tethering / ServiceWorker …)要 ALLOW_BROWSER_CDP=1。
+ */
+const PAGE_DOMAINS: ReadonlySet<string> = new Set([
+  'Accessibility', 'Animation', 'Audits', 'CSS', 'DOM', 'DOMDebugger', 'DOMSnapshot', 'DOMStorage', 'Emulation',
+  'IndexedDB', 'CacheStorage', 'Input', 'LayerTree', 'Log', 'Media', 'Network', 'Overlay', 'Page', 'Performance',
+  'PerformanceTimeline', 'Runtime', 'Debugger', 'HeapProfiler', 'Profiler', 'WebAudio',
+]);
+
+/**
+ * 白名单域里也要单独挡的命令:它们能越过本服务的文件 / 路径 / 白名单保护。
+ *   - 读本机任意文件:DOM.setFileInputFiles、带 files 的 Input.dispatchDragEvent、Network.loadNetworkResource
+ *   - 写任意位置:Page.setDownloadBehavior
+ *   - 打开 file:// 或白名单外网站:Page.navigate 另查(见 checkPageCommand)
+ *   - 关 / 崩页面:Page.close、Page.crash
+ */
+const DENIED = new Set(['DOM.setFileInputFiles', 'Network.loadNetworkResource', 'Page.setDownloadBehavior', 'Page.close', 'Page.crash']);
+
+/** 页面级命令的额外检查;不放行抛 ToolError */
+export function checkPageCommand(method: string, params: Record<string, unknown> | undefined): void {
+  const domain = method.split('.')[0] ?? '';
+  if (!PAGE_DOMAINS.has(domain) || DENIED.has(method)) {
+    throw new ToolError('UNSUPPORTED', `${method} 会越过本服务的文件 / 网站保护或影响整个浏览器,默认不开放;确实需要请让人在这台服务上设 ALLOW_BROWSER_CDP=1`);
+  }
+  if (method === 'Input.dispatchDragEvent') {
+    const files = (params?.['data'] as { files?: unknown } | undefined)?.files;
+    if (Array.isArray(files) && files.length) throw new ToolError('UNSUPPORTED', '带本机文件的拖拽会绕过上传目录限制,不开放;上传请用 file_upload');
+  }
+  if (method === 'Page.navigate') {
+    const url = String(params?.['url'] ?? '');
+    if (!/^https?:\/\//i.test(url)) throw new ToolError('UNSUPPORTED', `Page.navigate 只许 http(s) 网址,收到「${url.slice(0, 80)}」`);
+    deskGate.checkUrl(url);
+  }
+}
 
 const sessions = new WeakMap<Page, Promise<CDPSession>>();
 
@@ -45,10 +79,8 @@ export async function cdpSend(input: unknown): Promise<ToolResult<{ method: stri
   const parsed = CdpSendSchema.safeParse(input);
   if (!parsed.success) return fail('INVALID_ARGS', `参数验证失败: ${parsed.error.message}`);
   const { method, params, timeoutMs = 30_000 } = parsed.data;
-  if (BROWSER_LEVEL.test(method) && !browserCdpAllowed()) {
-    return fail('UNSUPPORTED', `${method} 会影响整个浏览器,默认不开放;确实需要请让人在这台服务上设 ALLOW_BROWSER_CDP=1`);
-  }
   try {
+    if (!browserCdpAllowed()) checkPageCommand(method, params);
     const page = await getBrowserManager().getPage();
     const session = await sessionFor(page);
     let timer: NodeJS.Timeout | undefined;

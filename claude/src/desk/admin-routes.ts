@@ -16,6 +16,9 @@ export interface AdminDeps {
   ring: EventRing;
   gate: DeskGate;
   adminToken: string;
+  /** 和 /mcp 同一份 Host / Origin 白名单(server.ts 的 ALLOWED):挡 DNS 重绑定和网页跨站请求 */
+  allowedHosts: readonly string[];
+  allowedOrigins: readonly string[];
   deskId?: string;
   version: string;
   /** 只读快照,绝不拉起浏览器 */
@@ -56,6 +59,11 @@ export function createAdminRouter(deps: AdminDeps): Router {
   const r = express.Router();
   r.use(express.json({ limit: '64kb' }));
   r.use((req: Request, res: Response, next: NextFunction) => {
+    // 被操控的浏览器本身就在本机:任何网页都能对 127.0.0.1 发请求(no-cors POST 照样有副作用),
+    // DNS 重绑定还能读到返回。所以 Host 必须是自己的地址,带了 Origin 的(来自网页)必须在白名单里。
+    if (!deps.allowedHosts.includes(req.headers.host ?? '')) { apiError(res, 403, 'FORBIDDEN', 'Host 不在允许列表'); return; }
+    const origin = req.headers.origin;
+    if (origin && !deps.allowedOrigins.includes(origin)) { apiError(res, 403, 'FORBIDDEN', '不接受来自网页的跨站请求'); return; }
     if (!deps.adminToken) {
       if (isLoopback(req.socket.remoteAddress)) { next(); return; }
       apiError(res, 403, 'FORBIDDEN', '没设 ADMIN_TOKEN 时管理接口只许本机访问');
@@ -144,8 +152,15 @@ export function createAdminRouter(deps: AdminDeps): Router {
   return r;
 }
 
+const MAX_STREAMS = 20;
+/** 订阅方读不过来时积压超过这么多字节就断开它(它可以带 Last-Event-ID 重连补齐),不让内存越攒越多 */
+const MAX_BACKLOG_BYTES = 1_000_000;
+let openStreams = 0;
+
 /** SSE:先补发 since 之后的,再实时推;15 秒一次心跳,防代理断开空闲连接 */
 function streamEvents(req: Request, res: Response, ring: EventRing, since: number): void {
+  if (openStreams >= MAX_STREAMS) { apiError(res, 503, 'TOO_MANY_STREAMS', `实时事件流最多 ${MAX_STREAMS} 个连接`); return; }
+  openStreams++;
   res.status(200).set({
     'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-cache, no-transform',
@@ -153,9 +168,20 @@ function streamEvents(req: Request, res: Response, ring: EventRing, since: numbe
     'X-Accel-Buffering': 'no',
   });
   res.flushHeaders();
-  const send = (e: ToolEvent): void => { res.write(`id: ${e.id}\nevent: ${e.kind}\ndata: ${JSON.stringify(e)}\n\n`); };
+  let closed = false;
+  const send = (e: ToolEvent): void => {
+    if (closed) return;
+    if (res.writableLength > MAX_BACKLOG_BYTES) { res.end(); return; }
+    res.write(`id: ${e.id}\nevent: ${e.kind}\ndata: ${JSON.stringify(e)}\n\n`);
+  };
   for (const e of ring.since(since, 2000)) send(e);
   const unsubscribe = ring.subscribe(send);
-  const beat = setInterval(() => { res.write(': ping\n\n'); }, 15_000);
-  req.on('close', () => { clearInterval(beat); unsubscribe(); });
+  const beat = setInterval(() => { if (!closed) res.write(': ping\n\n'); }, 15_000);
+  res.on('close', () => {
+    if (closed) return;
+    closed = true;
+    openStreams--;
+    clearInterval(beat);
+    unsubscribe();
+  });
 }

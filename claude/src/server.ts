@@ -31,7 +31,7 @@ import type { HealthCheckResult } from './types.js';
 import { Activity, packageVersion } from './activity.js';
 import { deskConfig } from './desk/config.js';
 import { deskGate, deskRing } from './desk/runtime.js';
-import { errorOf, preflight, trackCall, withCode, withDeadline, type RawResult } from './desk/instrument.js';
+import { deadlineFor, errorOf, preflight, trackCall, withCode, withDeadline, type RawResult } from './desk/instrument.js';
 import { registerExtraTools } from './desk/extra-tools.js';
 import { createAdminRouter } from './desk/admin-routes.js';
 import {
@@ -250,14 +250,19 @@ function humanizeOutput(server: McpServer, sessionId: string, registry: ToolRegi
       const meta = { tool, session: sessionId, args: args[0], signal: (args[1] as { mcpReq?: { signal?: AbortSignal } } | undefined)?.mcpReq?.signal };
       const done = trackCall(meta);
       let out: Awaited<ReturnType<RawHandler>>;
+      // 「在忙」计数跟着底层调用真正结束才减:期限到了先回 TIMEOUT,但浏览器可能还在动,
+      // 这时让自动更新器以为空闲去换版本,会把正在进行的操作掐断
+      let settled: Promise<unknown> = Promise.resolve();
       try {
         // 闸门(人接管中 / 白名单)和调用期限都在这里:两条腿、所有工具一视同仁
         await preflight(meta);
-        out = await withDeadline(fn(...args), tool);
+        const running = fn(...args);
+        settled = running.then(() => undefined, () => undefined);
+        out = await withDeadline(running, tool, deadlineFor(tool, meta.args));
       } catch (e) {
         out = text(errorOf(e));
       } finally {
-        end();
+        void settled.then(end);
       }
       const ms = performance.now() - t0;
       const { index, parsed: raw } = rawResultOf(out);
@@ -850,6 +855,8 @@ function createApp(): express.Application {
     ring: deskRing,
     gate: deskGate,
     adminToken: deskConfig.adminToken ?? '',
+    allowedHosts: ALLOWED.hosts,
+    allowedOrigins: ALLOWED.origins,
     deskId: deskConfig.deskId ?? undefined,
     version: SERVER_VERSION,
     state: () => getBrowserManager().snapshotState(),

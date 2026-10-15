@@ -75,7 +75,7 @@
 | `KILL_PORT_ON_START` | 1 | 0 | 不再清理端口上的别人 |
 | `PIPE_SERVICE` / `PIPE_DISABLE` | 按端口推断 | `desk-<id>` 或关 | 管道名不撞 |
 | `USER_DATA_DIR` / `LOCALMCP_DATA_DIR` / `SCREENSHOT_DIR` | 安装目录推断 | 托管模式**必填** | 登录态、截图、清理范围各自独立 |
-| `ADMIN_TOKEN` | 空 = `/admin/*` 只许本机回环 | 必填 | 管理接口独立令牌 |
+| `ADMIN_TOKEN` | 空 = `/admin/*` 只许本机回环 | 必填（缺了拒绝启动） | 管理接口独立令牌；另外所有 `/admin/*` 都校验 Host（防 DNS 重绑定）并拒绝带外来 Origin 的请求（被操控的浏览器本身就在本机，网页能直接打 127.0.0.1） |
 | `IDLE_CLOSE_MIN` 等 | 现值 | 0（不回收） | 长流程不被悄悄清空 |
 | `DEVTOOLS_PORT` | 9222 | 按工位分配 | 调试端口不撞 |
 | `BROWSER_TELEMETRY` | 现状 | 标签带 `DESK_ID` | 遥测可区分工位 |
@@ -85,7 +85,11 @@
 ### 5.1 MCP 工具（兼容为先）
 
 - 输出外形不变：`{success, data, error}` + `_meta['localmcp/result']`（考卷读它）。**新增**：失败时 `isError: true`、`error` 带稳定错误码（`TIMEOUT`、`DESK_PAUSED`、`DOMAIN_BLOCKED`、`PATH_DENIED`、`NO_PAGE`、`ELEMENT_NOT_FOUND`…）；有结构的结果同时给 `structuredContent`。
-- **新增 `cdp_send`**（第一层「CDP 全开放」）：`{ method, params, target: 'page'|'browser' }`，在当前页的 CDP 会话上直接发命令。`target=browser` 默认关（`ALLOW_BROWSER_CDP=1` 才开，能关浏览器、改下载目录）。
+- **新增 `cdp_send`**（第一层「CDP 全开放」）：`{ method, params }`，在当前页的 CDP 会话上直接发命令。
+  默认只开放页面级的域（**白名单**：DOM / CSS / Emulation / Input / Network / Page / Runtime / Performance 等），
+  并单独挡掉能越过文件 / 网站保护的命令：`DOM.setFileInputFiles`、带文件的 `Input.dispatchDragEvent`、`Network.loadNetworkResource`、
+  `Page.setDownloadBehavior`、`Page.close/crash`；`Page.navigate` 只许 http(s) 且过白名单。其余域（Browser / Target / IO / Fetch / Storage …）
+  要 `ALLOW_BROWSER_CDP=1`（2026-10-15 审查：黑名单版本一条 `Page.navigate file:///…/.claude.json` 就能读到本机堡垒机密钥）。
 - `run_script` 加 `timeoutMs`；以后加 `run_flow`（跨导航的多步流程，一次调用跑完，给编排用）。
 - 被回收后重建的页，下一次结果带 `recycled: true`，不再悄悄返回空数据。
 
@@ -121,6 +125,15 @@
   - `login_with_asset { asset, user?, pass?, otp?, submit? }`：一次填账号、密码（和 2FA）并提交，给常见登录页用。
 - **防外泄（不变量）**：只有当前页面的站点和资产登记的地址（`address` 或标签里的域名）对得上才填，对不上返回 `SECRET_ORIGIN_MISMATCH`——防止 AI 被诱导把密码填进别的网站。值只在内存里过一遍，不进事件流、日志、遥测、工具结果；`type` / `fill_form` 的参数摘要同样打码。
 - **审计**：每次取用都是堡垒机里一次 `get_asset` 调用，归属到这台机器 / 这个工位的密钥，堡垒机自带审计。
+- **站点判定细节**（2026-10-15 独立审查后加固）：读输入框所在文档自己的 `location.origin`，不看 `frame.url()`；
+  不透明来源（`data:` / 沙箱 iframe）和隔离世界里读不到确定来源的 `srcdoc` 一律拒填（宁可不填）；
+  资产登记的网址全是 https 时页面也必须 https；站点检查紧挨着填写做（取 2FA 码的网络往返之后）。
+  填写 / 提交出错时 Playwright 报错末尾带调用日志 `fill("<值>")`，**原文一律不外传**，只给错误码和固定说明，另有兜底把值从任何错误信息里抹掉。
+- **重定向**：页面请求不在服务端跟随跳转（否则最终内容挂在原网址下，站点检查和白名单都被骗）；
+  白名单生效时服务端把整条跳转链逐跳过一遍，有一跳不许整个拦下，全许才把第一跳交回浏览器自己跳。
+- **做不到的（如实写清）**：值已经在页面里，AI 若主动用 `execute_js` / `get_element_attribute` 读输入框仍能读到——
+  只要 AI 能在页面里跑脚本就挡不住。本设计防的是「明文意外进对话 / 日志 / 时间线」，
+  防不了「被页面内容诱导、主动去偷的 AI」，后者靠站点白名单、人工监督（时间线 + 接管）兜底。
 - **反方向（第 4 期）**：堡垒机 MCP 加「工位」工具（开 / 关 / 看 / 接管），经工位管理服务操作；人在堡垒机面板上也能看到所有工位。
 
 ## 8. 权限

@@ -51,7 +51,9 @@ test('parseDeskConfig: managed mode requires its own dirs', () => {
     return true;
   });
   assert.throws(() => parseDeskConfig({ DESK_ID: 'd1', USER_DATA_DIR: '/a', LOCALMCP_DATA_DIR: '/b' }), /SCREENSHOT_DIR/);
-  const c = parseDeskConfig({ DESK_ID: 'd1', USER_DATA_DIR: '/a', LOCALMCP_DATA_DIR: '/b', SCREENSHOT_DIR: '/c' });
+  // 托管模式管理令牌也必填(反向代理后面所有请求都像本机回环,「没令牌只许本机」挡不住人)
+  assert.throws(() => parseDeskConfig({ DESK_ID: 'd1', USER_DATA_DIR: '/a', LOCALMCP_DATA_DIR: '/b', SCREENSHOT_DIR: '/c' }), /ADMIN_TOKEN/);
+  const c = parseDeskConfig({ DESK_ID: 'd1', USER_DATA_DIR: '/a', LOCALMCP_DATA_DIR: '/b', SCREENSHOT_DIR: '/c', ADMIN_TOKEN: 't' });
   assert.equal(c.managed, true);
   assert.equal(c.deskId, 'd1');
   assert.deepEqual([c.userDataDir, c.dataDir, c.screenshotDir], ['/a', '/b', '/c']);

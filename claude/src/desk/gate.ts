@@ -41,12 +41,16 @@ export class DeskGate {
   private waiters = new Set<Waiter>();
   private allow: string[] = [];
 
+  /** 本次暂停的模式;resume 后回到 defaultMode(pause 时临时指定的 reject 不会粘住以后的暂停) */
+  private mode: PauseMode;
+
   constructor(
     private readonly maxWaitMs = 600_000,
-    private mode: PauseMode = 'wait',
+    private readonly defaultMode: PauseMode = 'wait',
     private readonly now: () => number = Date.now,
   ) {
     this.since = now();
+    this.mode = defaultMode;
   }
 
   status(): GateStatus {
@@ -71,14 +75,18 @@ export class DeskGate {
       this.since = this.now();
       this.by = undefined;
       this.reason = undefined;
+      this.mode = this.defaultMode;
       for (const w of this.waiters) this.settle(w).resolve();
     }
     return this.status();
   }
 
-  /** 工具调用前过闸:放行就正常返回,不放行抛 ToolError(DESK_PAUSED) */
-  async admit(tool: string, signal?: AbortSignal): Promise<void> {
-    if (this.state === 'running' || READONLY_TOOLS.has(tool)) return;
+  /**
+   * 工具调用前过闸:放行就正常返回,不放行抛 ToolError(DESK_PAUSED)。
+   * navigates = 这次调用会打开网址(参数里带 url):只读工具带了网址也会换页(如 extract_article 传 url),不算只读。
+   */
+  async admit(tool: string, signal?: AbortSignal, navigates = false): Promise<void> {
+    if (this.state === 'running' || (READONLY_TOOLS.has(tool) && !navigates)) return;
     if (this.mode === 'reject') throw this.pausedError();
     await new Promise<void>((resolve, reject) => {
       const w: Waiter = {
@@ -101,14 +109,19 @@ export class DeskGate {
     return [...this.allow];
   }
 
-  /** 网址是否放行;about:/data:/blob:/chrome: 这类内部页不算外站,放行 */
+  /**
+   * 网址是否放行。白名单为空 = 不限。
+   * 非空时默认拒绝:http(s) / ws(s) 按主机名比对;页面内部用的 about: / data: / blob: 放行;
+   * file: / ftp: / view-source: / chrome: 等其它协议一律拒绝(否则白名单形同虚设)。
+   */
   allows(url: string): boolean {
     if (this.allow.length === 0) return true;
     let host: string;
     try {
       const u = new URL(url);
-      if (!/^(https?|wss?):$/.test(u.protocol)) return true;
-      host = u.hostname.toLowerCase();
+      if (/^(about|data|blob):$/.test(u.protocol)) return true;
+      if (!/^(https?|wss?):$/.test(u.protocol)) return false;
+      host = u.hostname.toLowerCase().replace(/\.$/, '');
     } catch {
       return false;
     }

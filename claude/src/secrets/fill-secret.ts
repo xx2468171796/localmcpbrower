@@ -8,9 +8,9 @@
 import type { Frame, Locator, Page } from 'patchright';
 import { z } from 'zod';
 import { getBrowserManager } from '../browser.js';
-import { ToolError, fail, failFrom } from '../errors.js';
+import { ToolError, classifyError, fail, failFrom } from '../errors.js';
 import type { ToolResult } from '../types.js';
-import { BaoleiAssets, assetHosts, hostMatches, type AssetInfo } from './baolei-assets.js';
+import { BaoleiAssets, assetHosts, hostMatches, requiresHttps, type AssetInfo } from './baolei-assets.js';
 
 const Target = z.object({
   ref: z.string().max(32).optional(),
@@ -50,19 +50,43 @@ async function locate(page: Page, t: { ref?: string; selector?: string }): Promi
   throw new ToolError('ELEMENT_NOT_FOUND', t.ref ? `ref ${t.ref} 未找到(页面可能已重新渲染),请重新 snapshot` : `找不到元素:${selector}`);
 }
 
-/** 输入框所在框架的站点必须属于资产登记的站点 */
-function assertOrigin(found: Found, page: Page, info: AssetInfo): void {
+/**
+ * 输入框所在文档的真实来源必须属于资产登记的站点。
+ * 读文档自己的 location.origin,不用 frame.url() / page.url():about:blank / srcdoc 继承创建者的来源
+ * (可能是第三方 iframe),data: / blob: / 沙箱 iframe 是不透明来源("null")—— 后者一律拒填。
+ * 资产登记的网址全是 https 时,页面也必须是 https。紧挨着填写前调用,缩小「查完被换页」的窗口。
+ */
+async function assertOrigin(found: Found, info: AssetInfo): Promise<void> {
   const hosts = assetHosts(info);
   if (hosts.length === 0) {
     throw new ToolError('SECRET_ORIGIN_MISMATCH', `资产「${info.name}」没登记网址(address),不知道该填到哪个站点;请先在堡垒机里给它补上地址`);
   }
-  const raw = found.frame.url();
-  const url = /^https?:/.test(raw) ? raw : page.url();
-  let host = '';
-  try { host = new URL(url).hostname; } catch { /* 下面按不匹配处理 */ }
-  if (!host || !hostMatches(host, hosts)) {
-    throw new ToolError('SECRET_ORIGIN_MISMATCH', `当前页面站点「${host || url}」不是资产「${info.name}」登记的站点(${hosts.join('、')}),拒绝填写`);
+  const origin = await found.locator.evaluate((el) => el.ownerDocument.defaultView?.location.origin ?? 'null', undefined, { timeout: 5000 }).catch(() => 'null');
+  let u: URL | null = null;
+  try { u = origin === 'null' ? null : new URL(origin); } catch { u = null; }
+  if (!u || !/^https?:$/.test(u.protocol) || !hostMatches(u.hostname, hosts)) {
+    throw new ToolError('SECRET_ORIGIN_MISMATCH', `输入框所在页面「${origin}」不是资产「${info.name}」登记的站点(${hosts.join('、')}),拒绝填写`);
   }
+  if (requiresHttps(info) && u.protocol !== 'https:') {
+    throw new ToolError('SECRET_ORIGIN_MISMATCH', `资产「${info.name}」登记的是 https 站点,当前页面是 ${u.protocol.replace(':', '')},拒绝填写`);
+  }
+}
+
+/** 取到值以后的操作出错:Playwright 的报错末尾带调用日志,里面有 fill("<值>") —— 原文绝不外传,只给码和固定说明 */
+async function guarded<T>(what: string, op: () => Promise<T>): Promise<T> {
+  try {
+    return await op();
+  } catch (e) {
+    const code = classifyError(e instanceof Error ? e.message : String(e), e);
+    throw new ToolError(code === 'INTERNAL' ? 'ELEMENT_NOT_ACTIONABLE' : code, `${what}失败(${code}):输入框可能只读、不可见、被遮挡或页面已跳走。为防泄露不附原始报错`);
+  }
+}
+
+/** 兜底:任何错误信息里出现了取到的值,一律抹掉 */
+function scrubbed(r: ReturnType<typeof failFrom>, values: string[]): ReturnType<typeof failFrom> {
+  let error = r.error;
+  for (const v of values) if (v.length >= 3) error = error.split(v).join('«已隐藏»');
+  return { ...r, error };
 }
 
 async function valueOf(info: AssetInfo, field: string, assetRef: string): Promise<string> {
@@ -77,31 +101,36 @@ async function valueOf(info: AssetInfo, field: string, assetRef: string): Promis
   return v;
 }
 
-async function put(found: Found, value: string, typing: boolean): Promise<void> {
+/** 先过站点检查、紧接着填;所有出错都经 guarded,原始报错(含值)不外传 */
+async function put(found: Found, info: AssetInfo, value: string, typing: boolean): Promise<void> {
+  await assertOrigin(found, info);
   await found.locator.scrollIntoViewIfNeeded({ timeout: 5000 }).catch(() => {});
-  if (typing) {
-    await found.locator.fill('', { timeout: 10_000 });
-    await found.locator.pressSequentially(value, { delay: 35, timeout: 30_000 });
-  } else {
-    await found.locator.fill(value, { timeout: 10_000 });
-  }
+  await guarded('填写', async () => {
+    if (typing) {
+      await found.locator.fill('', { timeout: 10_000 });
+      await found.locator.pressSequentially(value, { delay: 35, timeout: 30_000 });
+    } else {
+      await found.locator.fill(value, { timeout: 10_000 });
+    }
+  });
 }
 
 export async function fillSecret(input: unknown): Promise<ToolResult<{ asset: string; field: string; filled: number }>> {
   const parsed = FillSecretSchema.safeParse(input);
   if (!parsed.success) return fail('INVALID_ARGS', `参数验证失败: ${parsed.error.message}`);
   const { asset, field, typing } = parsed.data;
+  const used: string[] = [];
   try {
     const page = await getBrowserManager().getPage();
     const found = await locate(page, parsed.data);
     const needsReveal = !['otp', 'account'].includes(field.toLowerCase());
     const info = await source().info(asset, needsReveal);
-    assertOrigin(found, page, info);
     const value = await valueOf(info, field, asset);
-    await put(found, value, typing);
+    used.push(value);
+    await put(found, info, value, typing);
     return { success: true, data: { asset: info.name, field, filled: value.length } };
   } catch (e) {
-    return failFrom(e);
+    return scrubbed(failFrom(e), used);
   }
 }
 
@@ -110,6 +139,7 @@ export async function loginWithAsset(input: unknown): Promise<ToolResult<{ asset
   if (!parsed.success) return fail('INVALID_ARGS', `参数验证失败: ${parsed.error.message}`);
   const { asset, user, pass, otp, submit, typing } = parsed.data;
   if (!user && !pass && !otp) return fail('INVALID_ARGS', 'user / pass / otp 至少给一个输入框');
+  const used: string[] = [];
   try {
     const page = await getBrowserManager().getPage();
     const info = await source().info(asset, Boolean(pass));
@@ -118,17 +148,25 @@ export async function loginWithAsset(input: unknown): Promise<ToolResult<{ asset
     for (const [field, target] of [['account', user], ['secret', pass], ['otp', otp]] as const) {
       if (!target) continue;
       const found = await locate(page, target);
-      assertOrigin(found, page, info);
-      await put(found, await valueOf(info, field, asset), typing);
+      const value = await valueOf(info, field, asset);
+      used.push(value);
+      await put(found, info, value, typing);
       filled.push(field);
       last = found;
     }
     let submitted = false;
-    if (submit === 'enter' && last) { await last.locator.press('Enter', { timeout: 5000 }); submitted = true; }
-    else if (submit && submit !== 'enter') { await (await locate(page, submit)).locator.click({ timeout: 10_000 }); submitted = true; }
+    if (submit === 'enter' && last) {
+      const target = last;
+      await guarded('回车提交', () => target.locator.press('Enter', { timeout: 5000 }));
+      submitted = true;
+    } else if (submit && submit !== 'enter') {
+      const btn = await locate(page, submit);
+      await guarded('点击提交', () => btn.locator.click({ timeout: 10_000 }));
+      submitted = true;
+    }
     if (submitted) await page.waitForLoadState('domcontentloaded', { timeout: 15_000 }).catch(() => {});
     return { success: true, data: { asset: info.name, filled, submitted } };
   } catch (e) {
-    return failFrom(e);
+    return scrubbed(failFrom(e), used);
   }
 }

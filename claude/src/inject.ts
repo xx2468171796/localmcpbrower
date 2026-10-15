@@ -146,14 +146,56 @@ const HEADERS_TO_STRIP = /^(content-security-policy(-report-only)?|content-lengt
  * 脚本进了 DOM 也不执行(实测)。本服务是自动化浏览器、只绑回环,
  * 但这条要写清楚 —— 它确实降低了被访问页面的安全边界。
  */
-export function buildHtmlInjector(sources: string[]) {
+const MAX_REDIRECT_HOPS = 10;
+
+/**
+ * 顺着重定向链在服务端逐跳查一遍,每一跳都问 allows();有一跳不许就返回那一跳的网址(拦下),全许返回 null。
+ * 浏览器自己跟随重定向时后续跳**不再经过 route**(实测),所以只能在这里提前把整条链查完。
+ */
+async function blockedHop(route: import('patchright').Route, first: string, allows: (url: string) => boolean): Promise<string | null> {
+  let url = first;
+  for (let hop = 0; hop < MAX_REDIRECT_HOPS; hop++) {
+    const r = await route.fetch({ url, maxRedirects: 0 }).catch(() => null);
+    const loc = r?.headers()['location'];
+    if (!r || r.status() < 300 || r.status() >= 400 || !loc) return null;
+    url = new URL(loc, url).href;
+    if (!allows(url)) return url;
+  }
+  return null;
+}
+
+/** 工位白名单(document 跳转的每一跳都要过);restricting() = 白名单非空(为空时不多跑一遍重定向链) */
+export interface NavGate {
+  allows: (url: string) => boolean;
+  restricting: () => boolean;
+  onBlocked: (url: string) => void;
+}
+
+const OPEN_GATE: NavGate = { allows: () => true, restricting: () => false, onBlocked: () => {} };
+
+export function buildHtmlInjector(sources: string[], gate: NavGate = OPEN_GATE) {
   const tag = `<script>${sources.join('\n')}</script>`;
   return async function injectRoute(route: import('patchright').Route): Promise<void> {
     const req = route.request();
     if (req.resourceType() !== 'document') { await route.fallback(); return; }
     try {
-      const resp = await route.fetch();
+      // 不在 Node 里跟随重定向(默认会跟 20 跳):跟了的话最终内容会挂在**原网址**下给浏览器,
+      // 工位白名单和 fill_secret 的站点检查都只看得到第一跳 —— 可信站点上任何一个开放跳转都能把恶意页面伪装成它。
+      // 3xx:先在服务端把整条链逐跳过白名单,有一跳不许就整个拦下;全许则把第一跳原样交回浏览器,
+      // 浏览器自己跳,地址栏 / location.origin 都是真实的最终站点。
+      const resp = await route.fetch({ maxRedirects: 0 });
       const headers = resp.headers();
+      if (resp.status() >= 300 && resp.status() < 400 && headers['location']) {
+        const target = new URL(headers['location'], req.url()).href;
+        const bad = !gate.restricting() ? null : !gate.allows(target) ? target : await blockedHop(route, target, gate.allows);
+        if (bad) {
+          gate.onBlocked(bad);
+          await route.abort('blockedbyclient');
+          return;
+        }
+        await route.fulfill({ status: resp.status(), headers });
+        return;
+      }
       const ct = headers['content-type'] ?? '';
       if (!ct.includes('text/html')) { await route.fulfill({ response: resp }); return; }
 

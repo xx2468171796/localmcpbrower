@@ -76,6 +76,23 @@
 
   const isTextField = (el) => (el.tagName === 'INPUT' && !/^(checkbox|radio|button|submit|reset|file|image|range|color)$/i.test(el.type)) || el.tagName === 'TEXTAREA' || el.isContentEditable;
 
+  /**
+   * 敏感框:内容一律不记(只记位置,回放时用 fill_secret 从堡垒机取)。
+   * 不只认 type=password —— 「显示密码」切成 text 的密码框、验证码框、银行卡框同样不能记明文。
+   */
+  const SENSITIVE_AUTOCOMPLETE = /(current-password|new-password|one-time-code|cc-number|cc-csc|cc-exp)/i;
+  const SENSITIVE_NAME = /pass|pwd|secret|token|otp|totp|2fa|mfa|captcha|验证码|密码|口令|cvv|cvc|card/i;
+  function isSecret(el) {
+    if (el.type === 'password') return true;
+    if (SENSITIVE_AUTOCOMPLETE.test(el.getAttribute('autocomplete') || '')) return true;
+    const label = [el.name, el.id, el.getAttribute('aria-label'), el.getAttribute('placeholder'), el.getAttribute('data-testid')].join(' ');
+    return SENSITIVE_NAME.test(label);
+  }
+  const fillStep = (el) => {
+    const secret = isSecret(el);
+    return { type: 'fill', selector: selectorOf(el), password: secret, ...(secret ? { length: (el.value || '').length } : { value: el.value }) };
+  };
+
   // ── 事件 ──
   document.addEventListener('click', (e) => {
     if (!on || !e.isTrusted) return;
@@ -92,8 +109,7 @@
       const opt = el.selectedOptions && el.selectedOptions[0];
       send({ type: 'select', selector: selectorOf(el), value: el.value, label: opt ? opt.label : undefined });
     } else if (isTextField(el)) {
-      const password = el.type === 'password' || /pass|pwd|密码/i.test(el.name + el.id + (el.getAttribute('autocomplete') || ''));
-      send({ type: 'fill', selector: selectorOf(el), password, ...(password ? { length: (el.value || '').length } : { value: el.value }) });
+      send(fillStep(el));
     }
   }, true);
 
@@ -101,9 +117,8 @@
     if (!on || !e.isTrusted || e.key !== 'Enter' || e.isComposing) return;
     const el = e.target;
     if (el instanceof Element && isTextField(el) && el.tagName !== 'TEXTAREA') {
-      // 回车前先把当前值记下(change 可能在回车之后才触发)
-      const password = el.type === 'password';
-      send({ type: 'fill', selector: selectorOf(el), password, ...(password ? { length: (el.value || '').length } : { value: el.value }) });
+      // 回车前先把当前值记下(change 可能在回车之后才触发);和 change 分支共用同一个敏感判断
+      send(fillStep(el));
       send({ type: 'press', key: 'Enter', selector: selectorOf(el) });
     }
   }, true);
