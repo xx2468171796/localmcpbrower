@@ -148,17 +148,62 @@ list_tabs 不会列出别的窗口的标签，index 也只在本会话内编号�
   __ego.waitFor(selector, ms)               等元素出现且可见
   __ego.sleep(ms) / $(sel) / $$(sel)
 
-示例（登录：填账号密码→点登录→等跳转→读欢迎语，一次调用）：
+示例（搜索：填关键词→点搜索→等结果→读条数，一次调用）：
 run_script({ script: `
-  __ego.fill('#user', 'alice');
-  __ego.fill('#pass', 'secret');
+  __ego.fill('#q', '无人机');
   __ego.click('button[type=submit]');
-  await __ego.waitFor('.welcome', 5000);
-  return { msg: __ego.text('.welcome') };
-` })
+  await __ego.waitFor('.result', 5000);
+  return { n: __ego.$$('.result').length };
+`, timeoutMs: 20000 })
 
-支持顶层 await 与 return，返回值 JSON 序列化回传。
-仍需复杂原生 DOM 时才退回 execute_js。
+支持顶层 await 与 return，返回值 JSON 序列化回传；timeoutMs 默认 30 秒（最多 300 秒），超时返回 TIMEOUT。
+仍需复杂原生 DOM 时才退回 execute_js。**登录别用它填密码**，见规则 11。
+页面会跳转的多步操作用 run_flow（规则 10），run_script 跨不过导航。
+```
+
+### 规则 10：跨页面的多步操作用 run_flow
+
+```
+run_flow 在服务端按步骤调现有工具，页面跳转也不断；后面的步骤用 {{名字.路径}} 引用前面 as 存下的 data：
+run_flow({ steps: [
+  { tool: "navigate",      args: { url: "https://shop.example.com/list" } },
+  { tool: "extract_links", args: { filter: "/item/" }, as: "L" },
+  { tool: "navigate",      args: { url: "{{L.links.0.href}}" } },
+  { tool: "extract_data",  args: { itemSelector: ".sku", fields: [...] }, as: "D", retry: 1 }
+] })
+失败时返回 code 和已完成的 steps / vars，从断点续跑即可。retry 只重试会好的错（超时、找不到元素），
+参数错 / 人在接管 / 白名单拦下不重试。
+```
+
+### 规则 11：登录公司系统用堡垒机资产（明文不经过 AI）
+
+```
+login_with_asset({ asset: "资产 id 或名称", user: { ref: "e3" }, pass: { ref: "e4" }, otp: { ref: "e5" }, submit: { ref: "e6" } })
+fill_secret({ asset: "...", field: "secret" | "account" | "otp" | "<资产自定义字段>", ref: "e4" })
+- 浏览器 MCP 用本机（或工位）的堡垒机密钥直接取值、直接填，结果只回「已填 N 位」，事件时间线也打码。
+- 只有输入框所在站点和资产登记的地址（address / 标签里的域名）对得上才填，否则 SECRET_ORIGIN_MISMATCH——
+  资产没登记地址就先去堡垒机补上。
+- 别再 get_asset 拿明文后 type / run_script 填：明文会进对话记录。
+```
+
+### 规则 12：让人教一遍——录制 → 回放
+
+```
+record_start()                 # 人在窗口（本机弹窗 / 工位远程画面）里操作一遍
+record_stop()                  # 拿到 run_flow 步骤；密码框不记内容，变成 fill_secret，回放前把 asset 改成资产
+run_flow({ steps })            # 以后直接回放，不用 AI 一步步想
+需要有窗口的浏览器（自带扩展只在完整版 Chromium 里加载）；无头时 record_start 会返回 UNSUPPORTED。
+```
+
+### 规则 13：看懂错误码，人接管时别硬做
+
+```
+失败结果都带 code（结果信封和 MCP isError 都标了失败）：
+  DESK_PAUSED            人正在接管这个浏览器：等一会儿再试，别换别的办法绕
+  DOMAIN_BLOCKED         网站不在本工位白名单：别绕，告诉用户
+  ELEMENT_NOT_FOUND      找不到元素：重新 snapshot 拿 ref
+  TIMEOUT / NAVIGATION_FAILED / SCRIPT_ERROR / PATH_DENIED / SECRET_* / CDP_ERROR / UNSUPPORTED / INVALID_ARGS
+结果里出现 recycled: true = 这次之前标签页被空闲回收 / 重启清掉过，页面已重建——之前的页面状态没了，重新导航。
 ```
 
 ### 规则 9：并行/隔离任务用 Task Spaces
@@ -217,7 +262,24 @@ space_close({ name: "job1" })   # 关闭并释放（default 不可关）
 
 ---
 
-## 四、完整工具清单（浏览器 MCP，47 个）
+## 四、完整工具清单（浏览器 MCP，57 个）
+
+### 3.0 新增（10 个）
+| 工具 | 参数 | 说明 |
+|------|------|------|
+| `cdp_send` | method, params?, timeoutMs? | 直接发 CDP 命令（页面级）；浏览器级（Browser.* / Target.* 等）要服务端 `ALLOW_BROWSER_CDP=1` |
+| `fill_secret` | asset, field?, ref/selector, typing? | 用堡垒机资产填输入框，明文不回给 AI，站点对不上拒填 |
+| `login_with_asset` | asset, user?, pass?, otp?, submit?, typing? | 一次填账号 / 密码 / 两步码并提交 |
+| `run_flow` | steps[], timeoutMs? | 多步流程一次跑完，跨导航；`{{变量.路径}}` 引用前面结果 |
+| `record_start` / `record_stop` / `record_status` | — | 录制人的操作并转成 run_flow 步骤（需自带扩展） |
+| `browser_tabs` | — | 整个浏览器所有窗口的标签页（需自带扩展） |
+| `browser_downloads` | limit? | 最近下载（需自带扩展） |
+| `browser_block_rules` | patterns[], resourceTypes[] | 浏览器内部拦请求，比 set_block_rules 快（需自带扩展） |
+
+**3.0 对原有工具的变化**：`execute_js` / `run_script` 加 `timeoutMs`；`batch_fetch` 最多 50 个、`crawl_pages` 最多 100 页（接近调用期限返回已抓部分并标 `incomplete`）；
+`click` / `keyboard_press` 回报 `navigated` / `newTab` / `download`；`navigate` 的 `url` 改为最终网址（另有 `requestedUrl`、`status`）；
+`snapshot` 不再输出密码框内容；`type` 只回长度；`fill_form` 支持 `radio`、自定义下拉框和 iframe；`scroll` 能滚内部容器；
+`intercept_requests` 加 `off`；`go_back` / `go_forward` 回报 `moved`。截图名 / PDF 路径 / 上传文件收口到数据目录（工位模式或 `STRICT_PATHS=1` 时 PDF 绝对路径也不许）。
 
 ### 人工接管（3 个）
 | 工具 | 参数 | 说明 |
@@ -298,3 +360,39 @@ space_close({ name: "job1" })   # 关闭并释放（default 不可关）
 | `wait_and_extract` | waitSelector, extractSelector, attribute?, timeout? | 等待后提取 |
 | `batch_fetch` | urls[], waitFor?, extractSelector?, delay? | 批量抓取URL |
 | `crawl_pages` | startUrl, nextPageSelector, itemSelector, fields[], maxPages?, delay? | 自动翻页爬取 |
+
+---
+
+## 五、工位模式与管理接口（3.0）
+
+本机单用什么都不用设，行为和以前一样。一台机器上并排跑多个实例（一个 AI 一个浏览器工位）时：
+
+| 环境变量 | 说明 |
+|---|---|
+| `DESK_ID` | 设了即托管模式；此时 `USER_DATA_DIR` / `LOCALMCP_DATA_DIR` / `SCREENSHOT_DIR` **必填**（每个工位独立，缺了拒绝启动） |
+| `KILL_PORT_ON_START=0` | 启动时不清理端口上的进程（免得杀掉邻居） |
+| `PIPE_DISABLE=1` | 不起 pipe 腿，只走 HTTP |
+| `ADMIN_TOKEN` | `/admin/*` 的 Bearer 令牌；不设时只许本机访问 |
+| `TOOL_DEADLINE_MS` | 单次工具调用总期限，默认 120000，0 = 不限 |
+| `PAUSE_WAIT_MAX_MS` | 人接管时 AI 的调用最多等多久，默认 600000；0 = 不等直接返回 DESK_PAUSED |
+| `ALLOW_BROWSER_CDP=1` | 允许 cdp_send 发浏览器级命令 |
+| `BROWSER_EXTENSION` | 自带扩展：`auto`（默认，只在有窗口的完整版 Chromium 里加载）/ `on`（无头也加载，改用新无头模式）/ `off` |
+| `IDLE_CLOSE_MIN` 等 | 空闲回收，0 = 永不回收（长流程建议 0） |
+| `DEVTOOLS_PORT` | 浏览器远程调试端口（按工位分配，别撞） |
+| `BAOLEI_MCP_URL` + `BAOLEI_MCP_TOKEN` | fill_secret 用的堡垒机地址和密钥（不设则按 ~/.claude.json、~/.codex/config.toml 找本机的） |
+| `UPLOAD_ALLOW_DIRS` / `OUTPUT_ALLOW_DIRS` / `STRICT_PATHS=1` | 上传 / 导出允许的额外目录；严格路径 |
+
+管理接口（`/health` 不变，仍会在浏览器死掉时拉起它）：
+
+| 方法 路径 | 用途 |
+|---|---|
+| `GET /livez` | 进程活着即 200，**不拉起浏览器**（管理服务轮询用这个） |
+| `GET /admin/state` | 闸门状态、在途调用、各工作区 / 会话 / 标签页 |
+| `GET /admin/events?since=` | 工具调用时间线（参数已打码）；`Accept: text/event-stream` 为实时推送，支持 `Last-Event-ID` |
+| `POST /admin/pause` `{by?, reason?, mode?: wait\|reject}` / `POST /admin/resume` | 人接管 / 交还 |
+| `PUT /admin/allowlist` `{domains: []}` | 网站白名单（含子域名；空 = 不限；页面内跳转也拦） |
+| `GET /admin/screenshot?space=` | 当前活动页截图（不拉起浏览器） |
+| `POST /admin/restart?space=` | 重启该工作区浏览器（下一次结果带 `recycled: true`） |
+| `GET /admin/metrics` | Chromium 进程树内存（Linux）、本进程内存 |
+
+验证：`node claude/test/desk-e2e.mjs`（无头，任何机器）；`HEADED=1` 另测自带扩展（Linux 需要 DISPLAY）。

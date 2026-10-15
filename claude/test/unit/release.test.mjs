@@ -114,13 +114,14 @@ test('pack: 只带运行要的文件,版本号写进 package.json / 锁文件', 
   w('dist/server.js', 'console.log(1)');
   w('bin/shim.mjs', '//');
   w('mcp.mjs', '//');
+  w('extension/manifest.json', '{}');
   w('src/server.ts', 'secret source');
   w('storage/data-root.txt', 'E:/x');
   w('node_modules/x/index.js', '//');
   const out = path.join(root, 'out');
   const a = pack({ root, version: '2.4.1-rc.1', out, commit: 'abc' });
   const files = untar(fs.readFileSync(a.file));
-  assert.deepEqual([...files.keys()].sort(), ['claude/bin/shim.mjs', 'claude/dist/server.js', 'claude/mcp.mjs', 'claude/package-lock.json', 'claude/package.json', 'release.json']);
+  assert.deepEqual([...files.keys()].sort(), ['claude/bin/shim.mjs', 'claude/dist/server.js', 'claude/extension/manifest.json', 'claude/mcp.mjs', 'claude/package-lock.json', 'claude/package.json', 'release.json']);
   assert.equal(JSON.parse(files.get('claude/package.json')).version, '2.4.1-rc.1');
   assert.equal(JSON.parse(files.get('claude/package-lock.json')).packages[''].version, '2.4.1-rc.1');
   assert.equal(JSON.parse(files.get('release.json')).commit, 'abc');

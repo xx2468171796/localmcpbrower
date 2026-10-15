@@ -140,7 +140,11 @@ const SERVER_INSTRUCTIONS = `本地浏览器操控 MCP。工具配合要点:
 - 批量场景:多个不同 URL 用 batch_fetch,自动翻页用 crawl_pages,爬大站前先 discover_urls 探明地址。
 - 新闻/博客/文档类页面用 extract_article 直接拿干净 Markdown 正文。
 - 填 2 个以上表单字段用 fill_form;click/type 内置三级 fallback,仍失败改 execute_js 直接操作 DOM。
-- 多步交互(填表→点击→等待→读结果)优先用 run_script 一次跑完:脚本里调 __ego.click/fill/waitFor/snapshot,省去多次往返。
+- 多步交互(填表→点击→等待→读结果)一次跑完省往返:同一页内用 run_script(脚本里调 __ego.click/fill/waitFor/snapshot);跨页面跳转用 run_flow(按步骤调现有工具,{{变量.路径}} 引用前面的结果)。
+- 登录公司系统:用 login_with_asset / fill_secret 按堡垒机资产填账号密码和两步验证码,明文不经过你;不要 get_asset 拿明文再 type。
+- 人想教你一套操作:record_start → 人在窗口里做一遍 → record_stop 拿到流程,交给 run_flow 回放。
+- 现有工具做不到的浏览器能力(模拟地理位置 / 网速 / 设备、读性能指标等)用 cdp_send 直接发 CDP 命令。
+- 失败结果带错误码 code:DESK_PAUSED = 人正在接管,等一会儿再试,别换别的办法硬做;DOMAIN_BLOCKED = 网站不在本工位白名单,别绕。
 - snapshot/click/type/hover 已能穿透 iframe(含跨域),iframe 内元素同样带 ref、可直接操作。
 - 需要并行多任务或多账号隔离时用 space_new 开独立工作区(cookie/登录态互不干扰),space_switch 切换,space_list 查看。
 - 自家站点的拼图滑块(页面 <html data-yz-slider="1">,或「拖动滑块完成拼图」)不用叫人:堡垒机 list_assets 搜「AI 测试通行码」取域名对得上的那条 → get_asset otp=true 拿 8 位码 → 照资产介绍用 execute_js 提交;没有这条资产或提交失败才叫人。
