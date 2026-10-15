@@ -73,8 +73,12 @@ async function startServer(extraEnv) {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'desk-e2e-'));
   const d = (n) => { const p = path.join(scratch, n); fs.mkdirSync(p, { recursive: true }); return p; };
   const home = d('home');
+  // HOME 换成临时目录后 Playwright 会去临时目录找浏览器,要把真实位置钉住(照 eval/harness.mjs)
+  const browsers = process.env.PLAYWRIGHT_BROWSERS_PATH || (process.platform === 'win32'
+    ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'ms-playwright')
+    : process.platform === 'darwin' ? path.join(os.homedir(), 'Library', 'Caches', 'ms-playwright') : path.join(os.homedir(), '.cache', 'ms-playwright'));
   const env = {
-    ...process.env, HOME: home, USERPROFILE: home,
+    ...process.env, HOME: home, USERPROFILE: home, PLAYWRIGHT_BROWSERS_PATH: browsers,
     PORT: String(port), HOST: '127.0.0.1', HEADLESS: HEADED ? 'false' : 'true',
     DESK_ID: 'e2e', KILL_PORT_ON_START: '0', PIPE_DISABLE: '1',
     USER_DATA_DIR: d('profile'), LOCALMCP_DATA_DIR: d('data'), SCREENSHOT_DIR: d('shots'),
