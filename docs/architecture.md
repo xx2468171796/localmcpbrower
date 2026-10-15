@@ -123,7 +123,7 @@
 - **新增工具**（模块 `secrets/`）：
   - `fill_secret { target(ref|selector), asset(id|名称), field: 'secret'|'account'|'otp'|<字段名> }`：调堡垒机 `get_asset`（reveal / otp），把值填进目标输入框，返回只有「已填 N 位」。
   - `login_with_asset { asset, user?, pass?, otp?, submit? }`：一次填账号、密码（和 2FA）并提交，给常见登录页用。
-- **防外泄（不变量）**：只有当前页面的站点和资产登记的地址（`address` 或标签里的域名）对得上才填，对不上返回 `SECRET_ORIGIN_MISMATCH`——防止 AI 被诱导把密码填进别的网站。值只在内存里过一遍，不进事件流、日志、遥测、工具结果；`type` / `fill_form` 的参数摘要同样打码。
+- **防外泄（不变量）**：只有当前页面（及其上层 frame）的站点和资产登记的地址（`address` 或新版堡垒机的 `hosts`，不看标签）对得上才填，对不上返回 `SECRET_ORIGIN_MISMATCH`——防止 AI 被诱导把密码填进别的网站。值只在内存里过一遍，不进事件流、日志、遥测、工具结果；`type` / `fill_form` 的参数摘要同样打码。
 - **审计**：每次取用都是堡垒机里一次 `get_asset` 调用，归属到这台机器 / 这个工位的密钥，堡垒机自带审计。
 - **站点判定细节**（2026-10-15 独立审查后加固）：读输入框所在文档自己的 `location.origin`，不看 `frame.url()`；
   不透明来源（`data:` / 沙箱 iframe）和隔离世界里读不到确定来源的 `srcdoc` 一律拒填（宁可不填）；
@@ -131,9 +131,26 @@
   填写 / 提交出错时 Playwright 报错末尾带调用日志 `fill("<值>")`，**原文一律不外传**，只给错误码和固定说明，另有兜底把值从任何错误信息里抹掉。
 - **重定向**：页面请求不在服务端跟随跳转（否则最终内容挂在原网址下，站点检查和白名单都被骗）；
   白名单生效时服务端把整条跳转链逐跳过一遍，有一跳不许整个拦下，全许才把第一跳交回浏览器自己跳。
+- **第二轮安全审计加固**（2026-10-15）：
+  - 站点规则：只取 `address` 和新版堡垒机的 `hosts`，**不用自由填写的 tags**；默认精确主机名，`*.example.com` 才认子域名；
+    登记里写了端口就比端口；IP / localhost / [IPv6] 都能登记（以前 hosts 混进 tags 后只认域名形状，IP 被丢掉）。实现 `secrets/asset-hosts.ts`。
+  - 防改道（`secrets/fill-target.ts`）：绑定到一个 ElementHandle（文档一换句柄即失效、写入失败，不会改写到新文档里同选择器的框）；
+    输入框所在文档**和每一层祖先 frame** 都要属于登记站点；一次性填写在同一次隔离世界 evaluate 里核对
+    `location.origin` + `location.ancestorOrigins` + 元素类型 + 表单提交去向后用原生 setter 写入；逐字键入每个字前核对焦点和来源，中途不对就清空并中止。
+  - 元素限制：secret 只进密码框（或 autocomplete=current/new-password），otp 只进单行输入框，其它字段只进 `<input>`；不进 textarea / contenteditable。
+  - 证书：托管工位关掉 `ignoreHTTPSErrors`；本机单用仍忽略（内网自签站点要能打开），但 fill_secret 填 https 站点前在服务端用
+    Node 自带 + 系统根证书严格校验一次对方证书（`secrets/tls-check.ts`），不过就拒填。
+  - 浏览器子进程的环境去掉令牌 / 密码 / 密钥类变量（`browser-env.ts`）。
+  - 填过的框打 `data-ego-secret` 标记：snapshot 显示「(已填资产)」，录制器当敏感框。
+  - 等主人批准：取消信号一路传到轮询，期限（`deadlineFor`）按两次等待留够，先到的是 `SECRET_PENDING_APPROVAL` 而不是统一 TIMEOUT；
+    旧版堡垒机「不认 use_on」的回退只认窄的 schema 报错特征、只退一次，带 `ASSET_USE_*` 的答复绝不回退。
+  - 被操控的页面打不开本服务自己的地址；/admin 不接受本服务自己的 Origin。
 - **做不到的（如实写清）**：值已经在页面里，AI 若主动用 `execute_js` / `get_element_attribute` 读输入框仍能读到——
   只要 AI 能在页面里跑脚本就挡不住。本设计防的是「明文意外进对话 / 日志 / 时间线」，
   防不了「被页面内容诱导、主动去偷的 AI」，后者靠站点白名单、人工监督（时间线 + 接管）兜底。
+  另外几条残余风险：逐字键入时「核对焦点」和「按下这个键」之间仍有极短窗口，焦点恰在这时被抢走最多漏 1 个字（下一次核对发现后中止并清空）；
+  证书校验是服务端另起一条 TLS 连接，浏览器走代理 / 自有 DNS 时两条路径可能不同；本机单用的内网自签 https 站点会被 fill_secret 拒填
+  （把自签 CA 装进系统证书库或用 NODE_EXTRA_CA_CERTS 即可）；`data-ego-secret` 标记页面自己能删，删了 snapshot 会显示账号类明文（密码框仍只显示「已填密码」）。
 - **反方向（第 4 期）**：堡垒机 MCP 加「工位」工具（开 / 关 / 看 / 接管），经工位管理服务操作；人在堡垒机面板上也能看到所有工位。
 
 ## 8. 权限

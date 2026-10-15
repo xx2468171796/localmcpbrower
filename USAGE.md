@@ -181,8 +181,17 @@ run_flow({ steps: [
 login_with_asset({ asset: "资产 id 或名称", user: { ref: "e3" }, pass: { ref: "e4" }, otp: { ref: "e5" }, submit: { ref: "e6" } })
 fill_secret({ asset: "...", field: "secret" | "account" | "otp" | "<资产自定义字段>", ref: "e4" })
 - 浏览器 MCP 用本机（或工位）的堡垒机密钥直接取值、直接填，结果只回「已填 N 位」，事件时间线也打码。
-- 只有输入框所在站点和资产登记的地址（address / 标签里的域名）对得上才填，否则 SECRET_ORIGIN_MISMATCH——
-  资产没登记地址就先去堡垒机补上。
+- 只有输入框所在站点**以及它上面每一层页面**（被嵌在 iframe 里时）都和资产登记的站点对得上才填，否则 SECRET_ORIGIN_MISMATCH——
+  资产没登记地址就先去堡垒机补上。站点只看 address（和新版堡垒机的 hosts），**不看标签**。
+- 站点比对是**精确主机名**：登记 `example.com` 不认 `www.example.com`；要放子域名就登记成 `*.example.com`
+  （只认子域名，主域也要就两个都登记）。登记地址里写了端口（如 `http://10.0.0.1:8080`）就连端口一起比；IP / localhost 照样能用。
+- https 站点证书校验不过（自签 / 过期 / 主机名不符，或网络被劫持）拒填；资产登记的全是 https 时页面也必须是 https。
+- 元素限制：`secret` 只填 `type=password`（或 autocomplete=current-password / new-password）的输入框；
+  `otp` 只填单行输入框（text / tel / number / password）；`account` 和自定义字段只填 `<input>`。
+  不填 textarea / contenteditable；只读 / 禁用的框、提交到别的站点的表单不填（ELEMENT_NOT_ACTIONABLE / SECRET_ORIGIN_MISMATCH）。
+- 填过的框 snapshot 里显示「(已填资产)」，不显示值；录制时也当敏感框，不记内容。
+- `typing: true` 逐字键入时每个字前都核对焦点，焦点被页面抢走就中止并清空。
+- 资产要「每次使用主人批准」时最多等 90 秒一次（带两步码的最多等两次），期限按这个留够；没批返回 SECRET_PENDING_APPROVAL，批了再调一次。
 - 别再 get_asset 拿明文后 type / run_script 填：明文会进对话记录。
 ```
 
@@ -267,8 +276,8 @@ space_close({ name: "job1" })   # 关闭并释放（default 不可关）
 ### 3.0 新增（10 个）
 | 工具 | 参数 | 说明 |
 |------|------|------|
-| `cdp_send` | method, params?, timeoutMs? | 直接发 CDP 命令。默认只开放页面级的域（白名单），读写本机文件 / 打开 file:// / 改下载目录 / 浏览器级的命令都不开放，要服务端 `ALLOW_BROWSER_CDP=1` |
-| `fill_secret` | asset, field?, ref/selector, typing? | 用堡垒机资产填输入框，明文不回给 AI，站点对不上拒填 |
+| `cdp_send` | method, params?, timeoutMs? | 直接发 CDP 命令。默认只开放页面级的域（白名单），读写本机文件 / 打开 file:// / 改下载目录 / 读任意站点 cookie 或存储（Network.getCookies / getAllCookies、DOMStorage / IndexedDB / CacheStorage）/ 自建隔离世界 / 浏览器级的命令都不开放，要服务端 `ALLOW_BROWSER_CDP=1` |
+| `fill_secret` | asset, field?, ref/selector, typing? | 用堡垒机资产填输入框，明文不回给 AI；站点（含上层 iframe 页面，精确主机名，`*.` 才认子域名）对不上、证书不可信、元素类型不对都拒填 |
 | `login_with_asset` | asset, user?, pass?, otp?, submit?, typing? | 一次填账号 / 密码 / 两步码并提交 |
 | `run_flow` | steps[], timeoutMs? | 多步流程一次跑完，跨导航；`{{变量.路径}}` 引用前面结果 |
 | `record_start` / `record_stop` / `record_status` | — | 录制人的操作并转成 run_flow 步骤（需自带扩展） |
