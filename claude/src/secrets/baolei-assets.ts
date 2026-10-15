@@ -89,33 +89,83 @@ export function hostMatches(pageHost: string, hosts: string[]): boolean {
 
 type Fetcher = (url: string, init: RequestInit) => Promise<Response>;
 
+/**
+ * 堡垒机 2026-10 起 get_asset 附带的机器可读数据 `_meta["baolei/data"]`(资产权限版本)。
+ * 「代填」路径下明文只在这里、不进文字;旧版堡垒机没有它,退回解析文字。
+ */
+export interface BaoleiAssetData {
+  id?: string | number;
+  name?: string;
+  address?: string;
+  account?: string;
+  hosts?: string[];
+  secret?: string;
+  fields?: Record<string, string>;
+  otp?: { code: string; remaining?: number; next?: string };
+  pending?: { requestId?: string; status?: string; expiresAt?: string; retryAfter?: number };
+}
+
+interface CallResult { text: string; data: BaoleiAssetData | null; isError: boolean }
+
 export class BaoleiAssets {
   constructor(
     private readonly target: TelemetryTarget | null = baoleiEndpoint(process.env, os.homedir()),
     private readonly fetcher: Fetcher = fetch,
+    /** 资产要求「每次使用要主人批准」时,最多等多久(期间每 pollMs 重试一次) */
+    private readonly approvalWaitMs = 90_000,
+    private readonly pollMs = 5_000,
   ) {}
 
   get configured(): boolean {
     return this.target !== null;
   }
 
-  async info(asset: string, reveal: boolean): Promise<AssetInfo> {
-    const text = await this.call({ asset, reveal });
-    const info = parseAssetText(text);
-    if (!info) throw new ToolError('SECRET_UNAVAILABLE', `堡垒机没有返回资产「${asset}」的信息:${firstLine(text)}`);
+  /** useOn = 要填进去的页面(来源);新版堡垒机据此在服务端再核对站点、记审计 */
+  async info(asset: string, reveal: boolean, useOn?: string): Promise<AssetInfo> {
+    const r = await this.call({ asset, reveal }, useOn);
+    if (r.data && (r.data.name || r.data.id !== undefined)) return fromData(r.data, asset);
+    const info = parseAssetText(r.text);
+    if (!info) throw new ToolError('SECRET_UNAVAILABLE', `堡垒机没有返回资产「${asset}」的信息:${firstLine(r.text)}`);
     return info;
   }
 
-  async otp(asset: string): Promise<string> {
-    const text = await this.call({ asset, otp: true });
-    const r = parseOtpText(text);
-    if (!r) throw new ToolError('SECRET_UNAVAILABLE', `资产「${asset}」取不到两步验证码:${firstLine(text)}`);
+  async otp(asset: string, useOn?: string): Promise<string> {
+    const r = await this.call({ asset, otp: true }, useOn);
+    const o = r.data?.otp;
+    const parsed = o?.code ? { code: o.code, validSec: o.remaining ?? 30, next: o.next } : parseOtpText(r.text);
+    if (!parsed) throw new ToolError('SECRET_UNAVAILABLE', `资产「${asset}」取不到两步验证码:${firstLine(r.text)}`);
     // 快过期的码填进去也来不及提交,用下一个
-    return r.validSec <= 3 && r.next ? r.next : r.code;
+    return parsed.validSec <= 3 && parsed.next ? parsed.next : parsed.code;
+  }
+
+  /**
+   * get_asset,带上 use_on;处理三种新版堡垒机的答复:
+   *   ASSET_USE_PENDING  资产要主人批准 → 每 pollMs 重试,最多等 approvalWaitMs(主人在手机上一批就接着填)
+   *   ASSET_USE_DENIED   主人拒绝 → 停
+   *   ASSET_USE_ORIGIN   堡垒机核对站点不符 → 拒填
+   * 旧版堡垒机不认 use_on 时去掉它再试一次。
+   */
+  private async call(args: Record<string, unknown>, useOn?: string): Promise<CallResult> {
+    const withUse = useOn ? { ...args, use_on: useOn } : args;
+    let r = await this.rpc(withUse);
+    if (r.isError && useOn && /use_on|unrecognized|unknown (key|arg)|invalid (arg|param)/i.test(r.text)) r = await this.rpc(args);
+    const deadline = Date.now() + this.approvalWaitMs;
+    while (r.isError && /^\s*ASSET_USE_PENDING/.test(r.text)) {
+      if (Date.now() + this.pollMs > deadline) {
+        const id = r.data?.pending?.requestId ?? /request=(\S+)/.exec(r.text)?.[1] ?? '';
+        throw new ToolError('SECRET_PENDING_APPROVAL', `这个账号每次使用都要主人批准,已推送到主人手机(请求 ${id}),${Math.round(this.approvalWaitMs / 1000)} 秒内还没批;批准后再调一次即可,别换别的办法`);
+      }
+      await new Promise((res) => setTimeout(res, this.pollMs));
+      r = await this.rpc(withUse);
+    }
+    if (!r.isError) return r;
+    if (/^\s*ASSET_USE_DENIED/.test(r.text)) throw new ToolError('SECRET_UNAVAILABLE', '主人拒绝了这次使用这个账号;别重试,告诉用户');
+    if (/^\s*ASSET_USE_ORIGIN/.test(r.text)) throw new ToolError('SECRET_ORIGIN_MISMATCH', `堡垒机核对站点不符,拒绝:${firstLine(r.text)}`);
+    throw new ToolError('SECRET_UNAVAILABLE', `堡垒机拒绝:${firstLine(r.text)}`);
   }
 
   /** 调堡垒机 MCP 的 get_asset(无状态:一次 tools/call 即可) */
-  private async call(args: Record<string, unknown>): Promise<string> {
+  private async rpc(args: Record<string, unknown>): Promise<CallResult> {
     if (!this.target) {
       throw new ToolError('SECRET_UNAVAILABLE', '这台机器没配堡垒机密钥(BAOLEI_MCP_URL + BAOLEI_MCP_TOKEN,或 ~/.claude.json 里的 baolei MCP),取不了资产');
     }
@@ -133,12 +183,24 @@ export class BaoleiAssets {
     if (!res.ok) throw new ToolError('SECRET_UNAVAILABLE', `堡垒机返回 HTTP ${res.status}`);
     const body = await res.text();
     const json = (res.headers.get('content-type') ?? '').includes('event-stream') ? lastSseData(body) : safeJson(body);
-    const result = (json as { result?: { isError?: boolean; content?: Array<{ type: string; text?: string }> }; error?: { message?: string } } | null);
+    const result = (json as { result?: { isError?: boolean; content?: Array<{ type: string; text?: string }>; _meta?: Record<string, unknown> }; error?: { message?: string } } | null);
     if (!result || result.error) throw new ToolError('SECRET_UNAVAILABLE', `堡垒机报错:${result?.error?.message ?? '无法解析返回'}`);
     const text = result.result?.content?.find((c) => c.type === 'text')?.text ?? '';
-    if (result.result?.isError || /^\s*❌/.test(text)) throw new ToolError('SECRET_UNAVAILABLE', `堡垒机拒绝:${firstLine(text)}`);
-    return text;
+    const data = (result.result?._meta?.['baolei/data'] ?? null) as BaoleiAssetData | null;
+    return { text, data, isError: Boolean(result.result?.isError) || /^\s*❌/.test(text) };
   }
+}
+
+function fromData(d: BaoleiAssetData, ref: string): AssetInfo {
+  return {
+    id: String(d.id ?? ''),
+    name: d.name ?? ref,
+    address: d.address ?? '',
+    account: d.account ?? '',
+    tags: d.hosts ?? [],
+    ...(d.secret ? { secret: d.secret } : {}),
+    fields: d.fields ?? {},
+  };
 }
 
 function lastSseData(body: string): unknown {

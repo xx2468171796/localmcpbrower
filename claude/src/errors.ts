@@ -25,6 +25,7 @@ export const ERROR_CODES = [
   'DOMAIN_BLOCKED',        // 网址不在工位白名单里
   'SECRET_UNAVAILABLE',    // 堡垒机取不到资产(没配密钥 / 无权 / 不存在)
   'SECRET_ORIGIN_MISMATCH',// 当前页面站点和资产登记的地址对不上,拒绝填写
+  'SECRET_PENDING_APPROVAL',// 资产每次使用要主人批准,等待超时(批准后再调即可)
   'CDP_ERROR',             // cdp_send 的 CDP 命令报错
   'UNSUPPORTED',           // 当前形态不支持(如无图形界面弹不出窗口)
   'INTERNAL',              // 其它未归类的错误

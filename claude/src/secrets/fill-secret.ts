@@ -56,15 +56,31 @@ async function locate(page: Page, t: { ref?: string; selector?: string }): Promi
  * (可能是第三方 iframe),data: / blob: / 沙箱 iframe 是不透明来源("null")—— 后者一律拒填。
  * 资产登记的网址全是 https 时,页面也必须是 https。紧挨着填写前调用,缩小「查完被换页」的窗口。
  */
+/** 输入框所在文档的真实来源;不透明 / 非 http(s) 返回 null(这种一律不去堡垒机取值,免得白白记一次「使用」) */
+async function frameOrigin(found: Found): Promise<URL | null> {
+  const origin = await found.locator.evaluate((el) => el.ownerDocument.defaultView?.location.origin ?? 'null', undefined, { timeout: 5000 }).catch(() => 'null');
+  try {
+    const u = origin === 'null' ? null : new URL(origin);
+    return u && /^https?:$/.test(u.protocol) ? u : null;
+  } catch {
+    return null;
+  }
+}
+
+async function requireOrigin(found: Found): Promise<URL> {
+  const u = await frameOrigin(found);
+  if (!u) throw new ToolError('SECRET_ORIGIN_MISMATCH', '输入框所在页面的来源不确定(data: / 沙箱 iframe / srcdoc 等),拒绝填写');
+  return u;
+}
+
 async function assertOrigin(found: Found, info: AssetInfo): Promise<void> {
   const hosts = assetHosts(info);
   if (hosts.length === 0) {
     throw new ToolError('SECRET_ORIGIN_MISMATCH', `资产「${info.name}」没登记网址(address),不知道该填到哪个站点;请先在堡垒机里给它补上地址`);
   }
-  const origin = await found.locator.evaluate((el) => el.ownerDocument.defaultView?.location.origin ?? 'null', undefined, { timeout: 5000 }).catch(() => 'null');
-  let u: URL | null = null;
-  try { u = origin === 'null' ? null : new URL(origin); } catch { u = null; }
-  if (!u || !/^https?:$/.test(u.protocol) || !hostMatches(u.hostname, hosts)) {
+  const u = await frameOrigin(found);
+  const origin = u?.origin ?? 'null';
+  if (!u || !hostMatches(u.hostname, hosts)) {
     throw new ToolError('SECRET_ORIGIN_MISMATCH', `输入框所在页面「${origin}」不是资产「${info.name}」登记的站点(${hosts.join('、')}),拒绝填写`);
   }
   if (requiresHttps(info) && u.protocol !== 'https:') {
@@ -89,9 +105,9 @@ function scrubbed(r: ReturnType<typeof failFrom>, values: string[]): ReturnType<
   return { ...r, error };
 }
 
-async function valueOf(info: AssetInfo, field: string, assetRef: string): Promise<string> {
+async function valueOf(info: AssetInfo, field: string, assetRef: string, useOn: string): Promise<string> {
   const f = field.toLowerCase();
-  if (f === 'otp') return source().otp(assetRef);
+  if (f === 'otp') return source().otp(assetRef, useOn);
   if (f === 'account') {
     if (!info.account) throw new ToolError('SECRET_UNAVAILABLE', `资产「${info.name}」没有账号`);
     return info.account;
@@ -123,9 +139,11 @@ export async function fillSecret(input: unknown): Promise<ToolResult<{ asset: st
   try {
     const page = await getBrowserManager().getPage();
     const found = await locate(page, parsed.data);
+    // 来源不确定的框直接拒,不去堡垒机取值;确定的带上 use_on,新版堡垒机在服务端再核对站点、记审计
+    const useOn = (await requireOrigin(found)).href;
     const needsReveal = !['otp', 'account'].includes(field.toLowerCase());
-    const info = await source().info(asset, needsReveal);
-    const value = await valueOf(info, field, asset);
+    const info = await source().info(asset, needsReveal, useOn);
+    const value = await valueOf(info, field, asset, useOn);
     used.push(value);
     await put(found, info, value, typing);
     return { success: true, data: { asset: info.name, field, filled: value.length } };
@@ -142,13 +160,19 @@ export async function loginWithAsset(input: unknown): Promise<ToolResult<{ asset
   const used: string[] = [];
   try {
     const page = await getBrowserManager().getPage();
-    const info = await source().info(asset, Boolean(pass));
+    // 先把要填的框都找到,用第一个框的来源作 use_on(每个框填之前仍各自核对站点)
+    const plan: Array<[string, Found]> = [];
+    for (const [field, target] of [['account', user], ['secret', pass], ['otp', otp]] as const) {
+      if (target) plan.push([field, await locate(page, target)]);
+    }
+    const first = plan[0];
+    if (!first) return fail('INVALID_ARGS', 'user / pass / otp 至少给一个输入框');
+    const useOn = (await requireOrigin(first[1])).href;
+    const info = await source().info(asset, Boolean(pass), useOn);
     const filled: string[] = [];
     let last: Found | null = null;
-    for (const [field, target] of [['account', user], ['secret', pass], ['otp', otp]] as const) {
-      if (!target) continue;
-      const found = await locate(page, target);
-      const value = await valueOf(info, field, asset);
+    for (const [field, found] of plan) {
+      const value = await valueOf(info, field, asset, useOn);
       used.push(value);
       await put(found, info, value, typing);
       filled.push(field);

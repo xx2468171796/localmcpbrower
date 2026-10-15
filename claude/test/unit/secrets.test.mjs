@@ -100,3 +100,50 @@ test('requiresHttps: only when every listed URL is https', () => {
   assert.equal(requiresHttps({ address: 'https://a.com（内网 http://10.0.0.1）' }), false);
   assert.equal(requiresHttps({ address: 'a.com' }), false);
 });
+
+// ── 2026-10 堡垒机「代填 / 审批」新接口 ──
+const sse = (result) => new Response(`event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: 1, result })}\n\n`, { headers: { 'content-type': 'text/event-stream' } });
+const T = { url: 'https://b/mcp', token: 't' };
+
+test('new bastion: values come from _meta["baolei/data"], text has no plaintext', async () => {
+  const seen = [];
+  const f = async (_u, init) => { seen.push(JSON.parse(init.body).params.arguments); return sse({ content: [{ type: 'text', text: 'Asset 9 · 账号 · X · used' }], _meta: { 'baolei/data': { id: 9, name: 'X', address: 'https://x.com', account: 'alice', hosts: ['x.com'], secret: 'S3', otp: { code: '123456', remaining: 2, next: '654321' } } } }); };
+  const b = new BaoleiAssets(T, f);
+  const info = await b.info('9', true, 'https://x.com/login');
+  assert.equal(info.secret, 'S3');
+  assert.equal(info.account, 'alice');
+  assert.equal(seen[0].use_on, 'https://x.com/login');
+  assert.equal(await b.otp('9', 'https://x.com/login'), '654321'); // 快过期用下一个
+});
+
+test('new bastion: pending approval polls until approved', async () => {
+  let n = 0;
+  const f = async () => (++n < 3
+    ? sse({ isError: true, content: [{ type: 'text', text: 'ASSET_USE_PENDING request=r1 已推送' }], _meta: { 'baolei/data': { pending: { requestId: 'r1', status: 'pending' } } } })
+    : sse({ content: [{ type: 'text', text: 'ok' }], _meta: { 'baolei/data': { id: 1, name: 'X', secret: 'S' } } }));
+  const b = new BaoleiAssets(T, f, 2000, 10);
+  assert.equal((await b.info('1', true, 'https://x.com')).secret, 'S');
+  assert.equal(n, 3);
+});
+
+test('new bastion: pending times out with SECRET_PENDING_APPROVAL; denied and origin map to codes', async () => {
+  const pending = async () => sse({ isError: true, content: [{ type: 'text', text: 'ASSET_USE_PENDING request=r2' }] });
+  await assert.rejects(new BaoleiAssets(T, pending, 30, 10).info('1', true, 'https://x.com'), (e) => e.code === 'SECRET_PENDING_APPROVAL' && /r2/.test(e.message));
+  const denied = async () => sse({ isError: true, content: [{ type: 'text', text: 'ASSET_USE_DENIED retryAfter=600' }] });
+  await assert.rejects(new BaoleiAssets(T, denied).info('1', true, 'https://x.com'), (e) => e.code === 'SECRET_UNAVAILABLE' && /拒绝/.test(e.message));
+  const origin = async () => sse({ isError: true, content: [{ type: 'text', text: 'ASSET_USE_ORIGIN 站点不符' }] });
+  await assert.rejects(new BaoleiAssets(T, origin).info('1', true, 'https://evil.com'), (e) => e.code === 'SECRET_ORIGIN_MISMATCH');
+});
+
+test('old bastion rejecting use_on: retried without it', async () => {
+  const seen = [];
+  const f = async (_u, init) => {
+    const a = JSON.parse(init.body).params.arguments;
+    seen.push(a);
+    return 'use_on' in a
+      ? sse({ isError: true, content: [{ type: 'text', text: 'Input validation error: Unrecognized key: "use_on"' }] })
+      : sse({ content: [{ type: 'text', text: REVEALED }] });
+  };
+  assert.equal((await new BaoleiAssets(T, f).info('430', true, 'https://x.com')).secret, 'S3cret!pass');
+  assert.equal(seen.length, 2);
+});
