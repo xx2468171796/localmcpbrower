@@ -2,16 +2,30 @@
   "project": "localmcpbrower",
   "shape": "client",
   "upstream": [
-    { "name": "patchright", "source": "npm", "coolDays": 7, "autoMajor": false },
+    {
+      "name": "patchright",
+      "source": "npm",
+      "coolDays": 7,
+      "autoMajor": false
+    },
     {
       "name": "@modelcontextprotocol/server",
       "source": "npm",
       "coolDays": 7,
       "autoMajor": false,
-      "with": ["@modelcontextprotocol/client", "@modelcontextprotocol/core", "@modelcontextprotocol/node", "@modelcontextprotocol/express"]
+      "with": [
+        "@modelcontextprotocol/client",
+        "@modelcontextprotocol/core",
+        "@modelcontextprotocol/node",
+        "@modelcontextprotocol/express"
+      ]
     }
   ],
-  "eval": { "command": "pnpm eval", "baseline": "claude/eval/baseline.json", "results": "claude/eval/results.json" },
+  "eval": {
+    "command": "pnpm eval",
+    "baseline": "claude/eval/baseline.json",
+    "results": "claude/eval/results.json"
+  },
   "build": {
     "kind": "pnpm",
     "install": "cd claude && npm ci --ignore-scripts --no-audit --no-fund",
@@ -28,17 +42,53 @@
     "claude/package.json",
     "claude/tsconfig.json",
     ".gitea/**",
-    ".github/**"
+    ".github/**",
+    "evolve/mcp-exam/**",
+    "claude/eval/mcp-exam/gate/gate-driver.mjs",
+    "claude/eval/mcp-exam/tasks/dev-tasks.mjs",
+    "evolve/**"
   ],
-  "humanReview": ["claude/src/server.ts", "claude/src/pipe.ts", "claude/src/telemetry.ts", "claude/bin/**", "claude/mcp.mjs", "claude/ecosystem*.cjs"],
+  "humanReview": [
+    "claude/src/server.ts",
+    "claude/src/pipe.ts",
+    "claude/src/telemetry.ts",
+    "claude/bin/**",
+    "claude/mcp.mjs",
+    "claude/ecosystem*.cjs"
+  ],
   "gates": [
-    { "signal": "eval_pass_rate", "worseBy": "5pp", "source": "pnpm eval" },
-    { "signal": "eval_tool_error_rate", "worseBy": "3pp", "source": "pnpm eval" }
+    {
+      "signal": "eval_pass_rate",
+      "worseBy": "5pp",
+      "source": "pnpm eval"
+    },
+    {
+      "signal": "eval_tool_error_rate",
+      "worseBy": "3pp",
+      "source": "pnpm eval"
+    }
   ],
   "scorecard": [
-    { "signal": "tool_error_rate", "worseBy": "3pp", "source": "telemetry tool_calls" },
-    { "signal": "retry_rate", "worseBy": "3pp", "source": "telemetry tool_calls" }
+    {
+      "signal": "tool_error_rate",
+      "worseBy": "3pp",
+      "source": "telemetry tool_calls"
+    },
+    {
+      "signal": "retry_rate",
+      "worseBy": "3pp",
+      "source": "telemetry tool_calls"
+    }
   ],
-  "rollout": { "stages": ["internal", "10%", "100%"], "observeHours": 24, "minSamples": 20, "defaultChannel": "stable" },
+  "rollout": {
+    "stages": [
+      "internal",
+      "10%",
+      "100%"
+    ],
+    "observeHours": 24,
+    "minSamples": 20,
+    "defaultChannel": "stable"
+  },
   "health": "curl -fsS http://127.0.0.1:3215/health"
 }

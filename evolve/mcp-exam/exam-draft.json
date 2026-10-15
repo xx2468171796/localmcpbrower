@@ -1,0 +1,202 @@
+{
+  "version": 1,
+  "project": "localmcpbrower",
+  "repo": "gonggong/localmcpbrower",
+  "what": "本地浏览器 MCP 的 AI 做题考卷：便宜模型 claude-haiku-5-5 用真的浏览器 MCP 服务（本仓 claude/dist/server.js + 真 Chromium）在本地假网站「星河商城」上做同事常让 AI 干的活（填表、跨页提取、iframe、等动态内容、登录、工作区隔离、弹窗、需要人时停下来……），自动判分。不碰任何外网和真实账号。",
+  "runner": {
+    "install": "cd claude && npm ci --ignore-scripts --no-audit --no-fund && node node_modules/patchright/cli.js install chromium",
+    "build": "cd claude && node node_modules/typescript/bin/tsc -p .",
+    "static": "node claude/eval/mcp-exam/static-scores.mjs",
+    "driver": "claude/eval/mcp-exam/gate/gate-driver.mjs",
+    "driverArgs": [
+      "--sandbox",
+      "none"
+    ],
+    "timeoutMin": 90
+  },
+  "judgePaths": [
+    "claude/eval/**",
+    "evolve/**",
+    ".ankotti/evolve.json",
+    ".gitea/**",
+    "package.json",
+    "claude/package.json",
+    "claude/tsconfig.json"
+  ],
+  "surface": [
+    "claude/src/**",
+    "claude/bin/**",
+    "USAGE.md"
+  ],
+  "publicSet": {
+    "path": "claude/eval/mcp-exam/tasks/dev-tasks.mjs",
+    "count": 37,
+    "samples": [
+      {
+        "t": "在联系表单提交 7 个字段（含下拉、单选、勾选）并报受理编号",
+        "tools": "navigate、snapshot、fill_form、click",
+        "ok": "15/15"
+      },
+      {
+        "t": "3 页商品表里价格高于 3000 元的商品",
+        "tools": "navigate、extract_data、click",
+        "ok": "15/15"
+      },
+      {
+        "t": "合作伙伴页 iframe 里协议 PDF 的下载链接",
+        "tools": "navigate、snapshot",
+        "ok": "15/15"
+      },
+      {
+        "t": "实时看板异步加载的今日订单数",
+        "tools": "navigate、wait_for_selector、get_page_content",
+        "ok": "15/15"
+      },
+      {
+        "t": "两个独立工作区分别登录 alice / bob，报会员等级和余额",
+        "tools": "space_new、space_switch、fill_form",
+        "ok": "15/15"
+      },
+      {
+        "t": "注册页有图形验证码：应停下来请人处理，不许乱猜",
+        "tools": "navigate、fill_form、wait_for_human",
+        "ok": "15/15"
+      },
+      {
+        "t": "删除草稿单 D-1002（页面弹 confirm 确认框）",
+        "tools": "click、execute_js",
+        "ok": "4/15"
+      },
+      {
+        "t": "新窗口打开的活动详情里的优惠码",
+        "tools": "click、list_tabs、switch_tab",
+        "ok": "15/15"
+      },
+      {
+        "t": "天气页没显示、但接口里有的湿度",
+        "tools": "get_network",
+        "ok": "15/15"
+      },
+      {
+        "t": "文档站哪个接口每分钟限 120 次",
+        "tools": "extract_links、batch_fetch",
+        "ok": "15/15"
+      },
+      {
+        "t": "只看不改：草稿单几张、合计多少",
+        "tools": "get_page_content",
+        "ok": "15/15"
+      }
+    ]
+  },
+  "holdout": {
+    "path": "evolve/mcp-exam/holdout-2026-10-14.enc",
+    "count": 18,
+    "topics": [
+      [
+        "填表",
+        2
+      ],
+      [
+        "跨页 / 多页提取",
+        3
+      ],
+      [
+        "iframe",
+        1
+      ],
+      [
+        "动态内容",
+        1
+      ],
+      [
+        "登录",
+        1
+      ],
+      [
+        "工作区隔离",
+        1
+      ],
+      [
+        "需要人处理",
+        1
+      ],
+      [
+        "网页对话框 / 新窗口",
+        3
+      ],
+      [
+        "爬站 / 死链",
+        2
+      ],
+      [
+        "接口数据",
+        1
+      ],
+      [
+        "隐藏界面",
+        1
+      ],
+      [
+        "只读",
+        1
+      ]
+    ],
+    "passphraseAsset": 391
+  },
+  "subs": [
+    {
+      "key": "s1",
+      "name": "一次做对",
+      "how": "每道题独立做一次算一次，通过的比例（答案 + 网站账本：真提交了、真删了、没乱猜验证码）",
+      "base": 96.2
+    },
+    {
+      "key": "s2",
+      "name": "省钱省 token",
+      "how": "每道题做成一次平均花多少钱，和同一次考试里的 base 比（几何平均，做不成按 3 倍算）",
+      "base": 100
+    },
+    {
+      "key": "s3",
+      "name": "少 bug 测试全",
+      "how": "单元测试通过率 ×（0.6 + 0.4 × 50 道脚本题通过率）− 考试中每种工具崩溃扣 5 分",
+      "base": 98.4
+    },
+    {
+      "key": "s4",
+      "name": "接口好用统一",
+      "how": "规范检查（说明英文、参数都有说明、命名风格统一、默认值写明、选择器/时间参数命名）+ 14 个典型错误调用的报错是否给下一步 + 考试中传错参数的比例",
+      "base": 73.8
+    }
+  ],
+  "baseline": {
+    "path": "evolve/mcp-exam/baseline-2026-10-14.json",
+    "composite": 93.01,
+    "holdout": 93.7,
+    "runs": 3,
+    "spread": 6.3,
+    "devGainBand": 3.5,
+    "holdoutBand": 6
+  },
+  "cost": {
+    "draftUsd": 2.9,
+    "perRunUsd": 1.8,
+    "runMin": 55,
+    "runsPerDay": 3,
+    "examMonthUsd": 30,
+    "workMonthUsd": 15
+  },
+  "firstIdeas": [
+    "处理网页对话框：confirm/prompt 被自动取消、execute_js 改不了，加对话框工具或参数并报出文字（D24 4/15）",
+    "参数类型放宽：布尔/数字/数组被写成字符串时接住（snapshot、fill_form 等 163 次拒收，占调用 3.4%）",
+    "跳转后读页面报 Execution context was destroyed（68 次，crawl_pages 翻页也因此挂）：等稳定后自动重试",
+    "wait_for_human 在无图形界面的机器上立刻报错并让 AI 去请人，别阻塞到客户端超时",
+    "工具说明和报错改英文、报错写下一步（如元素没找到→先 snapshot），点不存在的元素别等 8 秒"
+  ],
+  "summary": "基线（master 56232b1，3 次整跑 × 每题 5 遍，825 次做题，2.70 美元）：公开题总分 93.01（一次做对 96.2、省钱 100、质量 98.4、接口 73.8），私藏题一次做对 93.7%，三次整跑总分 91.66 / 94.43 / 92.83。同一份代码 A/A（每边 5 遍）：总分差标准差 1.25、95% 分位 2.36、最大 3.57，+3.5 起没有误判；私藏题一次做对掉幅标准差 2.18、最大 5.56 个百分点。建议：总分规则 +3.5，私藏题掉超过 6 个百分点关 PR，按题规则沿用堡垒机 v3。考卷关沙箱要有自己的网络命名空间（构建机账号连本机回环都被防火墙拒绝），只读挂 /etc/hosts，模型经沙箱外 unix socket（--model-socket），浏览器目录取 PLAYWRIGHT_BROWSERS_PATH。",
+  "branch": "feat/mcp-exam",
+  "keys": {
+    "gateAsset": 390
+  }
+}

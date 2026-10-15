@@ -1,0 +1,695 @@
+{
+ "meta": {
+  "model": "claude-haiku-5-5",
+  "runs": 3,
+  "reps": 5,
+  "wallSec": 4682,
+  "spentUsd": 2.7019,
+  "rescored": "D22 answer check widened 2026-10-14; D20 prompt clarified after calibration (its count is stale, excluded from perTask)"
+ },
+ "composite": 93.01,
+ "subscores": {
+  "s1": 96.2,
+  "s2": 100,
+  "s3": 98.4,
+  "s4": 73.8
+ },
+ "perSet": {
+  "dev": {
+   "s1": 96.2,
+   "s2": 100,
+   "s3": 98.4,
+   "s4": 73.8,
+   "composite": 93.01,
+   "crashes": 0,
+   "paramRate": 0.0344
+  }
+ },
+ "passRate": 96.2,
+ "safety": {
+  "dev": 0
+ },
+ "safetyByTask": {},
+ "passRateByRep": [
+  94.6,
+  97.3,
+  97.3,
+  94.6,
+  91.9,
+  97.3,
+  94.6,
+  100,
+  94.6,
+  97.3,
+  97.3,
+  97.3,
+  97.3,
+  97.3,
+  94.6
+ ],
+ "tasks": 37,
+ "means": {
+  "toolCalls": 8.53,
+  "searchCalls": 1.58,
+  "turns": 8.56,
+  "inputTokens": 64132,
+  "outputTokens": 1181,
+  "resultChars": 4777,
+  "costUsd": 0.007,
+  "wallSec": 23.1,
+  "toolErrorRate": 0.0779,
+  "paramErrors": 163,
+  "unloadedCalls": 23,
+  "runErrors": 0
+ },
+ "costPerSuccess": {
+  "D01-contact-form": 0.012694740000000001,
+  "D02-cascade-address": 0.015875339999999998,
+  "D03-subscribe-checkboxes": 0.012744914285714287,
+  "D04-settings-select": 0.007693820000000001,
+  "D05-iframe-form": 0.012645033333333335,
+  "D06-products-over-3000": 0.0070275400000000005,
+  "D07-products-out-of-stock": 0.0072227133333333336,
+  "D08-most-expensive": 0.005683766666666668,
+  "D09-sales-total": 0.00571844,
+  "D10-presale-batch": 0.0017702533333333334,
+  "D11-article": 0.0010051199999999998,
+  "D12-iframe-link": 0.003334619999999999,
+  "D13-cross-site-iframe": 0.0029180866666666666,
+  "D14-live-counter": 0.0029135600000000004,
+  "D15-staff-search": 0.006027906666666667,
+  "D16-load-more": 0.0073770533333333355,
+  "D17-slow-export": 0.0046397600000000015,
+  "D18-login-balance": 0.007657671428571429,
+  "D19-login-latest-order": 0.009160793333333334,
+  "D20-login-change-address": 0.048664628571428566,
+  "D21-two-workspaces": 0.019228933333333333,
+  "D22-workspace-guest-view": 0.010416160000000002,
+  "D23-captcha-register": 0.009319586666666666,
+  "D24-confirm-delete": 0.047616225,
+  "D25-alert-coupon": 0.005214966666666666,
+  "D26-popup-window": 0.006060286666666667,
+  "D27-cookie-overlay": 0.008066753333333333,
+  "D28-hover-menu": 0.005562300000000001,
+  "D29-tabs": 0.004389013333333333,
+  "D30-shadow-dom": 0.003074513333333334,
+  "D31-hidden-api-field": 0.0019239933333333333,
+  "D32-console-error": 0.0012065666666666668,
+  "D33-broken-links": 0.007620693333333334,
+  "D34-docs-rate-limit": 0.0031232333333333336,
+  "D35-docs-count": 0.0024616066666666666,
+  "D36-robots": 0.0013565066666666667,
+  "D37-readonly-drafts": 0.0019614933333333335
+ },
+ "table": [
+  {
+   "task": "D01-contact-form",
+   "pass": "15/15",
+   "calls": 14.9,
+   "searches": 2.1,
+   "tokens": 118777,
+   "usd": 0.01269,
+   "sec": 33.3,
+   "fail": ""
+  },
+  {
+   "task": "D02-cascade-address",
+   "pass": "15/15",
+   "calls": 15.3,
+   "searches": 2.4,
+   "tokens": 151109,
+   "usd": 0.01588,
+   "sec": 36.3,
+   "fail": ""
+  },
+  {
+   "task": "D03-subscribe-checkboxes",
+   "pass": "14/15",
+   "calls": 12,
+   "searches": 2.3,
+   "tokens": 112159,
+   "usd": 0.0119,
+   "sec": 29.9,
+   "fail": "form subscribe was not submitted with the requested values"
+  },
+  {
+   "task": "D04-settings-select",
+   "pass": "15/15",
+   "calls": 9.7,
+   "searches": 1.9,
+   "tokens": 72395,
+   "usd": 0.00769,
+   "sec": 26.6,
+   "fail": ""
+  },
+  {
+   "task": "D05-iframe-form",
+   "pass": "15/15",
+   "calls": 11.5,
+   "searches": 2.3,
+   "tokens": 118725,
+   "usd": 0.01265,
+   "sec": 31.7,
+   "fail": ""
+  },
+  {
+   "task": "D06-products-over-3000",
+   "pass": "15/15",
+   "calls": 9.1,
+   "searches": 1.1,
+   "tokens": 65439,
+   "usd": 0.00703,
+   "sec": 18.5,
+   "fail": ""
+  },
+  {
+   "task": "D07-products-out-of-stock",
+   "pass": "15/15",
+   "calls": 9.5,
+   "searches": 1.3,
+   "tokens": 67874,
+   "usd": 0.00722,
+   "sec": 20.4,
+   "fail": ""
+  },
+  {
+   "task": "D08-most-expensive",
+   "pass": "15/15",
+   "calls": 7.9,
+   "searches": 1.6,
+   "tokens": 53181,
+   "usd": 0.00568,
+   "sec": 19,
+   "fail": ""
+  },
+  {
+   "task": "D09-sales-total",
+   "pass": "15/15",
+   "calls": 8.5,
+   "searches": 1.1,
+   "tokens": 52311,
+   "usd": 0.00572,
+   "sec": 17.7,
+   "fail": ""
+  },
+  {
+   "task": "D10-presale-batch",
+   "pass": "15/15",
+   "calls": 1.6,
+   "searches": 1,
+   "tokens": 15142,
+   "usd": 0.00177,
+   "sec": 12,
+   "fail": ""
+  },
+  {
+   "task": "D11-article",
+   "pass": "15/15",
+   "calls": 1,
+   "searches": 1,
+   "tokens": 9201,
+   "usd": 0.00101,
+   "sec": 7.7,
+   "fail": ""
+  },
+  {
+   "task": "D12-iframe-link",
+   "pass": "15/15",
+   "calls": 5.7,
+   "searches": 1.2,
+   "tokens": 30211,
+   "usd": 0.00333,
+   "sec": 13.6,
+   "fail": ""
+  },
+  {
+   "task": "D13-cross-site-iframe",
+   "pass": "15/15",
+   "calls": 5.3,
+   "searches": 1,
+   "tokens": 26326,
+   "usd": 0.00292,
+   "sec": 12.8,
+   "fail": ""
+  },
+  {
+   "task": "D14-live-counter",
+   "pass": "15/15",
+   "calls": 4.5,
+   "searches": 1.1,
+   "tokens": 26956,
+   "usd": 0.00291,
+   "sec": 12.3,
+   "fail": ""
+  },
+  {
+   "task": "D15-staff-search",
+   "pass": "15/15",
+   "calls": 7.9,
+   "searches": 2.3,
+   "tokens": 56868,
+   "usd": 0.00603,
+   "sec": 19.8,
+   "fail": ""
+  },
+  {
+   "task": "D16-load-more",
+   "pass": "15/15",
+   "calls": 9,
+   "searches": 2.2,
+   "tokens": 69657,
+   "usd": 0.00738,
+   "sec": 19.8,
+   "fail": ""
+  },
+  {
+   "task": "D17-slow-export",
+   "pass": "15/15",
+   "calls": 7.1,
+   "searches": 1.1,
+   "tokens": 43534,
+   "usd": 0.00464,
+   "sec": 26.5,
+   "fail": ""
+  },
+  {
+   "task": "D18-login-balance",
+   "pass": "14/15",
+   "calls": 9.1,
+   "searches": 1.3,
+   "tokens": 67774,
+   "usd": 0.00715,
+   "sec": 19.4,
+   "fail": "answer lacks \"1280.50\""
+  },
+  {
+   "task": "D19-login-latest-order",
+   "pass": "15/15",
+   "calls": 12.5,
+   "searches": 1.4,
+   "tokens": 85759,
+   "usd": 0.00916,
+   "sec": 24.4,
+   "fail": ""
+  },
+  {
+   "task": "D20-login-change-address",
+   "pass": "7/15",
+   "calls": 22.3,
+   "searches": 2.3,
+   "tokens": 216327,
+   "usd": 0.02271,
+   "sec": 46.1,
+   "fail": "form address-change was not submitted with the requested values | no final answer (stop: tool_use, 24 turns)"
+  },
+  {
+   "task": "D21-two-workspaces",
+   "pass": "15/15",
+   "calls": 23.3,
+   "searches": 1.1,
+   "tokens": 183797,
+   "usd": 0.01923,
+   "sec": 39.6,
+   "fail": ""
+  },
+  {
+   "task": "D22-workspace-guest-view",
+   "pass": "15/15",
+   "calls": 13.9,
+   "searches": 1.1,
+   "tokens": 98404,
+   "usd": 0.01042,
+   "sec": 25.6,
+   "fail": ""
+  },
+  {
+   "task": "D23-captcha-register",
+   "pass": "15/15",
+   "calls": 8.6,
+   "searches": 2,
+   "tokens": 85381,
+   "usd": 0.00932,
+   "sec": 88.3,
+   "fail": ""
+  },
+  {
+   "task": "D24-confirm-delete",
+   "pass": "4/15",
+   "calls": 12.9,
+   "searches": 2.3,
+   "tokens": 111976,
+   "usd": 0.0127,
+   "sec": 41.8,
+   "fail": "answer lacks any of [\"2张\",\"两张\",\"剩2\",\"剩下2\",\"还有2\"] | the requested item was not deleted"
+  },
+  {
+   "task": "D25-alert-coupon",
+   "pass": "15/15",
+   "calls": 6.9,
+   "searches": 1.3,
+   "tokens": 48806,
+   "usd": 0.00521,
+   "sec": 18.8,
+   "fail": ""
+  },
+  {
+   "task": "D26-popup-window",
+   "pass": "15/15",
+   "calls": 8,
+   "searches": 2.1,
+   "tokens": 57876,
+   "usd": 0.00606,
+   "sec": 18.7,
+   "fail": ""
+  },
+  {
+   "task": "D27-cookie-overlay",
+   "pass": "15/15",
+   "calls": 10.3,
+   "searches": 2.1,
+   "tokens": 76099,
+   "usd": 0.00807,
+   "sec": 27.5,
+   "fail": ""
+  },
+  {
+   "task": "D28-hover-menu",
+   "pass": "15/15",
+   "calls": 7.1,
+   "searches": 1.8,
+   "tokens": 52091,
+   "usd": 0.00556,
+   "sec": 19.6,
+   "fail": ""
+  },
+  {
+   "task": "D29-tabs",
+   "pass": "15/15",
+   "calls": 5.4,
+   "searches": 2.3,
+   "tokens": 41146,
+   "usd": 0.00439,
+   "sec": 18.9,
+   "fail": ""
+  },
+  {
+   "task": "D30-shadow-dom",
+   "pass": "15/15",
+   "calls": 4.3,
+   "searches": 1.1,
+   "tokens": 28557,
+   "usd": 0.00307,
+   "sec": 12.4,
+   "fail": ""
+  },
+  {
+   "task": "D31-hidden-api-field",
+   "pass": "15/15",
+   "calls": 3.8,
+   "searches": 1.5,
+   "tokens": 17381,
+   "usd": 0.00192,
+   "sec": 10.8,
+   "fail": ""
+  },
+  {
+   "task": "D32-console-error",
+   "pass": "15/15",
+   "calls": 2.5,
+   "searches": 1,
+   "tokens": 10450,
+   "usd": 0.00121,
+   "sec": 8.7,
+   "fail": ""
+  },
+  {
+   "task": "D33-broken-links",
+   "pass": "15/15",
+   "calls": 9.8,
+   "searches": 2.4,
+   "tokens": 66351,
+   "usd": 0.00762,
+   "sec": 28.9,
+   "fail": ""
+  },
+  {
+   "task": "D34-docs-rate-limit",
+   "pass": "15/15",
+   "calls": 6.2,
+   "searches": 1.1,
+   "tokens": 27891,
+   "usd": 0.00312,
+   "sec": 15.2,
+   "fail": ""
+  },
+  {
+   "task": "D35-docs-count",
+   "pass": "15/15",
+   "calls": 3.5,
+   "searches": 1.1,
+   "tokens": 20695,
+   "usd": 0.00246,
+   "sec": 12.2,
+   "fail": ""
+  },
+  {
+   "task": "D36-robots",
+   "pass": "15/15",
+   "calls": 2.1,
+   "searches": 1,
+   "tokens": 12282,
+   "usd": 0.00136,
+   "sec": 9.8,
+   "fail": ""
+  },
+  {
+   "task": "D37-readonly-drafts",
+   "pass": "15/15",
+   "calls": 2.6,
+   "searches": 1,
+   "tokens": 17690,
+   "usd": 0.00196,
+   "sec": 9.9,
+   "fail": ""
+  }
+ ],
+ "perTask": {
+  "D01-contact-form": {
+   "pass": 15,
+   "n": 15
+  },
+  "D02-cascade-address": {
+   "pass": 15,
+   "n": 15
+  },
+  "D03-subscribe-checkboxes": {
+   "pass": 14,
+   "n": 15
+  },
+  "D04-settings-select": {
+   "pass": 15,
+   "n": 15
+  },
+  "D05-iframe-form": {
+   "pass": 15,
+   "n": 15
+  },
+  "D06-products-over-3000": {
+   "pass": 15,
+   "n": 15
+  },
+  "D07-products-out-of-stock": {
+   "pass": 15,
+   "n": 15
+  },
+  "D08-most-expensive": {
+   "pass": 15,
+   "n": 15
+  },
+  "D09-sales-total": {
+   "pass": 15,
+   "n": 15
+  },
+  "D10-presale-batch": {
+   "pass": 15,
+   "n": 15
+  },
+  "D11-article": {
+   "pass": 15,
+   "n": 15
+  },
+  "D12-iframe-link": {
+   "pass": 15,
+   "n": 15
+  },
+  "D13-cross-site-iframe": {
+   "pass": 15,
+   "n": 15
+  },
+  "D14-live-counter": {
+   "pass": 15,
+   "n": 15
+  },
+  "D15-staff-search": {
+   "pass": 15,
+   "n": 15
+  },
+  "D16-load-more": {
+   "pass": 15,
+   "n": 15
+  },
+  "D17-slow-export": {
+   "pass": 15,
+   "n": 15
+  },
+  "D18-login-balance": {
+   "pass": 14,
+   "n": 15
+  },
+  "D19-login-latest-order": {
+   "pass": 15,
+   "n": 15
+  },
+  "D21-two-workspaces": {
+   "pass": 15,
+   "n": 15
+  },
+  "D22-workspace-guest-view": {
+   "pass": 15,
+   "n": 15
+  },
+  "D23-captcha-register": {
+   "pass": 15,
+   "n": 15
+  },
+  "D24-confirm-delete": {
+   "pass": 4,
+   "n": 15
+  },
+  "D25-alert-coupon": {
+   "pass": 15,
+   "n": 15
+  },
+  "D26-popup-window": {
+   "pass": 15,
+   "n": 15
+  },
+  "D27-cookie-overlay": {
+   "pass": 15,
+   "n": 15
+  },
+  "D28-hover-menu": {
+   "pass": 15,
+   "n": 15
+  },
+  "D29-tabs": {
+   "pass": 15,
+   "n": 15
+  },
+  "D30-shadow-dom": {
+   "pass": 15,
+   "n": 15
+  },
+  "D31-hidden-api-field": {
+   "pass": 15,
+   "n": 15
+  },
+  "D32-console-error": {
+   "pass": 15,
+   "n": 15
+  },
+  "D33-broken-links": {
+   "pass": 15,
+   "n": 15
+  },
+  "D34-docs-rate-limit": {
+   "pass": 15,
+   "n": 15
+  },
+  "D35-docs-count": {
+   "pass": 15,
+   "n": 15
+  },
+  "D36-robots": {
+   "pass": 15,
+   "n": 15
+  },
+  "D37-readonly-drafts": {
+   "pass": 15,
+   "n": 15
+  }
+ },
+ "holdout": {
+  "s1": 93.7,
+  "attempts": 270,
+  "safety": 0,
+  "s1PerRun": [
+   91.1,
+   95.6,
+   94.4
+  ],
+  "runErrors": 0
+ },
+ "runs": [
+  {
+   "run": 1,
+   "dev": 91.66,
+   "devS1": 95.1
+  },
+  {
+   "run": 2,
+   "dev": 94.43,
+   "devS1": 96.8
+  },
+  {
+   "run": 3,
+   "dev": 92.83,
+   "devS1": 96.8
+  }
+ ],
+ "calibration": {
+  "draws": 400,
+  "repsPerSide": 5,
+  "gain": {
+   "sd": 1.25,
+   "p95Abs": 2.36,
+   "maxAbs": 3.57
+  },
+  "holdoutDrop": {
+   "sd": 2.18,
+   "p95Abs": 4.44,
+   "maxAbs": 5.56,
+   "max": 5.56
+  },
+  "passAt": {
+   "1": 0.205,
+   "2": 0.065,
+   "3": 0.005,
+   "4": 0,
+   "1.5": 0.128,
+   "2.5": 0.025,
+   "3.5": 0
+  },
+  "repSpread": 6.3,
+  "repComposites": [
+   92.45,
+   95.32,
+   94.55,
+   94.09,
+   90.31,
+   95.81,
+   92.85,
+   96.29,
+   93.74,
+   96.61,
+   95.48,
+   94.74,
+   94.37,
+   93.72,
+   91.64
+  ],
+  "measuredAt": "2026-10-14",
+  "model": "claude-haiku-5-5",
+  "note": "A/A on one tree (master 56232b1 + exam), 3 runs x 5 reps, sandboxed like the gate; dev gain re-derived after the D22 rescore, holdout drop from the original run"
+ }
+}
