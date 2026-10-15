@@ -31,14 +31,66 @@ import { EGO_HELPER_SRC } from './injected.js';
 import { MAIN_WORLD_SRC, DRAIN_SRC, buildHtmlInjector } from './inject.js';
 import { currentSessionId } from './context.js';
 import { killProcessTreeSync } from './portkill.js';
+import { deskConfig } from './desk/config.js';
+import { READ_UA_DEFAULTS_SRC, bundledChromiumVersion, headfulMetadata, majorOf, platformUserAgent, uaVersionToken, type UaDefaults, type UaMetadata } from './user-agent.js';
+import { RecycledSessions, idleLimitMinutes, maxOpenSpaces, needsSentinel } from './space-policy.js';
 
 const IS_LINUX = process.platform === 'linux';
 const IS_MAC = process.platform === 'darwin';
 const IS_WIN = process.platform === 'win32';
 
-// Chrome 版本号 token，统一用于各平台 UA 字符串
-// patchright 1.60 捆绑 Chrome for Testing 148，UA 需与真实内核版本一致，否则指纹自相矛盾
-const CHROME_VERSION = process.env['UA_CHROME_VERSION'] ?? '148.0.0.0';
+// UA 不再写死版本(原来写死 148,内核早已是 153,指纹自相矛盾):版本从真实浏览器读,见 user-agent.ts。
+// UA_CHROME_VERSION 只作显式覆盖。
+const UA_VERSION_OVERRIDE = (process.env['UA_CHROME_VERSION'] ?? '').trim() || undefined;
+
+/** 启动后读 pid / 默认 Client Hints 的 CDP 调用最多等多久;超时就跳过,不拖住启动 */
+const LAUNCH_PROBE_TIMEOUT_MS = 3_000;
+
+/** snapshotState 读单个标签页标题最多等多久(页面卡在弹窗里时 title() 会一直等) */
+const TITLE_TIMEOUT_MS = 1_000;
+
+/** promise 超时就给 fallback(原 promise 的拒绝被吞掉,不产生未处理拒绝) */
+function within<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const t = new Promise<T>((resolve) => { timer = setTimeout(() => resolve(fallback), ms); timer.unref?.(); });
+  return Promise.race([p.catch(() => fallback), t]).finally(() => { if (timer) clearTimeout(timer); });
+}
+
+/** 无头工作区要下发到每个页面的 UA 覆盖(有头不覆盖) */
+interface UaOverride {
+  userAgent: string;
+  userAgentMetadata: UaMetadata;
+}
+
+/** snapshotState 里一个标签页 */
+export interface TabSnapshot {
+  index: number;
+  url: string;
+  title: string;
+  active: boolean;
+}
+
+/** snapshotState 里一个会话 */
+export interface SessionSnapshot {
+  id: string;
+  tabs: TabSnapshot[];
+}
+
+/** snapshotState 里一个工作区 */
+export interface SpaceSnapshot {
+  name: string;
+  headed: boolean;
+  alive: boolean;
+  chromiumPid: number | null;
+  inflight: number;
+  lastUsed: number;
+  sessions: SessionSnapshot[];
+}
+
+/** 只读状态快照(/admin/state 用);取它**绝不**拉起浏览器、不改 lastUsed */
+export interface BrowserStateSnapshot {
+  spaces: SpaceSnapshot[];
+}
 
 const DEFAULT_SPACE = 'default';
 
@@ -113,6 +165,12 @@ interface Space {
   headed: boolean;
   /** 服务配置给的默认形态(HEADLESS);空闲回收、人手动关窗之后回到它 */
   baseHeaded: boolean;
+  /** 无头时每个页面要补的 UA / Client Hints 覆盖;有头或还没启动为 null */
+  uaOverride: UaOverride | null;
+  /** 哪些页面已经(或正在)下发过 UA 覆盖 —— openPage 要等它下发完才把页面交出去 */
+  uaApplied: WeakMap<Page, Promise<void>>;
+  /** openPage 的排队链(见 openPage) */
+  pageChain: Promise<void>;
 }
 
 /** ensureHeaded / ensureHeadless 的结果 */
@@ -157,6 +215,8 @@ class BrowserManager {
    * inflight 里本来就算着调用方自己,靠它把自己那 1 次减掉。
    */
   private callSpace = new AsyncLocalStorage<Space>();
+  /** 标签页被系统清掉过(空闲回收 / 崩溃 / 管理员重启)的会话;下一次工具结果带 recycled: true */
+  private recycled = new RecycledSessions();
 
   private constructor(config: BrowserConfig) {
     this.config = config;
@@ -183,6 +243,9 @@ class BrowserManager {
       inflight: 0,
       headed: !this.config.headless,
       baseHeaded: !this.config.headless,
+      uaOverride: null,
+      uaApplied: new WeakMap<Page, Promise<void>>(),
+      pageChain: Promise.resolve(),
     };
   }
 
@@ -214,12 +277,12 @@ class BrowserManager {
     const isDefault = sp.name === DEFAULT_SPACE;
     const onDemand = sp.headed && !sp.baseHeaded;
     const env = process.env[onDemand ? 'HEADED_IDLE_CLOSE_MIN' : isDefault ? 'IDLE_CLOSE_MIN' : 'SPACE_IDLE_CLOSE_MIN'];
-    const min = env !== undefined && env !== '' ? Number(env) : onDemand ? 10 : isDefault ? (sp.headed ? 120 : 30) : 10;
-    return Number.isFinite(min) && min > 0 ? min * 60_000 : Infinity;
+    const min = idleLimitMinutes(env, onDemand ? 10 : isDefault ? (sp.headed ? 120 : 30) : 10);
+    return min === Infinity ? Infinity : min * 60_000;
   }
 
-  /** 同时最多开着几个工作区浏览器(含默认),超出先关最久没用的空闲那个 */
-  private static readonly MAX_OPEN_SPACES = Math.max(1, Number(process.env['MAX_OPEN_SPACES'] ?? 4) || 4);
+  /** 同时最多开着几个工作区浏览器(含默认),超出先关最久没用的空闲那个;MAX_OPEN_SPACES=0 = 不限 */
+  private static readonly MAX_OPEN_SPACES = maxOpenSpaces(process.env['MAX_OPEN_SPACES']);
 
   /**
    * 关掉一个工作区的浏览器(不删工作区,会话留着,下次调用自动重开)。
@@ -233,11 +296,19 @@ class BrowserManager {
     console.log(`[BrowserManager] space '${sp.name}' ${reason},关闭浏览器(登录态在 profile 里,下次用到自动重开)`);
     sp.context = null;
     sp.chromiumPid = null;
-    for (const st of sp.sessions.values()) {
+    sp.uaOverride = null;
+    // 换形态(keepMode)会把标签页原样重开,不算「被清掉」;其它情况(空闲回收 / 腾位置 / 管理员重启)要让会话知道
+    this.wipeSessionPages(sp, !keepMode);
+    try { await ctx.close(); } catch { /* 可能已经没了 */ }
+  }
+
+  /** 浏览器没了:清掉各会话失效的页面引用;markRecycled 时给原来有页面的会话打「被清掉过」标记 */
+  private wipeSessionPages(sp: Space, markRecycled: boolean): void {
+    for (const [id, st] of sp.sessions) {
+      if (markRecycled && st.pages.length) this.recycled.mark(id);
       st.pages = [];
       st.activeIndex = 0;
     }
-    try { await ctx.close(); } catch { /* 可能已经没了 */ }
   }
 
   /** 关掉所有空闲超时的工作区浏览器,返回关了哪些(定时器每分钟调一次) */
@@ -492,10 +563,15 @@ class BrowserManager {
       `--window-size=${this.config.viewportWidth},${this.config.viewportHeight}`
     ];
 
-    if (this.config.devtools) {
-      launchArgs.push('--auto-open-devtools-for-tabs');
-      launchArgs.push('--remote-debugging-port=9222');
-    }
+    if (this.config.devtools) launchArgs.push('--auto-open-devtools-for-tabs');
+    // 调试端口:DEVTOOLS_PORT 显式给了就开(托管工位按工位分配,不撞);否则沿用 DEVTOOLS=true 时的 9222。
+    // 只给默认工作区开:同一个进程里多个工作区浏览器抢同一个端口,后起的绑不上。
+    const devtoolsPort = deskConfig.devtoolsPort ?? (this.config.devtools ? 9222 : null);
+    if (devtoolsPort !== null && sp.name === DEFAULT_SPACE) launchArgs.push(`--remote-debugging-port=${devtoolsPort}`);
+
+    // 无头才改 UA(去掉 HeadlessChrome);有头的真 Chromium UA 和 Client Hints 本来就自洽,不碰。见 user-agent.ts
+    const uaToken = headless ? uaVersionToken(UA_VERSION_OVERRIDE, bundledChromiumVersion()) : null;
+    const launchUa = uaToken ? platformUserAgent(process.platform, uaToken) : null;
 
     const context = await chromium.launchPersistentContext(
       path.resolve(sp.userDataDir),
@@ -514,12 +590,8 @@ class BrowserManager {
         ignoreHTTPSErrors: true,            // 忽略 HTTPS 错误，避免卡住
         javaScriptEnabled: true,
         acceptDownloads: true,
-        // 平台对应 UA（macOS / Linux / Windows 各自匹配）
-        userAgent: IS_WIN
-          ? `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_VERSION} Safari/537.36`
-          : IS_LINUX
-            ? `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_VERSION} Safari/537.36`
-            : `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_VERSION} Safari/537.36`,
+        // 平台对应 UA(macOS / Linux / Windows 各自匹配),只在无头时给
+        ...(launchUa ? { userAgent: launchUa } : {}),
         extraHTTPHeaders: {
           'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
           'Accept-Encoding': 'gzip, deflate, br'
@@ -557,17 +629,8 @@ class BrowserManager {
     // 就会落到这里,两者互不冲突。若改成页面级,两个 '**/*' handler 的优先级会打架。
     await context.route('**/*', buildHtmlInjector([MAIN_WORLD_SRC, EGO_HELPER_SRC]));
 
-    // 抓 chromium 子进程 pid — Playwright 内部 API 但多年稳定；失败不影响主流程
-    try {
-      const browser = context.browser();
-      const child = (browser as unknown as { _process?: { pid?: number } })?._process;
-      sp.chromiumPid = child?.pid ?? null;
-    } catch {
-      sp.chromiumPid = null;
-    }
-
     // 浏览器被外部关掉(用户点 X / 崩溃)时把 space 打回未启动态,
-    // 下次请求自动重建;各会话的日志缓冲保留,只清失效的页面引用。
+    // 下次请求自动重建;各会话的日志缓冲保留,只清失效的页面引用(并标记「被清掉过」)。
     // 人把临时弹出的窗口关了 = 处理完了,下次按服务默认形态(通常是无头)重开,不再弹窗。
     context.on('close', () => {
       if (sp.context !== context) return;
@@ -575,14 +638,90 @@ class BrowserManager {
       sp.context = null;
       sp.headed = sp.baseHeaded;
       sp.chromiumPid = null;
-      for (const st of sp.sessions.values()) {
-        st.pages = [];
-        st.activeIndex = 0;
-      }
+      sp.uaOverride = null;
+      this.wipeSessionPages(sp, true);
     });
 
+    // afterLaunch 期间浏览器就没了(启动即崩):上面的 close 处理看 sp.context 还不是它会忽略,这里自己兜住
+    let closedEarly = false;
+    context.once('close', () => { closedEarly = true; });
+    await this.afterLaunch(sp, context, headless, launchUa);
+    if (closedEarly) throw new Error(`space '${sp.name}' 浏览器启动后立刻退出了`);
     sp.context = context;
     return context;
+  }
+
+  /**
+   * 启动后的两件事(都尽力而为,失败 / 超时不影响启动):
+   *   1. 记下浏览器主进程 pid(退出钩子 killChromiumSync 按它收整棵进程树)。
+   *      原实现读 `browser._process.pid` —— 那是服务端对象上的字段,客户端拿到的 Browser 上**根本没有**,
+   *      实测恒为 undefined,所以 pid 一直是 null,退出钩子从来没杀到过浏览器。改用 CDP SystemInfo.getProcessInfo,
+   *      三平台一致。
+   *   2. 无头:读真实的默认 Client Hints,算出要给每个页面补的 UA 覆盖,并给已有 / 以后的页面下发。
+   */
+  private async afterLaunch(sp: Space, context: BrowserContext, headless: boolean, launchUa: string | null): Promise<void> {
+    sp.chromiumPid = await within(this.readChromiumPid(context), LAUNCH_PROBE_TIMEOUT_MS, null);
+    sp.uaOverride = null;
+    if (!headless) return;
+    const real = context.browser()?.version() ?? null;
+    const token = uaVersionToken(UA_VERSION_OVERRIDE, real);
+    if (!real || !token) return;
+    if (launchUa && !UA_VERSION_OVERRIDE && majorOf(bundledChromiumVersion()) !== majorOf(real)) {
+      console.warn(`[BrowserManager] patchright 记录的内核版本和实际启动的(${real})对不上,页面 UA 以实际为准`);
+    }
+    const defaults = await within(this.readUaDefaults(context), LAUNCH_PROBE_TIMEOUT_MS, null);
+    sp.uaOverride = {
+      userAgent: platformUserAgent(process.platform, token),
+      userAgentMetadata: headfulMetadata(defaults, real, UA_VERSION_OVERRIDE),
+    };
+    // window.open 弹出的页、人手动开的页也要补;openPage 自己会等下发完成
+    context.on('page', (page) => { void this.applyUa(sp, page); });
+    await Promise.all(context.pages().map((p) => this.applyUa(sp, p)));
+  }
+
+  private async readChromiumPid(context: BrowserContext): Promise<number | null> {
+    const browser = context.browser();
+    if (!browser) return null;
+    const s = await browser.newBrowserCDPSession();
+    try {
+      const info = await s.send('SystemInfo.getProcessInfo');
+      const pid = info.processInfo.find((p) => p.type === 'browser')?.id;
+      return typeof pid === 'number' && pid > 0 ? pid : null;
+    } finally {
+      await s.detach().catch(() => { /* 浏览器可能已经没了 */ });
+    }
+  }
+
+  /** 在启动自带的空白页上读默认 Client Hints(只读,不导航);没有空白页 / 读不到返回 null */
+  private async readUaDefaults(context: BrowserContext): Promise<UaDefaults | null> {
+    const page = context.pages()[0];
+    if (!page) return null;
+    const s = await context.newCDPSession(page);
+    try {
+      const r = await s.send('Runtime.evaluate', { expression: READ_UA_DEFAULTS_SRC, awaitPromise: true, returnByValue: true });
+      const v: unknown = r.result.value;
+      return v && typeof v === 'object' ? (v as UaDefaults) : null;
+    } finally {
+      await s.detach().catch(() => { /* noop */ });
+    }
+  }
+
+  /**
+   * 给一个页面下发 UA 覆盖(幂等,每页只做一次)。
+   * CDP 会话不 detach:覆盖跟着会话走,detach 就失效;页面关闭时会话自动结束。
+   */
+  private applyUa(sp: Space, page: Page): Promise<void> {
+    const ov = sp.uaOverride;
+    if (!ov || page.isClosed()) return Promise.resolve();
+    const done = sp.uaApplied.get(page);
+    if (done) return done;
+    const run = (async () => {
+      const s = await page.context().newCDPSession(page);
+      await s.send('Emulation.setUserAgentOverride', { userAgent: ov.userAgent, userAgentMetadata: ov.userAgentMetadata });
+    })();
+    const p = within(run, LAUNCH_PROBE_TIMEOUT_MS, undefined);
+    sp.uaApplied.set(page, p);
+    return p;
   }
 
   // ============================================================
@@ -726,18 +865,28 @@ class BrowserManager {
    */
   private async openPage(sp: Space, sessionId: string, st: SessionState, adoptOrphan: boolean): Promise<Page> {
     const context = await this.launchSpace(sp);
-    let page: Page | undefined;
-    if (adoptOrphan) {
-      const owned = new Set<Page>();
-      for (const s of sp.sessions.values()) {
-        for (const p of s.pages) owned.add(p);
+    // 「找无主页 / 新开 → 记到本会话」在同一个工作区里排队做:
+    // 不排队时 A 会话 newPage() 还没返回、页还没记到 A 名下,B 会话的「接管无主页」就会把它认领走,两个会话共用一张页
+    const pick = async (): Promise<Page> => {
+      let page: Page | undefined;
+      if (adoptOrphan) {
+        const owned = new Set<Page>();
+        for (const s of sp.sessions.values()) {
+          for (const p of s.pages) owned.add(p);
+        }
+        page = context.pages().find((p) => !p.isClosed() && !owned.has(p));
       }
-      page = context.pages().find((p) => !p.isClosed() && !owned.has(p));
-    }
-    if (!page) page = await context.newPage();
-    st.pages.push(page);
-    st.activeIndex = st.pages.length - 1;
+      if (!page) page = await context.newPage();
+      st.pages.push(page);
+      st.activeIndex = st.pages.length - 1;
+      return page;
+    };
+    const run = sp.pageChain.then(pick);
+    sp.pageChain = run.then(() => undefined, () => undefined);
+    const page = await run;
     this.setupPageListeners(sp, sessionId, page);
+    // 无头时先把 UA / Client Hints 覆盖下发完再交出去,否则第一次导航带的还是 HeadlessChrome
+    await this.applyUa(sp, page);
     // 本会话若开着屏蔽规则,新标签页要补挂 —— 原来挂 context 时新页自动生效,语义要保持一致
     if (st.blockRoute) {
       await page.route('**/*', st.blockRoute).catch(() => { /* 页面可能刚被关掉 */ });
@@ -833,10 +982,16 @@ class BrowserManager {
     page.on('close', drop);
     page.on('crash', () => {
       console.error(`[BrowserManager] space '${sp.name}' 会话 ${sessionId} 页面崩溃，将在下次请求时重建`);
+      const st = sp.sessions.get(sessionId);
+      // 崩的是会话正在用的页:下次调用拿到的是新开的空白页,要让调用方知道
+      if (st && st.pages[st.activeIndex] === page) this.recycled.mark(sessionId);
       drop();
       // 崩溃的页并不会自己关:不关的话它还挂在 context 里,下次 openPage 的「接管无主页」会把这具尸体捡回来,
       // 之后每个操作都失败。关掉它,下次请求就开一张干净的新页。
-      void page.close().catch(() => { /* 可能已随浏览器一起没了 */ });
+      // 有头时它若是最后一张页,先补哨兵页,否则关它 = 整个浏览器退出
+      void this.keepAlive(sp, [page])
+        .then(() => page.close())
+        .catch(() => { /* 可能已随浏览器一起没了 */ });
     });
 
     // window.open 弹出的新页归属**开它的那个会话**,否则会变成孤儿页被别的会话认领
@@ -902,10 +1057,6 @@ class BrowserManager {
   public clearNetworkRequests(): void {
     const st = this.peekSession();
     if (st) st.networkRequests = [];
-  }
-
-  public isAlive(): boolean {
-    return this.isSpaceAlive(this.spaceFor(currentSessionId()));
   }
 
   /** 当前会话所在工作区现在是不是有窗口 */
@@ -1047,10 +1198,14 @@ class BrowserManager {
    * 故意**不关 context** —— 最后一个会话退出后保留浏览器进程,下次连上秒开(热启动)。
    */
   public async closeSession(sessionId: string): Promise<void> {
+    this.recycled.forget(sessionId);
     for (const sp of this.spaces.values()) {
       const st = sp.sessions.get(sessionId);
       if (!st) continue;
       sp.sessions.delete(sessionId);
+      // 有头时这些若是浏览器里最后的页,先补一张无主空白页(哨兵),否则关完 Chrome 直接退出,
+      // 同工作区别的会话、人开着的窗口全没了。哨兵无主,下一个会话 getPage 时会被「接管无主页」认领,不会越积越多。
+      await this.keepAlive(sp, st.pages);
       for (const page of st.pages) {
         try {
           if (!page.isClosed()) await page.close();
@@ -1069,6 +1224,84 @@ class BrowserManager {
       if (oldest === undefined) break;
       this.retired.delete(oldest);
     }
+  }
+
+  /**
+   * 哨兵页:有头工作区要关掉 closing 这些页、而关完浏览器里一张活页都不剩时,先开一张无主的 about:blank。
+   * 无头不需要(无头 Chromium 没有窗口,关最后一页不会退出),不开,免得改变无头的行为。
+   */
+  private async keepAlive(sp: Space, closing: readonly Page[]): Promise<void> {
+    const ctx = sp.context;
+    if (!ctx || !sp.headed) return;
+    if (!needsSentinel(ctx.pages(), closing)) return;
+    try {
+      await ctx.newPage();
+    } catch (e) {
+      console.error(`[BrowserManager] space '${sp.name}' 开哨兵页失败:${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  // ============================================================
+  // 管理接口用(/livez、/admin/*):只读快照、重启、「被清掉过」标记。这些方法**绝不**拉起浏览器。
+  // ============================================================
+
+  /**
+   * 下一次工具结果要不要带 recycled: true(取一次就清)。
+   * 会话的标签页被空闲回收 / 浏览器崩溃 / 管理员重启清掉过时为 true。
+   */
+  public consumeRecycled(sessionId: string): boolean {
+    return this.recycled.consume(sessionId);
+  }
+
+  /**
+   * 关掉某个工作区的浏览器(不删工作区;下次调用自动按服务默认形态重开)。
+   * 浏览器卡死、close 10 秒没回来时按 pid 直接收整棵进程树。返回关之前它是不是开着的。
+   */
+  public async restartSpace(name: string): Promise<{ restarted: boolean }> {
+    const sp = this.spaces.get(name.trim());
+    if (!sp) throw new Error(`space '${name.trim()}' 不存在`);
+    while (sp.launching) await sp.launching.catch(() => { /* 启动失败也往下走 */ });
+    if (!sp.context) return { restarted: false };
+    const pid = sp.chromiumPid;
+    const closed = await within(this.shutSpaceBrowser(sp, '被管理员重启').then(() => true), 10_000, false);
+    if (!closed && pid) killProcessTreeSync(pid);
+    return { restarted: true };
+  }
+
+  /**
+   * 不拉起浏览器的存活判断。不给工作区名 = 当前会话所在的工作区;给了名字但没有这个工作区 = false。
+   * (/health 要「死了就拉起」的语义,仍用 getContext;/livez、/admin/state 用这个。)
+   */
+  public isAlive(space?: string): boolean {
+    if (space !== undefined) return this.spaces.get(space)?.context != null;
+    return this.isSpaceAlive(this.spaceFor(currentSessionId()));
+  }
+
+  /** 全量只读快照:各工作区形态、存活、pid、在途调用、最近使用时间、各会话标签页。不拉起、不改 lastUsed */
+  public async snapshotState(): Promise<BrowserStateSnapshot> {
+    const spaces = await Promise.all([...this.spaces.values()].map(async (sp): Promise<SpaceSnapshot> => {
+      const sessions = await Promise.all([...sp.sessions].map(async ([id, st]): Promise<SessionSnapshot> => {
+        const live = sp.context ? st.pages.filter((p) => !p.isClosed()) : [];
+        const active = st.pages[st.activeIndex];
+        const tabs = await Promise.all(live.map(async (p, index): Promise<TabSnapshot> => ({
+          index,
+          url: p.url(),
+          title: await within(p.title(), TITLE_TIMEOUT_MS, ''),
+          active: p === active,
+        })));
+        return { id, tabs };
+      }));
+      return {
+        name: sp.name,
+        headed: sp.headed,
+        alive: sp.context !== null,
+        chromiumPid: sp.chromiumPid,
+        inflight: sp.inflight,
+        lastUsed: sp.lastUsed,
+        sessions,
+      };
+    }));
+    return { spaces };
   }
 
   /** 当前存活的会话数(跨所有 space 去重) */
@@ -1172,11 +1405,16 @@ class BrowserManager {
     if (clean === DEFAULT_SPACE) throw new Error('default space 不可关闭');
     const sp = this.spaces.get(clean);
     if (!sp) throw new Error(`space '${clean}' 不存在`);
-    try { await sp.context?.close(); } catch { /* noop */ }
+    // 先摘掉再关:关的过程中进来的调用不会再找到它、把浏览器重新拉起来。
+    // 正在启动的要等它起完再关,否则启动完成后浏览器挂在一个已删除的工作区上,没人管、永不回收
+    this.spaces.delete(clean);
+    while (sp.launching) await sp.launching.catch(() => { /* 启动失败就没什么可关的 */ });
+    // 先置空再关:主动关不是「崩溃」,别让 close 事件把这些会话标成「被清掉过」
+    const ctx = sp.context;
     sp.context = null;
     sp.chromiumPid = null;
     sp.sessions.clear();
-    this.spaces.delete(clean);
+    try { await ctx?.close(); } catch { /* noop */ }
     for (const [sid, spaceName] of this.sessionSpace) {
       if (spaceName === clean) this.sessionSpace.delete(sid);
     }
@@ -1186,12 +1424,14 @@ class BrowserManager {
   /** 关闭全部 space 的浏览器上下文 */
   public async close(): Promise<void> {
     for (const sp of this.spaces.values()) {
-      if (sp.context) {
-        try { await sp.context.close(); } catch { /* noop */ }
-        sp.context = null;
-        sp.chromiumPid = null;
-      }
+      while (sp.launching) await sp.launching.catch(() => { /* noop */ });
+      const ctx = sp.context;
+      sp.context = null;
+      sp.chromiumPid = null;
       sp.sessions.clear();
+      if (ctx) {
+        try { await ctx.close(); } catch { /* noop */ }
+      }
     }
     this.sessionSpace.clear();
   }
