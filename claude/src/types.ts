@@ -28,6 +28,8 @@ export interface ToolSuccessResult<T> {
 export interface ToolErrorResult {
   success: false;
   error: string;
+  /** 稳定错误码(见 errors.ts);老代码不填,由 server.ts 统一包装按文字归类补上 */
+  code?: import('./errors.js').ErrorCode;
 }
 
 /** 工具执行结果联合类型 */
