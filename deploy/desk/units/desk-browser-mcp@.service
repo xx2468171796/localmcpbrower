@@ -5,8 +5,11 @@
 [Unit]
 Description=AI desk %i - browser MCP (managed, headed)
 PartOf=desk@%i.target
-After=desk-wm@%i.service
+After=desk-wm@%i.service network-online.target ai-desk-firewall.service
+Wants=network-online.target
 Requires=desk-xvfb@%i.service
+# 防火墙没加载(或被停)就不跑:端口绑在网卡上,没防火墙整个内网都能连
+Requires=ai-desk-firewall.service
 
 [Service]
 User=desk-%i
@@ -21,6 +24,12 @@ Environment=PIPE_DISABLE=1
 Environment=IDLE_CLOSE_MIN=0
 Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/ai-desk/ms-playwright
 EnvironmentFile=/etc/ai-desk/desks/%i.env
+# Selkies 的密码与本服务无关;MCP / 管理令牌和堡垒机密钥由 node 读走,不传给 Chromium(browser.ts 过滤子进程环境)
+UnsetEnvironment=SELKIES_BASIC_AUTH_PASSWORD SELKIES_BASIC_AUTH_VIEWONLY_PASSWORD
+# 出站不许进内网(页面里的提示注入 / 被攻破的渲染进程别拿工位当跳板扫内网);
+# 例外:Hermes 宿主机 ubuntu-244(要接进来的连接)和堡垒机(fill_secret 取密钥)。DNS 走本机 127.0.0.53。
+IPAddressDeny=10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 fc00::/7 fe80::/10
+IPAddressAllow=192.168.10.244 192.168.110.246
 ExecStart=/usr/local/bin/node dist/server.js
 Restart=always
 RestartSec=3
@@ -40,3 +49,9 @@ RestrictSUIDSGID=yes
 LockPersonality=yes
 CapabilityBoundingSet=
 UMask=0077
+RestrictNamespaces=yes
+RestrictRealtime=yes
+ProtectClock=yes
+ProtectKernelLogs=yes
+ProtectHostname=yes
+SystemCallArchitectures=native

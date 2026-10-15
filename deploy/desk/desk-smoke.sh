@@ -7,6 +7,8 @@ set -euo pipefail
 die() { echo "desk-smoke: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "需要 root"
 ID=${1:-}; URL=${2:-https://www.baidu.com}
+URL_RE='^https?://[A-Za-z0-9._~:/?#@!&()*+,;=%-]+$'   # 网址要拼进 JSON,不许引号 / 反斜杠
+[[ "$URL" =~ $URL_RE ]] || die "网址不合法"
 [[ "$ID" =~ ^[a-z][a-z0-9]{0,26}$ ]] || die "用法:desk-smoke.sh <id> [网址]"
 F=/etc/ai-desk/desks/$ID.env
 [ -f "$F" ] || die "没有工位 $ID"
@@ -31,7 +33,7 @@ curl -sS -H @"$T/h" -X POST "$E" -d "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"
 # 会话还开着时截屏(会话关掉、最后一页关了 Chrome 会退出,画面只剩壁纸)
 sleep 1
 SHOT=/home/desk-$ID/data/shots/desk-smoke.png
-runuser -u "desk-$ID" -- env DISPLAY="$DISP" XAUTHORITY="/home/desk-$ID/.Xauthority" import -window root "$SHOT" && identify "$SHOT"
+runuser -u "desk-$ID" -- env DISPLAY="$DISP" XAUTHORITY="/home/desk-$ID/.Xauthority" import -window root "$SHOT" && runuser -u "desk-$ID" -- identify "$SHOT"
 curl -sS -H @"$T/h" -o /dev/null -X DELETE "$E" || true
 
 printf 'user = "admin:%s"\n' "$(get SELKIES_BASIC_AUTH_PASSWORD)" > "$T/c"

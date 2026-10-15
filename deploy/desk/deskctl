@@ -8,7 +8,7 @@
 #   deskctl rotate <id> [mcp|admin|selkies|all]
 #   deskctl set-baolei <id> [--url 地址]      # 服务密钥从 stdin 读;stdin 为空 = 去掉
 #   deskctl show-secrets <id> [--format env|panel|gateway]
-#   deskctl delete <id> [--keep-data] --yes
+#   deskctl delete <id> [--keep-data] [--force] --yes   # --force:登记表里没有也清理残留
 #
 # 一个工位 = Linux 用户 desk-<id>(家目录 700)+ 单元 desk@<id>.target(xvfb / wm / wallpaper / selkies / browser-mcp)
 #          + /etc/ai-desk/desks/<id>.env(root 600)+ /etc/ai-desk/desks/registry 里一行。
@@ -125,21 +125,26 @@ ensure_user() {
     useradd --create-home --home-dir "$h" --shell /usr/sbin/nologin --user-group --comment "AI desk $id" "$u"
     passwd -l "$u" >/dev/null
   fi
+  # 家目录本身在 /home 下(root 所有),工位用户换不掉;家目录里面的东西一律以工位用户身份动 ——
+  # root 在用户可写的目录里 chown / 写文件会跟随用户放的符号链接(比如 data → /etc/ai-desk/desks),把 root 的文件交出去
+  [ -L "$h" ] && die "$h 是符号链接,拒绝"
   chown "$u:$u" "$h"; chmod 700 "$h"
-  install -d -m 700 -o "$u" -g "$u" "$h/data" "$h/data/profile" "$h/data/data" "$h/data/shots"
+  runuser -u "$u" -- install -d -m 700 "$h/data" "$h/data/profile" "$h/data/data" "$h/data/shots"
 }
 
-# X 小甜饼:只写一次(重启 Xvfb 不换),FamilyWild 免得主机名对不上;值经 stdin 给 xauth,不进命令行
+# X 小甜饼:只写一次(重启 Xvfb 不换),FamilyWild 免得主机名对不上;值经 stdin 给 xauth,不进命令行。
+# 全程以工位用户身份做(理由同 ensure_user)。
 ensure_xauth() {
   local id=$1 u h f disp
   u=$(user_of "$id"); h=$(home_of "$id"); f=$h/.Xauthority
   disp=":$((DISPLAY_BASE + $2))"
-  if [ ! -s "$f" ] || ! xauth -f "$f" list 2>/dev/null | grep -q "^#ffff#.*${disp}[[:space:]]"; then
-    rm -f "$f"; : > "$f"; chmod 600 "$f"
-    printf 'add %s . %s\n' "$disp" "$(mcookie)" | xauth -q -f "$f" source - 2>/dev/null
-    xauth -f "$f" nlist | sed -e 's/^..../ffff/' | xauth -q -f "$f" nmerge -
+  if ! runuser -u "$u" -- sh -c '[ -s "$1" ] && xauth -f "$1" list 2>/dev/null | grep -q "^#ffff#.*$2[[:space:]]"' _ "$f" "$disp"; then
+    printf 'add %s . %s\n' "$disp" "$(mcookie)" | runuser -u "$u" -- sh -c '
+      umask 077; rm -f "$1"; : > "$1"
+      xauth -q -f "$1" source - 2>/dev/null
+      xauth -f "$1" nlist | sed -e "s/^..../ffff/" | xauth -q -f "$1" nmerge -' _ "$f"
   fi
-  chown "$u:$u" "$f"; chmod 600 "$f"
+  runuser -u "$u" -- chmod 600 "$f"
 }
 
 wait_livez() {
@@ -334,12 +339,13 @@ cmd_show_secrets() {
 cmd_delete() {
   local id=${1:-}; shift || true
   valid_id "$id"
-  local keep=0 yes=0 u h t
+  local keep=0 yes=0 force=0 u h t
   while [ $# -gt 0 ]; do
-    case $1 in --keep-data) keep=1; shift ;; --yes) yes=1; shift ;; *) die "delete:看不懂参数 $1" ;; esac
+    case $1 in --keep-data) keep=1; shift ;; --yes) yes=1; shift ;; --force) force=1; shift ;; *) die "delete:看不懂参数 $1" ;; esac
   done
   [ "$yes" = 1 ] || die "删除工位会停服务、删用户$([ "$keep" = 1 ] || echo '和全部登录态 / 数据');确认就加 --yes"
   with_lock
+  [ -n "$(reg_line "$id")" ] || [ "$force" = 1 ] || die "登记表里没有工位 $id(确认要清理残留就加 --force)"
   u=$(user_of "$id"); h=$(home_of "$id")
   systemctl disable -q --now "desk@$id.target" 2>/dev/null || true
   for t in "${UNITS[@]}"; do systemctl stop "$t@$id.service" 2>/dev/null || true; done
@@ -347,6 +353,9 @@ cmd_delete() {
   if id "$u" >/dev/null 2>&1; then
     pkill -KILL -u "$u" 2>/dev/null || true
     sleep 1
+    # 共享内存 / IPC 残留别留给以后复用这个 UID 的工位
+    find /dev/shm -maxdepth 1 -user "$u" -delete 2>/dev/null || true
+    ipcs -m | awk -v u="$u" '$3==u{print $2}' | xargs -r -n1 ipcrm -m 2>/dev/null || true
     if [ "$keep" = 1 ] && [ -d "$h" ]; then
       t="$h.deleted-$(date +%Y%m%d%H%M%S)"
       mv "$h" "$t"; chown -R root:root "$t"; chmod 700 "$t"

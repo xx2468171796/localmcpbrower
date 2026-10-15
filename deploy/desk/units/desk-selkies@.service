@@ -5,13 +5,20 @@
 [Unit]
 Description=AI desk %i - Selkies streaming (https)
 PartOf=desk@%i.target
-After=desk-wm@%i.service
+After=desk-wm@%i.service network-online.target ai-desk-firewall.service
+Wants=network-online.target
 Requires=desk-xvfb@%i.service
+# 防火墙没加载(或被停)就不跑:监听 0.0.0.0,没防火墙整个内网都能连
+Requires=ai-desk-firewall.service
 
 [Service]
 User=desk-%i
 Group=desk-%i
 EnvironmentFile=/etc/ai-desk/desks/%i.env
+UnsetEnvironment=MCP_AUTH_TOKEN ADMIN_TOKEN BAOLEI_MCP_URL BAOLEI_MCP_TOKEN
+# 内网只许 Hermes 宿主机 ubuntu-244 连进来 / 回包
+IPAddressDeny=10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 fc00::/7 fe80::/10
+IPAddressAllow=192.168.10.244
 Environment=XDG_RUNTIME_DIR=/run/desk-%i
 RuntimeDirectory=desk-%i
 RuntimeDirectoryMode=0700
@@ -33,3 +40,9 @@ RestrictSUIDSGID=yes
 LockPersonality=yes
 CapabilityBoundingSet=
 UMask=0077
+RestrictNamespaces=yes
+RestrictRealtime=yes
+ProtectClock=yes
+ProtectKernelLogs=yes
+ProtectHostname=yes
+SystemCallArchitectures=native
