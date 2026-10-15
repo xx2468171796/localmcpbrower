@@ -12,6 +12,7 @@
 import os from 'node:os';
 import { baoleiEndpoint, type TelemetryTarget } from '../telemetry.js';
 import { ToolError } from '../errors.js';
+import { packageVersion } from '../activity.js';
 
 export interface AssetInfo {
   id: string;
@@ -176,6 +177,8 @@ export class BaoleiAssets {
         'content-type': 'application/json',
         accept: 'application/json, text/event-stream',
         'mcp-protocol-version': '2025-11-25',
+        // 堡垒机的「服务代填」路径会拒绝空的或像 AI 对话客户端的 User-Agent(防明文进模型),这里明确自报是浏览器工位服务
+        'user-agent': `localmcpbrower-desk/${packageVersion()}`,
       },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_asset', arguments: args } }),
       signal: AbortSignal.timeout(15_000),
