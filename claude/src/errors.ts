@@ -61,7 +61,7 @@ export function classifyError(message: string, err?: unknown): ErrorCode {
   const m = message;
   if (name === 'AbortError' || /aborted|已取消|cancell?ed by client/i.test(m)) return 'CANCELLED';
   if (name === 'TimeoutError' || /timeout|timed out|超时/i.test(m)) return 'TIMEOUT';
-  if (/参数验证失败|必须提供其一|invalid (arg|param)/i.test(m)) return 'INVALID_ARGS';
+  if (/参数验证失败|必须提供其一|invalid (arg|param)|Input validation error/i.test(m)) return 'INVALID_ARGS';
   if (/net::ERR_|NS_ERROR_|ERR_NAME_NOT_RESOLVED|ERR_CONNECTION|ERR_CERT|navigation (to|failed)|Navigation failed/i.test(m)) return 'NAVIGATION_FAILED';
   if (/(Target|Browser|Context) (page, context or browser )?(has been |is )?closed|browser has disconnected|上下文已关闭|浏览器已关闭/i.test(m)) return 'BROWSER_CLOSED';
   if (/no (active )?page|没有(可用的)?(标签页|页面)|page (has been )?closed/i.test(m)) return 'NO_PAGE';

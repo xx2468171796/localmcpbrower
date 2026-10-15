@@ -190,6 +190,10 @@ const ResultEnvelope = z.object({
   success: z.boolean(),
   data: z.unknown().optional(),
   error: z.string().optional(),
+  /** 失败时的稳定错误码(errors.ts) */
+  code: z.string().optional(),
+  /** 这次调用前标签页被回收 / 重启清掉过,页面已重建 */
+  recycled: z.boolean().optional(),
 });
 
 /** 工具 handler 的最宽签名 —— 只用于 wrap 的泛型约束，不参与实际类型推导 */
@@ -737,7 +741,7 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
 
   server.registerTool('batch_fetch', {
     title: '批量抓取 URL',
-    description: '批量抓取多个不同 URL（最多 20 个），支持内容提取和请求间隔。胜过循环 navigate + get_page_content。URL 分属不同站点时设 concurrency 3–5 并发抓，快几倍；同一站点保持 1–2，delay 500-1000ms 防封号。',
+    description: '批量抓取多个不同 URL（最多 50 个；接近调用期限时提前收尾，返回已抓到的部分并标 incomplete），支持内容提取和请求间隔。胜过循环 navigate + get_page_content。URL 分属不同站点时设 concurrency 3–5 并发抓，快几倍；同一站点保持 1–2，delay 500-1000ms 防封号。',
     inputSchema: BatchFetchSchema,
     outputSchema: ResultEnvelope,
     annotations: { title: '批量抓取 URL', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } satisfies ToolAnnotations,
