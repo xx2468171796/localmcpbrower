@@ -5,7 +5,8 @@
 #   1. 代码:/opt/ai-desk/src 是 git 检出(只拉不跑);每个提交构建成一份 /opt/ai-desk/releases/<提交>(root 所有、只读),
 #      构建完再把 /opt/ai-desk/browser-mcp 这个符号链接切过去 —— 不在正跑着的目录里 npm ci(会删掉 node_modules,
 #      在跑的服务懒加载模块时会崩)。留最近 3 份。Chromium 装到 /opt/ai-desk/ms-playwright(所有工位共用,只读)
-#   2. 装 systemd 模板单元(desk@.target + desk-*@.service + ai-desk-firewall.service)、/usr/local/sbin/deskctl、desk-smoke
+#   2. 装 systemd 模板单元(desk@.target + desk-*@.service + ai-desk-firewall.service)、/usr/local/sbin/deskctl、desk-smoke;
+#      缺 xrandr(x11-xserver-utils)/ polkitd 就 apt 装上;polkit 规则 50-ai-desk.rules(工位用户只能重启自己的 desk-selkies@)
 #   3. 装防火墙规则 /etc/ai-desk/nftables.nft 并启用 ai-desk-firewall(只管 8080–8099 / 3215–3234);
 #      同时 include 进 /etc/nftables.conf —— 那个文件开头是 flush ruleset,谁哪天启用 nftables.service 也不会把工位表冲掉
 #   4. 主机杂项:journald 上限、截图 7 天清理、关 LLMNR
@@ -83,6 +84,15 @@ if [ "$BUILD" = 1 ]; then
     [ "$(readlink -f "$old")" = "$(readlink -f "$CODE")" ] || rm -rf "$old"
   done
 fi
+
+# 系统包:xrandr(切虚拟屏分辨率)、polkitd(工位用户重启自己的画面服务)。其余(Xvfb / openbox / feh / Selkies)第 0 期已装
+missing=()
+command -v xrandr >/dev/null || missing+=(x11-xserver-utils)
+[ -d /etc/polkit-1/rules.d ] && command -v pkaction >/dev/null || missing+=(polkitd)
+if [ ${#missing[@]} -gt 0 ]; then
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends "${missing[@]}" || die "装不上 ${missing[*]}"
+fi
+install -m 644 "$HERE/polkit/50-ai-desk.rules" /etc/polkit-1/rules.d/50-ai-desk.rules
 
 install -m 644 "$HERE"/units/desk@.target "$HERE"/units/desk-*@.service "$HERE"/units/ai-desk-firewall.service /etc/systemd/system/
 install -m 750 "$HERE/deskctl" /usr/local/sbin/deskctl

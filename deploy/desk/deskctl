@@ -8,6 +8,7 @@
 #   deskctl rotate <id> [mcp|admin|selkies|all]
 #   deskctl set-baolei <id> [--url 地址]      # 服务密钥从 stdin 读;stdin 为空 = 去掉
 #   deskctl show-secrets <id> [--format env|panel|gateway]
+#   deskctl resolution <id> [宽x高]            # 不带 = 看当前;带 = 记住并马上切(1280x720 / 1600x900 / 1920x1080 / 2560x1440 / 3840x2160)
 #   deskctl delete <id> [--keep-data] [--force] --yes   # --force:登记表里没有也清理残留
 #
 # 一个工位 = Linux 用户 desk-<id>(家目录 700)+ 单元 desk@<id>.target(xvfb / wm / wallpaper / selkies / browser-mcp)
@@ -27,6 +28,9 @@ DISPLAY_BASE=20
 SELKIES_BASE=8080
 MCP_BASE=3215
 UNITS=(desk-xvfb desk-wm desk-wallpaper desk-selkies desk-browser-mcp)
+# 虚拟屏分辨率(和 claude/src/desk/display.ts 的 ALLOWED_RESOLUTIONS 保持一致)
+RESOLUTIONS=(1280x720 1600x900 1920x1080 2560x1440 3840x2160)
+DEFAULT_RESOLUTION=1920x1080
 SECRET_KEYS=(MCP_AUTH_TOKEN ADMIN_TOKEN SELKIES_BASIC_AUTH_PASSWORD SELKIES_BASIC_AUTH_VIEWONLY_PASSWORD BAOLEI_MCP_URL BAOLEI_MCP_TOKEN)
 
 die() { echo "deskctl: $*" >&2; exit 1; }
@@ -36,6 +40,7 @@ say() { echo "deskctl: $*" >&2; }
 install -d -m 700 -o root -g root /etc/ai-desk "$DESK_DIR"
 [ -f "$REGISTRY" ] || { : > "$REGISTRY"; chmod 600 "$REGISTRY"; }
 
+valid_res() { local r; for r in "${RESOLUTIONS[@]}"; do [ "${1:-}" = "$r" ] && return 0; done; return 1; }
 valid_id() { [[ "${1:-}" =~ ^[a-z][a-z0-9]{0,26}$ ]] || die "工位 id 不合法:'${1:-}'(小写字母开头,小写字母数字,最长 27 位 —— Linux 用户名 desk-<id> 最长 32)"; }
 envf() { echo "$DESK_DIR/$1.env"; }
 user_of() { echo "desk-$1"; }
@@ -67,10 +72,12 @@ port_busy() { ss -Hltn "sport = :$1" | grep -q .; }
 
 # 写 env 文件:非密钥项每次按序号重算,密钥项保留已有值(或 --import 来的),缺的生成
 write_env() {
-  local id=$1 idx=$2 import=${3:-} f tmp h k v
+  local id=$1 idx=$2 import=${3:-} f tmp h k v res
   f=$(envf "$id"); h=$(home_of "$id")
   declare -A sec=()
   for k in "${SECRET_KEYS[@]}"; do sec[$k]=$(env_get "$k" "$f"); done
+  # 分辨率不是按序号算的:保留已有值(deskctl resolution 改的),没有 / 不合法就用默认
+  res=$(env_get DESK_RESOLUTION "$f"); valid_res "$res" || res=$DEFAULT_RESOLUTION
   if [ -n "$import" ]; then
     [ -r "$import" ] || die "读不到 $import"
     for k in MCP_AUTH_TOKEN ADMIN_TOKEN BAOLEI_MCP_URL BAOLEI_MCP_TOKEN; do
@@ -101,6 +108,7 @@ write_env() {
     echo "USER_DATA_DIR=$h/data/profile"
     echo "LOCALMCP_DATA_DIR=$h/data/data"
     echo "SCREENSHOT_DIR=$h/data/shots"
+    echo "DESK_RESOLUTION=$res"
     for k in "${SECRET_KEYS[@]}"; do [ -n "${sec[$k]}" ] && echo "$k=${sec[$k]}"; done
   } > "$tmp"
   chmod 600 "$tmp"; chown root:root "$tmp"
@@ -236,7 +244,7 @@ status_one() {
   fi
   state=$(printf 'Authorization: Bearer %s\n' "$(env_get ADMIN_TOKEN "$f")" | curl -fsS -m 5 -H @- "http://$HOST_IP:$port/admin/state" 2>/dev/null || true)
   if [ -n "$state" ]; then
-    echo "  /admin/state $(jq -r '"闸门 \(.gate.state)(\(.gate.mode)) 在途 \(.inFlight // [] | if type=="array" then length elif type=="object" then (.count // 0) else . end) 白名单 \(.gate.allowlist|length) 条 最新事件 \(.lastEventId)"' <<<"$state" 2>/dev/null || echo "取到了但解析失败")"
+    echo "  /admin/state $(jq -r '"闸门 \(.gate.state)(\(.gate.mode)) 在途 \(.inFlight // [] | if type=="array" then length elif type=="object" then (.count // 0) else . end) 白名单 \(.gate.allowlist|length) 条 最新事件 \(.lastEventId) 分辨率 \(if .display then "\(.display.width)x\(.display.height)" else "?" end)"' <<<"$state" 2>/dev/null || echo "取到了但解析失败")"
   else
     echo "  /admin/state 取不到"
   fi
@@ -336,6 +344,40 @@ cmd_show_secrets() {
   esac
 }
 
+# 调本工位浏览器 MCP 的管理接口:admin_call <env 文件> <GET|POST> <路径> [JSON 体]。令牌经 stdin 给 curl,不进命令行
+admin_call() {
+  local f=$1 method=$2 path=$3 body=${4:-}
+  local args=(-fsS -m 30 -H @- -X "$method")
+  [ -n "$body" ] && args+=(-H 'Content-Type: application/json' --data "$body")
+  printf 'Authorization: Bearer %s\n' "$(env_get ADMIN_TOKEN "$f")" | curl "${args[@]}" "http://$HOST_IP:$(env_get PORT "$f")$path"
+}
+
+# 分辨率两处记:env 的 DESK_RESOLUTION(deskctl 管的配置)和工位数据目录里的 display-resolution(面板改了也写它,
+# 启动时它优先)。这里两处一起写成同一个值,再经管理接口马上切;浏览器 MCP 不在跑就等下次启动工位生效。
+cmd_resolution() {
+  need_desk "${1:-}"
+  local id=$1 want=${2:-} f u state saved cfg out
+  f=$(envf "$id"); u=$(user_of "$id"); state="$(home_of "$id")/data/data/display-resolution"
+  if [ -z "$want" ]; then
+    cfg=$(env_get DESK_RESOLUTION "$f")
+    saved=$(runuser -u "$u" -- cat "$state" 2>/dev/null || true)
+    out=$(admin_call "$f" GET /admin/display 2>/dev/null || true)
+    echo "工位 $id 分辨率:配置 ${cfg:-默认 $DEFAULT_RESOLUTION} · 记住 ${saved:-无} · 当前 $(jq -r '"\(.width)x\(.height)"' <<<"$out" 2>/dev/null || echo 取不到)"
+    return
+  fi
+  valid_res "$want" || die "分辨率只能是 ${RESOLUTIONS[*]}"
+  with_lock
+  env_set "$f" DESK_RESOLUTION "$want"
+  # 以工位用户身份写(理由同 ensure_user:root 不在用户可写目录里写文件)
+  printf '%s\n' "$want" | runuser -u "$u" -- sh -c 'umask 077; cat > "$1.tmp" && mv -f "$1.tmp" "$1"' _ "$state"
+  if out=$(admin_call "$f" POST /admin/display "{\"width\":${want%x*},\"height\":${want#*x}}" 2>/dev/null); then
+    echo "DESK_OK resolution $id $want stream=$(jq -r '.stream' <<<"$out" 2>/dev/null)"
+  else
+    say "浏览器 MCP 没应答或切换失败:已记住,下次启动工位生效(马上要就 deskctl restart $id)"
+    echo "DESK_OK resolution $id $want applied=next-start"
+  fi
+}
+
 cmd_delete() {
   local id=${1:-}; shift || true
   valid_id "$id"
@@ -370,7 +412,7 @@ cmd_delete() {
   echo "DESK_OK deleted $id keep_data=$keep"
 }
 
-usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; }
 
 cmd=${1:-}; shift || true
 case $cmd in
@@ -381,6 +423,7 @@ case $cmd in
   rotate) cmd_rotate "$@" ;;
   set-baolei) cmd_set_baolei "$@" ;;
   show-secrets) cmd_show_secrets "$@" ;;
+  resolution) cmd_resolution "$@" ;;
   delete) cmd_delete "$@" ;;
   ''|-h|--help|help) usage ;;
   *) usage; exit 2 ;;

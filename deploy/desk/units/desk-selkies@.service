@@ -1,7 +1,11 @@
 # 工位 %i 的远程画面(Selkies,H.264 over WebSocket,HTTPS 自签证书在 ~/.local/state/selkies/,每工位一份)。
 # 端口 SELKIES_PORT、主密码 SELKIES_BASIC_AUTH_PASSWORD、只看密码 SELKIES_BASIC_AUTH_VIEWONLY_PASSWORD
 # 都由 Selkies 直接从环境变量读 —— 不放命令行(命令行别的用户 ps 看得见)。
-# 画质参数与第 0 期单工位 desk-selkies 一致。
+# 画质(2026-10-16 在 ai-desk 1080P 实测调过,见 docs/architecture.md §11「分辨率与画质」):4:4:4 全彩 + 静止补清晰帧;
+# CRF 16(允许 8–24,原 20)、补清晰帧 CRF 8(允许 3–20,原 12)让小字更清楚 —— CPU 几乎不变,连续滚动时码率约 +19%(33→40 Mbit/s);
+# 帧率默认 30(允许 15–60,客户端可调到 60):采集 + x264 的 CPU 和帧率成正比,1080P 静止画面 60fps 要 1.3 核、30fps 0.65 核。
+# --enable-resize=false:屏幕大小由工位定(AI 看到的屏幕要稳定),不跟着看的人的窗口变;Selkies 只在新连接时读屏幕大小,
+# 所以切分辨率后浏览器 MCP 会经 polkit 重启本单元(只许 desk-<id> 重启自己的 desk-selkies@<id>,规则 /etc/polkit-1/rules.d/50-ai-desk.rules)。
 [Unit]
 Description=AI desk %i - Selkies streaming (https)
 PartOf=desk@%i.target
@@ -26,7 +30,7 @@ Environment=XDG_RUNTIME_DIR=/run/desk-%i
 RuntimeDirectory=desk-%i
 RuntimeDirectoryMode=0700
 ExecStartPre=/bin/sh -c 'for i in $(seq 1 50); do timeout 2 xdpyinfo >/dev/null 2>&1 && exit 0; sleep 0.2; done; exit 1'
-ExecStart=/usr/bin/selkies --addr=0.0.0.0 --enable-https=true --enable-resize=false --encoder=h264enc --framerate=60,30-60 --video-crf=20,12-22 --video-fullcolor=true --use-paint-over-quality=true --video-paintover-crf=12,5-20 --audio-enabled=false --microphone-enabled=false --gamepad-enabled=false --basic-auth-user=admin
+ExecStart=/usr/bin/selkies --addr=0.0.0.0 --enable-https=true --enable-resize=false --encoder=h264enc --framerate=30,15-60 --video-crf=16,8-24 --video-fullcolor=true --use-paint-over-quality=true --video-paintover-crf=8,3-20 --audio-enabled=false --microphone-enabled=false --gamepad-enabled=false --basic-auth-user=admin
 Restart=always
 RestartSec=3
 

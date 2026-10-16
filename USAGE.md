@@ -403,6 +403,8 @@ space_close({ name: "job1" })   # 关闭并释放（default 不可关）
 | `GET /admin/screenshot?space=` | 当前活动页截图（不拉起浏览器） |
 | `POST /admin/restart?space=` | 重启该工作区浏览器（下一次结果带 `recycled: true`） |
 | `GET /admin/metrics` | Chromium 进程树内存（Linux）、本进程内存 |
+| `GET /admin/display` | 虚拟屏分辨率 `{width, height, allowed:[{width, height}…]}`（只托管工位有，否则 404 `NOT_SUPPORTED`）；`/admin/state` 里也带一份 `display`（取不到为 null） |
+| `POST /admin/display` `{width, height}` | 切分辨率：只认 1280x720 / 1600x900 / 1920x1080 / 2560x1440 / 3840x2160（别的 400）；切完浏览器窗口撑满新屏、记到工位数据目录（重启照旧）、重启本工位 Selkies（`stream: restarting`，看画面的要重连）、时间线记一条 `display` 事件 |
 
 验证：`node claude/test/desk-e2e.mjs`（无头，任何机器）；`HEADED=1` 另测自带扩展（Linux 需要 DISPLAY）。
 
@@ -420,11 +422,16 @@ space_close({ name: "job1" })   # 关闭并释放（default 不可关）
 | `deskctl rotate <id> [mcp\|admin\|selkies\|all]` | 换密钥并重启对应单元；之后要同步 Hermes 和堡垒机资产 |
 | `deskctl set-baolei <id> [--url 地址]` | 从 stdin 读该工位的堡垒机服务密钥（fill_secret 用），空 = 去掉 |
 | `deskctl show-secrets <id> [--format env\|panel\|gateway]` | **只给接 Hermes 的脚本用**：`gateway` = `BROWSER_DESK_MCP_KEY=…`，`panel` = 面板代理的 6 项 `AI_DESK_*` |
+| `deskctl resolution <id> [宽x高]` | 不带 = 看配置 / 记住的 / 当前分辨率；带 = 写进 env 的 `DESK_RESOLUTION` 和工位数据目录、经管理接口马上切（MCP 不在跑就下次启动生效）。默认 1920x1080 |
 | `deskctl delete <id> [--keep-data] --yes` | 停单元、删用户和数据（`--keep-data` 把家目录改名留给 root） |
 | `desk-smoke <id> [网址]` | 冒烟：带令牌 navigate、读标题、截该工位虚拟屏、Selkies 带 / 不带密码各一次 |
 
 - **装 / 更新代码**：`bash /opt/ai-desk/browser-mcp/deploy/desk/install.sh [--branch 分支]` —— 共用只读检出 `/opt/ai-desk/browser-mcp`
   （root 所有）拉代码、构建、装 Chromium 到 `/opt/ai-desk/ms-playwright`、装单元和 deskctl、加载防火墙；之后逐个 `deskctl restart <id>`。
+- **分辨率**：Xvfb 按最大的 3840x2160 起（`-noreset`），`ExecStartPost` 跑 `dist/desk/display-cli.js` 切到「记住的（`~/data/data/display-resolution`）> `DESK_RESOLUTION` > 1920x1080」；
+  运行中面板 / `deskctl resolution` 经 `POST /admin/display` 改。浏览器以 `--start-maximized` 起，切分辨率时 openbox 跟着撑满，被还原过的窗口经 CDP 设回最大化。
+  Selkies 只在新连接时读屏幕大小（只看连接还会一直用第一次的大小），所以切完由浏览器 MCP 经 polkit 规则 `50-ai-desk.rules`（只许 `desk-<id>` 重启自己的 `desk-selkies@<id>`）重启它。
+  画质：4:4:4、CRF 16（8–24）、补清晰帧 CRF 8（3–20）、默认 30fps（15–60）。CPU 参考（ai-desk 6 核，有人在看时 Selkies 一个进程）：1080P 静止 0.65 核、连续滚动 0.9 核；4K 1.6–1.9 核 —— 4K 只在真需要时开。
 - **隔离**：家目录 700、各单元 `ProtectHome=tmpfs` 只绑自己的家、`PrivateTmp`、`ProtectProc=invisible`；X 用 Xauthority 小甜饼（不再 `-ac`，
   否则别的工位用户能经抽象 socket 连上别人的屏）；Selkies 密码走环境变量不进命令行；不开 Chromium 调试端口。
 - **防火墙**：`ai-desk-firewall.service` 加载 `/etc/ai-desk/nftables.nft`（表 `inet ai_desk`）：8080–8099、3215–3234 只许回环、本机和

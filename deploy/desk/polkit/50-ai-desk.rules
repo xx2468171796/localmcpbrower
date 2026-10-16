@@ -1,0 +1,12 @@
+// AI 工位(deploy/desk,install.sh 装到 /etc/polkit-1/rules.d/50-ai-desk.rules)。
+// 只许工位用户 desk-<id> 重启**自己的**画面服务 desk-selkies@<id>.service(别的单元、别的动作、别人的工位一律不放行)。
+// 用处:浏览器 MCP 切完虚拟屏分辨率后要让 Selkies 重启 —— Selkies 只在新连接时读屏幕大小,只看连接还会一直沿用旧尺寸。
+polkit.addRule(function (action, subject) {
+  if (action.id !== "org.freedesktop.systemd1.manage-units") return polkit.Result.NOT_HANDLED;
+  var m = /^desk-([a-z][a-z0-9]{0,26})$/.exec(subject.user);
+  if (!m) return polkit.Result.NOT_HANDLED;
+  if (action.lookup("unit") === "desk-selkies@" + m[1] + ".service" && action.lookup("verb") === "restart") {
+    return polkit.Result.YES;
+  }
+  return polkit.Result.NOT_HANDLED;
+});

@@ -34,6 +34,7 @@ import { deskGate, deskRing } from './desk/runtime.js';
 import { deadlineFor, errorOf, preflight, trackCall, withCode, withDeadline, type RawResult } from './desk/instrument.js';
 import { registerExtraTools } from './desk/extra-tools.js';
 import { createAdminRouter } from './desk/admin-routes.js';
+import { createDeskDisplayControl } from './desk/display-setup.js';
 import {
   NavigateSchema, ClickSchema, TypeSchema, ScreenshotSchema,
   ExecuteJsSchema, ScrollSchema, WaitForSelectorSchema,
@@ -872,6 +873,10 @@ function createApp(): express.Application {
     screenshot: (space) => getBrowserManager().screenshotActive(space),
     restart: (space) => getBrowserManager().restartSpace(space),
     metrics: () => getBrowserManager().metrics(),
+    display: createDeskDisplayControl({
+      deskId: deskConfig.deskId, dataDir: deskConfig.dataDir, env: process.env, platform: process.platform,
+      headedContexts: () => getBrowserManager().headedContexts(), push: (e) => { deskRing.push(e); },
+    }),
   }));
 
   // Health

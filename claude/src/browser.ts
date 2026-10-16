@@ -33,6 +33,7 @@ import { browserEnv } from './browser-env.js';
 import { currentSessionId } from './context.js';
 import { killProcessTreeSync } from './portkill.js';
 import { deskConfig } from './desk/config.js';
+import { maximizeAllWindows } from './desk/window-fit.js';
 import { extensionLaunchPatch } from './control/extension-launch.js';
 import { linuxTreeRss } from './proc-tree.js';
 import { deskGate, deskRing } from './desk/runtime.js';
@@ -567,7 +568,9 @@ class BrowserManager {
       ...commonArgs.filter((a) => !ext?.removeArgs.includes(a)),
       ...platformArgs,
       ...(ext?.args ?? []),
-      `--window-size=${this.config.viewportWidth},${this.config.viewportHeight}`
+      // 托管工位有头:不给窗口大小、启动即最大化(viewport: null,页面跟着窗口走),切分辨率时 openbox 会把最大化窗口撑满新屏幕。
+      // --window-size 会盖过 --start-maximized(实测 2560x1440 屏上窗口仍是 1920x1080),所以二选一
+      ...(deskConfig.managed && !headless ? ['--start-maximized'] : [`--window-size=${this.config.viewportWidth},${this.config.viewportHeight}`]),
     ];
 
     if (this.config.devtools) launchArgs.push('--auto-open-devtools-for-tabs');
@@ -676,6 +679,8 @@ class BrowserManager {
     await this.afterLaunch(sp, context, headless, launchUa);
     if (closedEarly) throw new Error(`space '${sp.name}' 浏览器启动后立刻退出了`);
     sp.context = context;
+    // 托管工位有头:profile 里记着上次的窗口位置时 --start-maximized 也可能不生效,启动后再经 CDP 设一次最大化(不等它)
+    if (deskConfig.managed && !headless) void maximizeAllWindows([context]).catch(() => { /* 尽力而为 */ });
     return context;
   }
 
@@ -1294,6 +1299,11 @@ class BrowserManager {
     const closed = await within(this.shutSpaceBrowser(sp, '被管理员重启').then(() => true), 10_000, false);
     if (!closed && pid) killProcessTreeSync(pid);
     return { restarted: true };
+  }
+
+  /** 当前开着的有头浏览器(切分辨率后调整窗口用);不拉起 */
+  public headedContexts(): BrowserContext[] {
+    return [...this.spaces.values()].flatMap((sp) => (sp.context && sp.headed ? [sp.context] : []));
   }
 
   /**

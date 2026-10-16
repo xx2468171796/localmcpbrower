@@ -105,6 +105,7 @@
 | `GET /admin/screenshot?space=` | 当前活动页截图 |
 | `POST /admin/restart?space=` | 关掉该工作区浏览器，下次调用重建 |
 | `GET /admin/metrics` | Chromium 进程树内存、CPU、调用计数 |
+| `GET /admin/display` / `POST /admin/display {width,height}` | 托管工位的虚拟屏分辨率：查 / 切（允许列表、记住、窗口撑满、重启画面），见 §11「分辨率与画质」 |
 
 请求体一律先过 Zod；错误统一 `{ error: { code, message } }`。
 
@@ -184,7 +185,7 @@
 |---|---|---|
 | Linux 用户 | `desk-<id>` | 每工位独立用户：浏览器 profile、截图、下载互相读不到（家目录 700） |
 | 单元组 | `desk@<id>.target` | Wants 下面 5 个单元，它们都 `PartOf=` 它：启停 / 重启 target = 整个工位 |
-| 虚拟屏 | `desk-xvfb@<id>`：Xvfb `:<20+n>`（n = 工位序号）1920x1080 | 显示号从 20 起，避开旧单工位的 `:0` 和验证用的 `:9`。**不用 `-ac`**：X 的抽象 socket 不受 PrivateTmp 隔离，别的工位用户也连得上，必须靠 `~/.Xauthority` 小甜饼（deskctl 生成，FamilyWild） |
+| 虚拟屏 | `desk-xvfb@<id>`：Xvfb `:<20+n>`（n = 工位序号）按 3840x2160 起、`-noreset`，启动后切到工位分辨率（默认 1920x1080） | 显示号从 20 起，避开旧单工位的 `:0` 和验证用的 `:9`。**不用 `-ac`**：X 的抽象 socket 不受 PrivateTmp 隔离，别的工位用户也连得上，必须靠 `~/.Xauthority` 小甜饼（deskctl 生成，FamilyWild） |
 | 窗口管理 + 壁纸 | `desk-wm@<id>`、`desk-wallpaper@<id>` | |
 | 画面 | `desk-selkies@<id>`：HTTPS `:8080+n` | 主密码 / 只看密码按工位生成，经环境变量 `SELKIES_BASIC_AUTH_PASSWORD` / `SELKIES_BASIC_AUTH_VIEWONLY_PASSWORD` 给（不放命令行，`ps` 看得见）；自签证书各工位一份（`~/.local/state/selkies/`） |
 | 浏览器 MCP | `desk-browser-mcp@<id>`：`192.168.110.239:3215+n` | 托管模式：`DESK_ID=<id>`、独立数据目录、MCP 令牌、ADMIN_TOKEN、`PIPE_DISABLE=1`、`KILL_PORT_ON_START=0`、`IDLE_CLOSE_MIN=0`；可选 `BAOLEI_MCP_URL/TOKEN`（该人的「服务代填」服务密钥） |
@@ -194,8 +195,23 @@
 | 沙箱 | 每个单元 | `NoNewPrivileges`、`ProtectSystem=strict`、`ProtectHome=tmpfs` + 只绑自己的家目录、`PrivateTmp`、`ProtectProc=invisible`、无 capability；浏览器单元 `MemoryMax=3G`；不设 `DEVTOOLS_PORT`（回环上的调试端口没鉴权，邻居能接管） |
 
 **deskctl 命令**：`create <id> [--owner 人] [--index n] [--import 文件] [--no-start]`（分配序号 / 端口、建用户、生成令牌、写 env、起单元、等 /livez；`--import` 从旧 env 文件沿用令牌，迁移用）·`list`·`status [<id>]`（单元状态 + /livez + /admin/state 摘要）·
-`restart <id>`·`rotate <id> [mcp|admin|selkies|all]`·`set-baolei <id> [--url]`（从 stdin 读服务密钥）·`show-secrets <id> [--format env|panel|gateway]`（只给 root，给接 Hermes 的脚本用）·`delete <id> [--keep-data] --yes`。
+`restart <id>`·`rotate <id> [mcp|admin|selkies|all]`·`set-baolei <id> [--url]`（从 stdin 读服务密钥）·`show-secrets <id> [--format env|panel|gateway]`（只给 root，给接 Hermes 的脚本用）·`resolution <id> [宽x高]`（看 / 改虚拟屏分辨率，写 env + 工位数据目录并经管理接口马上切）·`delete <id> [--keep-data] --yes`。
 可重复执行（幂等）；序号分配记在 `/etc/ai-desk/desks/registry`。另有 `desk-smoke <id>` 冒烟。
+
+**分辨率与画质**（2026-10-16 定，ai-desk 上 t2 实测）：
+- 允许 1280x720 / 1600x900 / 1920x1080（默认）/ 2560x1440 / 3840x2160（`claude/src/desk/display.ts` 与 deskctl、desk-proxy 各一份同样的列表）。
+- Xvfb 的 RandR 上限 = 启动大小，所以按 3840x2160 起；切换用「给输出加模式 `desk-WxH`（60Hz 时钟）+ `xrandr --output screen --mode`」，不用单独的 `--fb`
+  （那会关掉输出，Chromium 看不到显示器、最大化窗口不跟）。**必须 `-noreset`**：不带时最后一个客户端断开 X 就重置，启动时的切换会白做。
+- 启动：`desk-xvfb@` 的 `ExecStartPost` 跑 `dist/desk/display-cli.js`，按「工位数据目录 `display-resolution` > env `DESK_RESOLUTION` > 1920x1080」切；之后 wm / 壁纸 / Selkies 才起，看到的就是这个大小。
+- 运行中：`POST /admin/display`（浏览器 MCP 以工位用户身份 execFile xrandr、超时 5 秒、串行）→ 记到 `display-resolution` → feh 重铺壁纸 → 窗口最大化
+  （浏览器以 `--start-maximized` 起、不给 `--window-size`；openbox 自己会把最大化窗口撑满，被还原的经 CDP `Browser.setWindowBounds` 设回）→ `systemctl restart --no-block desk-selkies@<id>`
+  （polkit 规则 `50-ai-desk.rules` 只放行 `desk-<id>` 对自己这个单元的 restart）→ 时间线 `display` 事件。
+  选「记在工位自己的数据目录」而不是改 env：env 是 root 600，浏览器 MCP 写不了；`deskctl resolution` 两处一起写，保证一致。
+- 为什么要重启 Selkies：它只在连接建立时读屏幕大小；全控连接重连会按新大小，但**只看连接会一直沿用该进程里第一个连接时的大小**（2.0.0 的 `_ensure_viewer_capture` 缓存了布局），
+  面板默认就是只看连接。重启约 1–3 秒，所有看的人断开后重连。
+- 画质：4:4:4 全彩 + 静止补清晰帧，CRF 16（8–24）、补清晰帧 CRF 8（3–20）、默认 30fps（15–60）。实测（1080P，一个全控观看端）：
+  CRF 20→16 CPU 不变、连续滚动码率 33→40 Mbit/s，静止 20 kbit/s；CPU 和帧率成正比 —— 60fps 静止 1.3 核 / 滚动 1.7 核，30fps 静止 0.65 核 / 滚动 0.9 核；
+  4K 30fps 1.6–1.9 核。6 核的工位机上几个人同时看 4K 会吃满，4K 只在真需要时开。
 
 **网络**：工位机 nftables（独立表 `inet ai_desk`，`ai-desk-firewall.service` 开机加载）只许 Hermes 宿主机（ubuntu-244，192.168.10.244）、本机和回环访问 8080–8099、3215–3234；其余来源丢弃；22 不动。
 **接 Hermes**：ai-workforce-ops 的 `desk-proxy.sh enable <实例>` + 网关 drop-in（20-ai-desk.conf）按 `deskctl show-secrets <id>` 的值写，一人一套（见 ubuntu-244 专题页「AI 助理接工位浏览器」）。

@@ -1,7 +1,11 @@
 # 工位 %i 的虚拟屏。显示号、Xauthority 来自 /etc/ai-desk/desks/%i.env(deskctl 写)。
+# 分辨率:Xvfb 按最大的 3840x2160 起(RandR 上限 = 启动大小,之后只能往小切),起来后 ExecStartPost 切到工位配置的分辨率
+# (记住的 ~/data/data/display-resolution > env 的 DESK_RESOLUTION > 1920x1080,见 claude/src/desk/display-cli.ts);
+# 运行中由浏览器 MCP 的 POST /admin/display 或 deskctl resolution 改。切失败不拖挂 Xvfb("-" 前缀),屏幕停在 3840x2160。
+# -noreset:不带时最后一个客户端断开 X 就重置,切过的分辨率 / 加的模式全丢(启动时 ExecStartPost 那会儿还没有别的客户端)。
 # 不用 -ac:X 的抽象 socket 不受 PrivateTmp 隔离,别的工位用户也连得上,必须靠 Xauthority 小甜饼挡住。
 [Unit]
-Description=AI desk %i - Xvfb 1920x1080
+Description=AI desk %i - Xvfb (3840x2160 max, switched to DESK_RESOLUTION)
 PartOf=desk@%i.target
 After=network.target
 
@@ -11,7 +15,8 @@ Group=desk-%i
 EnvironmentFile=/etc/ai-desk/desks/%i.env
 # 只要显示号 / Xauthority 这些非密钥项;密钥一律去掉
 UnsetEnvironment=MCP_AUTH_TOKEN ADMIN_TOKEN SELKIES_BASIC_AUTH_PASSWORD SELKIES_BASIC_AUTH_VIEWONLY_PASSWORD BAOLEI_MCP_URL BAOLEI_MCP_TOKEN
-ExecStart=/usr/bin/Xvfb ${DISPLAY} -screen 0 1920x1080x24 -s 0 -dpms -nolisten tcp -auth ${XAUTHORITY}
+ExecStart=/usr/bin/Xvfb ${DISPLAY} -screen 0 3840x2160x24 -s 0 -dpms -noreset -nolisten tcp -auth ${XAUTHORITY}
+ExecStartPost=-/usr/local/bin/node /opt/ai-desk/browser-mcp/claude/dist/desk/display-cli.js
 Restart=always
 RestartSec=2
 

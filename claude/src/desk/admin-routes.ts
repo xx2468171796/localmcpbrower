@@ -11,6 +11,8 @@ import express, { type NextFunction, type Request, type Response, type Router } 
 import { z } from 'zod';
 import type { DeskGate } from './gate.js';
 import type { EventRing } from './events.js';
+import type { DisplayPort } from './display-control.js';
+import { ALLOWED_RESOLUTIONS, isAllowedResolution } from './display.js';
 
 export interface AdminDeps {
   ring: EventRing;
@@ -26,6 +28,8 @@ export interface AdminDeps {
   screenshot: (space?: string) => Promise<Buffer | null>;
   restart: (space: string) => Promise<unknown>;
   metrics: () => Promise<unknown>;
+  /** 虚拟屏分辨率;没有 = 不支持(本机单用 / 没有 X 显示),/admin/display 返回 404 */
+  display?: DisplayPort;
 }
 
 const PauseBody = z.object({
@@ -39,6 +43,12 @@ const SinceQuery = z.object({
   limit: z.coerce.number().int().min(1).max(2000).optional(),
 });
 const SpaceQuery = z.object({ space: z.string().max(64).optional() });
+const DisplayBody = z.object({
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+}).strict().refine(isAllowedResolution, {
+  message: `分辨率只能是 ${ALLOWED_RESOLUTIONS.map((a) => `${a.width}x${a.height}`).join(' / ')}`,
+});
 
 function isLoopback(addr: string | undefined): boolean {
   const a = (addr ?? '').replace(/^::ffff:/, '');
@@ -80,7 +90,9 @@ export function createAdminRouter(deps: AdminDeps): Router {
 
   r.get('/state', async (_req, res) => {
     try {
-      res.json({ deskId: deps.deskId ?? null, version: deps.version, gate: deps.gate.status(), inFlight: deps.ring.inFlight(), lastEventId: deps.ring.lastId, browser: await deps.state() });
+      // 分辨率读不到(X 挂了)不影响别的状态,给 null
+      const display = deps.display ? await deps.display.info().catch(() => null) : null;
+      res.json({ deskId: deps.deskId ?? null, version: deps.version, gate: deps.gate.status(), inFlight: deps.ring.inFlight(), lastEventId: deps.ring.lastId, display, browser: await deps.state() });
     } catch (e) {
       apiError(res, 500, 'INTERNAL', e instanceof Error ? e.message : String(e));
     }
@@ -143,6 +155,18 @@ export function createAdminRouter(deps: AdminDeps): Router {
     } catch (e) {
       apiError(res, 500, 'INTERNAL', e instanceof Error ? e.message : String(e));
     }
+  });
+
+  r.get('/display', async (_req, res) => {
+    if (!deps.display) { apiError(res, 404, 'NOT_SUPPORTED', '这个实例没有可调的虚拟屏(只有托管工位支持)'); return; }
+    try { res.json(await deps.display.info()); } catch (e) { apiError(res, 500, 'DISPLAY_FAILED', e instanceof Error ? e.message : String(e)); }
+  });
+
+  r.post('/display', async (req, res) => {
+    if (!deps.display) { apiError(res, 404, 'NOT_SUPPORTED', '这个实例没有可调的虚拟屏(只有托管工位支持)'); return; }
+    const b = DisplayBody.safeParse(req.body ?? {});
+    if (!b.success) { apiError(res, 400, 'INVALID_ARGS', b.error.issues.map((i) => i.message).join(';')); return; }
+    try { res.json(await deps.display.set(b.data)); } catch (e) { apiError(res, 500, 'DISPLAY_FAILED', e instanceof Error ? e.message : String(e)); }
   });
 
   r.get('/metrics', async (_req, res) => {

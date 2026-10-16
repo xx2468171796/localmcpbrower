@@ -7,7 +7,7 @@
  * - 参数先摘要、打码再进来(summarizeArgs):输入框内容、脚本源码、cookie 值一律不进时间线。
  */
 
-export type ToolEventKind = 'call_start' | 'call_end' | 'gate' | 'browser';
+export type ToolEventKind = 'call_start' | 'call_end' | 'gate' | 'browser' | 'display';
 
 export interface ToolEvent {
   id: number;
@@ -24,7 +24,7 @@ export interface ToolEvent {
   code?: string;
   error?: string;
   url?: string;
-  /** gate / browser 事件的说明,如 paused、resumed、restarted */
+  /** gate / browser / display 事件的说明,如 paused、resumed、restarted、1920x1080 → 2560x1440 */
   detail?: string;
 }
 
