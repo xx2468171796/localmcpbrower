@@ -229,6 +229,13 @@ space_close({ name: "job1" })   # 关闭并释放（default 不可关）
 
 什么时候必须开新 space：默认所有会话共用 default 的登录态，
 一个窗口在某站点登出/换号，其他窗口跟着受影响 —— 需要独立账号或独立登录态就 space_new。
+
+每个工作区有固定「身份」（存在它的 profile 目录 identity.json 里，每次打开都一样 = 网站眼里同一个回访用户）：
+屏幕尺寸（default 1920x1080，其它首次随机一个常见分辨率）、语言 zh-CN，可选：
+space_new({ name: "us1", proxy: "socks5://user:pass@host:1080" })  # 挂代理，记住；时区自动跟出口 IP
+space_new({ name: "us1", humanize: true })                          # 拟人操作，记住
+space_new({ name: "us1", proxy: "" })                               # 去掉代理（浏览器开着会自动重开，登录态不丢）
+代理账号密码不进时间线 / 工具结果（打码成 ***）。
 ```
 
 ---
@@ -267,7 +274,21 @@ space_close({ name: "job1" })   # 关闭并释放（default 不可关）
 - batch_fetch 的 delay 设 500-1000ms
 - crawl_pages 的 delay 设 800-1500ms
 - 不要并发，顺序执行
+- 被反爬拦了（验证码一直弹、403、「检测到自动化」）：开一个带 humanize 的工作区重试；还不行加 proxy 换出口
 ```
+
+### 反检测（3.1 起，原生优先）
+
+浏览器本身尽量「就是一个普通 Chrome」，不在页面里伪装任何值（JS 改出来的值本身就是破绽）：
+
+- 无头也用完整版 Chromium（新无头模式）：有 GPU、完整的 `window.chrome`、5 个 PDF 插件，不再用 headless shell；
+- 网页请求由浏览器自己发（TLS 指纹、请求头都是真 Chrome 的），站点的 CSP 照常生效；
+- 无头时 UA 去掉 HeadlessChrome（页面、各种 Worker、请求头一致），Client Hints 用浏览器原生值；屏幕尺寸、语言按工作区身份给；
+- 页面里只装一段 console 捕获（给 `get_console_logs` 用），不留全局变量、不插 DOM 节点。
+
+自测：`cd claude && node test/stealth-check.mjs`（本地探针逐项判，0 项破绽才算过；加 `--online` 另看 sannysoft / CreepJS / BrowserScan）。
+做不到的：没有显卡的 Linux 机器（工位机）WebGL 只能是软件渲染，这是硬特征；canvas / 音频指纹没做噪声（要改内核）。
+Linux 上缺字体也容易被拦：`mcp.mjs install`（root）/ 工位 `install.sh` 会装中日韩、彩色 emoji 和与 Windows 常见字体等宽的开源字体。
 
 ### 拟人操作（过行为风控）
 
@@ -366,7 +387,7 @@ space_close({ name: "job1" })   # 关闭并释放（default 不可关）
 ### 工作区 Task Spaces（4个）
 | 工具 | 参数 | 说明 |
 |------|------|------|
-| `space_new` | name, headed? | 新建并切换到隔离工作区（独立 cookie/登录态）。headed 一般不用给：默认无头，要人工时 wait_for_human 自动弹窗 |
+| `space_new` | name, headed?, proxy?, humanize? | 新建并切换到隔离工作区（独立 cookie/登录态、固定身份）。headed 一般不用给：默认无头，要人工时 wait_for_human 自动弹窗；proxy / humanize 记进工作区身份（见规则 9） |
 | `space_switch` | name | 切换活跃工作区 |
 | `space_list` | - | 列出所有工作区及状态 |
 | `space_close` | name | 关闭并释放工作区（default 不可关）|
@@ -397,8 +418,9 @@ space_close({ name: "job1" })   # 关闭并释放（default 不可关）
 | `TOOL_DEADLINE_MS` | 单次工具调用总期限，默认 120000，0 = 不限 |
 | `PAUSE_WAIT_MAX_MS` | 人接管时 AI 的调用最多等多久，默认 600000；0 = 不等直接返回 DESK_PAUSED |
 | `ALLOW_BROWSER_CDP=1` | 允许 cdp_send 发浏览器级命令 |
-| `BROWSER_EXTENSION` | 自带扩展：`auto`（默认，只在有窗口的完整版 Chromium 里加载）/ `on`（无头也加载，改用新无头模式）/ `off` |
-| `BROWSER_HUMANIZE=1` | 所有工作区默认拟人操作（鼠标曲线、逐字输入、滚轮缓动），见「拟人操作」一节 |
+| `BROWSER_EXTENSION` | 自带扩展：`auto`（默认，只在有窗口时加载）/ `on`（无头也加载）/ `off` |
+| `BROWSER_HUMANIZE=1` | 所有工作区默认拟人操作（鼠标曲线、逐字输入、滚轮缓动），见「拟人操作」一节；工作区自己设了 humanize 以它为准 |
+| `BROWSER_PROXY` | 默认工作区第一次建身份时挂的代理（`http://` / `socks5://`…）；之后以 identity.json 为准，改用 `space_new({ name: "default", proxy })` |
 | `IDLE_CLOSE_MIN` 等 | 空闲回收，0 = 永不回收（长流程建议 0） |
 | `DEVTOOLS_PORT` | 浏览器远程调试端口（多工位同机时**别开**：回环端口无鉴权，邻居能接管；真要开按工位分配，别撞） |
 | `BAOLEI_MCP_URL` + `BAOLEI_MCP_TOKEN` | fill_secret 用的堡垒机地址和密钥（不设则按 ~/.claude.json、~/.codex/config.toml 找本机的） |

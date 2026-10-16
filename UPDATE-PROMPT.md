@@ -57,6 +57,8 @@ node mcp.mjs install
 
 > **仅 Linux** 若缺系统库,按提示让我本人在终端补一次(要 sudo,只此一次):
 > `cd ~/code/localmcpbrower/claude && sudo npx patchright install-deps chromium`
+> 同一次再补字体(反检测:缺中日韩 / emoji / Windows 等宽字体的 Linux 浏览器容易被网站风控拦):
+> `sudo apt-get install --no-install-recommends fonts-noto-cjk fonts-noto-color-emoji fonts-liberation2 fonts-crosextra-carlito fonts-crosextra-caladea`
 > **Linux 无图形界面**时有头浏览器会自动降级为无头并告警,不会启动失败。
 
 ## 3. 起服务 + 注册客户端
@@ -168,6 +170,9 @@ npm run test:headed       # 按需弹窗(2.3.0):自己起一份独立服务测,�
 - 新增 `/livez`(不拉起浏览器)和 `/admin/*`(时间线、接管、白名单、截图、重启;不设 `ADMIN_TOKEN` 时只许本机访问)。
   一台机器跑多个工位的环境变量见 `USAGE.md` 第五节;本机单用全都不用设。
 - 发布包新带 `extension/` 目录(自带扩展),自动更新会一起装。
+- **反检测**(`docs/architecture.md` §12):无头改用完整版 Chromium 的新无头模式(更像真浏览器,内存略高);网页请求由浏览器自己发;
+  页面里不再做任何指纹伪装;每个工作区有固定身份,`space_new` 可挂 `proxy`(时区跟出口)、开 `humanize`(拟人操作)。
+  新内核第一次启动会多重启一次浏览器(读原生 Client Hints,之后缓存),属正常。自测:`cd claude && node test/stealth-check.mjs`。
 
 **2.3.1 搬登录态**:`node mcp.mjs merge-headed` 把旧 `browser-headed`(profile `user_data_headed`)里的 cookie 并进 `browser`
 (两边都有的取过期更晚的,不拿旧的盖新的;会话 cookie 和 localStorage 搬不了),会先暂停在跑的浏览器服务、合并完原样恢复。

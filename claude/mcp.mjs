@@ -95,6 +95,9 @@ function runSoft(cmd, args, cwd, env) {
 // Chromium 二进制同理,走 PLAYWRIGHT_DOWNLOAD_HOST 的 npmmirror 镜像。
 const MIRROR_REGISTRY = 'https://registry.npmmirror.com';
 const MIRROR_PW_HOST = 'https://cdn.npmmirror.com/binaries/playwright';
+// Linux 上浏览器要的字体(反检测,docs/architecture.md §12):中日韩、彩色 emoji、和 Windows 常见字体等宽的开源字体。
+// 和 deploy/desk/install.sh 那份保持一致
+const LINUX_FONTS =['fonts-noto-cjk', 'fonts-noto-color-emoji', 'fonts-liberation2', 'fonts-crosextra-carlito', 'fonts-crosextra-caladea'];
 
 async function detectRegistry() {
   if (process.env.NPM_REGISTRY) {
@@ -148,10 +151,16 @@ function installChromium(preferMirror) {
     log('  ⚠ 指定的 Chromium 下载地址失败,改用 npmmirror 镜像重试');
     ok = runSoft(NPX, ['patchright', ...pwArgs], ROOT, { PLAYWRIGHT_DOWNLOAD_HOST: MIRROR_PW_HOST });
   }
+  if (isLinux && isRoot) {
+    if (!runSoft('apt-get', ['install', '-y', '-q', '--no-install-recommends', ...LINUX_FONTS], ROOT, { DEBIAN_FRONTEND: 'noninteractive' })) {
+      log(`  ⚠ 字体没装上,可稍后手动:apt-get install ${LINUX_FONTS.join(' ')}`);
+    }
+  }
   if (isLinux && !isRoot) {
-    log('  ⚠ 未以 root 运行,已跳过系统库(--with-deps),避免卡在 sudo。');
-    log('    浏览器要能真正启动,请在你自己的终端手动跑一次(会要 sudo 密码):');
+    log('  ⚠ 未以 root 运行,已跳过系统库(--with-deps)和字体,避免卡在 sudo。');
+    log('    浏览器要能真正启动、不因缺字体被网站风控拦,请在你自己的终端手动跑一次(会要 sudo 密码):');
     log('        sudo npx patchright install-deps chromium');
+    log(`        sudo apt-get install --no-install-recommends ${LINUX_FONTS.join(' ')}`);
   }
   if (!ok) log('  ⚠ Chromium 这步未完成,可稍后单独重试;不影响其余 MCP / 初始化继续。');
 }

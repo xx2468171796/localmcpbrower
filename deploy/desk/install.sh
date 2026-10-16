@@ -96,6 +96,11 @@ fi
 missing=()
 command -v xrandr >/dev/null || missing+=(x11-xserver-utils)
 [ -d /etc/polkit-1/rules.d ] && command -v pkaction >/dev/null || missing+=(polkitd)
+# 字体(反检测,架构 §12):缺中日韩 / 彩色 emoji / 和 Windows 常见字体等宽的字体,是 Linux 浏览器被风控拦的常见原因
+# (Liberation = Arial / Times / Courier 等宽,Carlito / Caladea = Calibri / Cambria 等宽)
+for f in fonts-noto-cjk fonts-noto-color-emoji fonts-liberation2 fonts-crosextra-carlito fonts-crosextra-caladea; do
+  dpkg -s "$f" >/dev/null 2>&1 || missing+=("$f")
+done
 if [ ${#missing[@]} -gt 0 ]; then
   DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends "${missing[@]}" || die "装不上 ${missing[*]}"
 fi
