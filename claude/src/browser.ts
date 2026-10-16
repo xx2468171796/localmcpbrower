@@ -103,6 +103,15 @@ export interface BrowserStateSnapshot {
 
 const DEFAULT_SPACE = 'default';
 
+/** Linux 上有没有能用的 GPU 渲染节点(/dev/dri/renderD*);读不了目录按没有算 */
+function hasGpuRenderNode(): boolean {
+  try {
+    return fs.readdirSync('/dev/dri').some((n) => n.startsWith('renderD'));
+  } catch {
+    return false;
+  }
+}
+
 /**
  * 这台机能不能弹出可见窗口;不能就返回原因(给人看的中文),能就返回 null。
  * 只有 Linux 能可靠判断(没有 DISPLAY / WAYLAND_DISPLAY 就没有图形会话)。
@@ -571,7 +580,8 @@ class BrowserManager {
     // 比软件渲染更像机器人(2026-10-17 ubuntu-244 体检);有显卡的桌面用真显卡,没显卡的回落 SwiftShader(H5 游戏也要 WebGL)。
     // 不用 --single-process:整个浏览器挤在一个进程里,任何一个标签页崩溃都会带走整个浏览器(所有标签页和登录态)。
     // 2026-09-25 在 ubuntu-244 实测:带它时一页 chrome://crash 整个浏览器关闭;去掉后只坏那一页,其余照常。
-    const linuxArgs = ['--disable-setuid-sandbox', '--no-zygote'];
+    // 没有 GPU 渲染节点(虚拟机 / 服务器)时有头窗口(Xvfb)默认连 WebGL 都起不来,要显式走 SwiftShader(ubuntu-244 + Xvfb 实测)
+    const linuxArgs = ['--disable-setuid-sandbox', '--no-zygote', ...(hasGpuRenderNode() ? [] : ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'])];
     // Windows 专属：无需额外启动参数，通用参数已足够
     const winArgs: string[] = [];
     const platformArgs = IS_LINUX ? linuxArgs : IS_MAC ? macArgs : IS_WIN ? winArgs : [];

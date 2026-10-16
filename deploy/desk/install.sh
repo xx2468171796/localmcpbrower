@@ -106,6 +106,14 @@ if [ ${#missing[@]} -gt 0 ]; then
 fi
 install -m 644 "$HERE/polkit/50-ai-desk.rules" /etc/polkit-1/rules.d/50-ai-desk.rules
 
+# openbox 配置 = 系统默认 rc.xml + 底部 48px 边距:让出「任务栏」位置(_NET_WORKAREA),页面里 screen.availHeight 比 height 小,
+# 真桌面都这样;两者相等是无头 / 机器人的常见特征(反检测,架构 §12)。放 /etc/xdg 下,工位用户读得到
+sed '/<margins>/,/<\/margins>/ s#<bottom>[0-9]*</bottom>#<bottom>48</bottom>#' /etc/xdg/openbox/rc.xml > /etc/xdg/openbox/ai-desk-rc.xml.new \
+  && grep -q '<bottom>48</bottom>' /etc/xdg/openbox/ai-desk-rc.xml.new \
+  && mv /etc/xdg/openbox/ai-desk-rc.xml.new /etc/xdg/openbox/ai-desk-rc.xml \
+  || die "生成 openbox 配置失败(/etc/xdg/openbox/rc.xml 里没有 <margins>?)"
+chmod 644 /etc/xdg/openbox/ai-desk-rc.xml
+
 install -m 644 "$HERE"/units/desk@.target "$HERE"/units/desk-*@.service "$HERE"/units/ai-desk-firewall.service /etc/systemd/system/
 install -m 750 "$HERE/deskctl" /usr/local/sbin/deskctl
 install -m 750 "$HERE/desk-smoke.sh" /usr/local/sbin/desk-smoke
