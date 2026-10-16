@@ -19,6 +19,25 @@ import {
   withActionEffects,
 } from './common.js';
 import { withTimeout } from './timing.js';
+import {
+  elementBox, humanClick, humanDrag, humanHover, humanizeActive, humanScroll, humanType, isCancelled,
+} from '../humanize/index.js';
+
+/**
+ * 拟人开着就先走拟人路径,元素层面走不通(没有框、被挡、类型不合适、值对不上……)退回原有实现;
+ * 取消照常抛出。拟人关着时直接走原有实现,行为与以前完全一样。
+ */
+async function humanFirst(human: () => Promise<void>, fallback: () => Promise<void>): Promise<void> {
+  if (!humanizeActive()) return fallback();
+  try {
+    await human();
+    return;
+  } catch (e) {
+    if (isCancelled(e)) throw e;
+  }
+  throwIfCancelled();
+  await fallback();
+}
 
 /** 三级点击:正常(等可见)→ force → DOM el.click();都不行抛出最后的错 */
 async function clickInFrame(frame: Frame, selector: string): Promise<void> {
@@ -51,7 +70,10 @@ export async function click(input: unknown): Promise<ToolResult<ClickResult & Ac
     const { selector, fromRef } = resolveTarget(args.selector, args.ref);
     const page = await getBrowserManager().getPage();
     const frame = await targetFrame(page, selector, fromRef, args.ref);
-    const effects = await withActionEffects(page, () => clickInFrame(frame, selector));
+    const effects = await withActionEffects(page, () => humanFirst(
+      () => humanClick(page, frame, selector),
+      () => clickInFrame(frame, selector),
+    ));
     return { success: true, data: { selector, clicked: true, ...effects } };
   } catch (error) {
     return failFrom(error);
@@ -87,13 +109,24 @@ async function fillInFrame(frame: Frame, selector: string, text: string): Promis
   if (!found) throw new ToolError('ELEMENT_NOT_FOUND', `元素未找到或不可输入: ${selector}`);
 }
 
+/**
+ * 输入文字:拟人开着时逐字敲(密码框不出错字),走不通退回 fill 三级;关着就是原来的 fill 三级。
+ * humanChars = 逐字敲的前多少个字(fill_form 一次填很多字段,给得小些,免得整体太慢撞上期限)。
+ */
+async function typeInFrame(page: Page, frame: Frame, selector: string, text: string, humanChars?: number): Promise<void> {
+  await humanFirst(async () => {
+    const password = await isPasswordField(frame, selector);
+    await humanType(page, frame, selector, text, { password, humanChars });
+  }, () => fillInFrame(frame, selector, text));
+}
+
 export async function type(input: unknown): Promise<ToolResult<TypeResult & { length: number; password: boolean }>> {
   try {
     const args = parseInput(TypeSchema, input);
     const { selector, fromRef } = resolveTarget(args.selector, args.ref);
     const page = await getBrowserManager().getPage();
     const frame = await targetFrame(page, selector, fromRef, args.ref);
-    await fillInFrame(frame, selector, args.text);
+    await typeInFrame(page, frame, selector, args.text);
     // 不回显输入内容(密码框尤其不能):只给长度
     const password = await isPasswordField(frame, selector);
     return { success: true, data: { selector, typed: true, length: args.text.length, password } };
@@ -108,14 +141,16 @@ export async function hover(input: unknown): Promise<ToolResult<{ hovered: boole
     const { selector, fromRef } = resolveTarget(args.selector, args.ref);
     const page = await getBrowserManager().getPage();
     const frame = await targetFrame(page, selector, fromRef, args.ref);
-    try {
-      await frame.hover(selector, { timeout: 5000, ...sig() });
-    } catch (e) {
-      if (e instanceof Error && /intercepts pointer events|not visible|outside of the viewport/i.test(e.message)) {
-        // 被遮罩挡住 / 不在视口:force 悬停(直接把鼠标移到元素中心)
-        await frame.hover(selector, { timeout: 5000, force: true, ...sig() });
-      } else throw e;
-    }
+    await humanFirst(() => humanHover(page, frame, selector), async () => {
+      try {
+        await frame.hover(selector, { timeout: 5000, ...sig() });
+      } catch (e) {
+        if (e instanceof Error && /intercepts pointer events|not visible|outside of the viewport/i.test(e.message)) {
+          // 被遮罩挡住 / 不在视口:force 悬停(直接把鼠标移到元素中心)
+          await frame.hover(selector, { timeout: 5000, force: true, ...sig() });
+        } else throw e;
+      }
+    });
     return { success: true, data: { hovered: true } };
   } catch (error) {
     return failFrom(error);
@@ -161,6 +196,9 @@ export async function selectOption(input: unknown): Promise<ToolResult<{ selecte
   }
 }
 
+/** fill_form 里每个文本字段逐字敲的字数上限(其余整段插入) */
+const FORM_HUMAN_CHARS = 60;
+
 type FormField = { selector: string; value: string; type: 'text' | 'select' | 'checkbox' | 'radio' };
 
 async function fillField(page: Page, field: FormField): Promise<void> {
@@ -173,7 +211,7 @@ async function fillField(page: Page, field: FormField): Promise<void> {
     await frame.setChecked(field.selector, want, { timeout: 3000, ...sig() })
       .catch(() => frame.setChecked(field.selector, want, { timeout: 3000, force: true, ...sig() }));
   } else {
-    await fillInFrame(frame, field.selector, field.value);
+    await typeInFrame(page, frame, field.selector, field.value, FORM_HUMAN_CHARS);
   }
 }
 
@@ -211,24 +249,39 @@ export async function keyboardPress(input: unknown): Promise<ToolResult<{ key: s
   }
 }
 
-/** 拖放:两端在同一个 frame 里用 dragAndDrop;失败则退回逐步移动鼠标(部分拖拽库只认真实鼠标轨迹) */
+/** 原有拖放:dragAndDrop;失败则退回逐步移动鼠标(部分拖拽库只认真实鼠标轨迹) */
+async function dragInFrame(page: Page, frame: Frame, source: string, target: string): Promise<void> {
+  try {
+    await frame.dragAndDrop(source, target, { timeout: 5000, ...sig() });
+  } catch (e) {
+    if (e instanceof ToolError && e.code === 'CANCELLED') throw e;
+    const from = await frame.locator(source).first().boundingBox({ timeout: 3000 });
+    const to = await frame.locator(target).first().boundingBox({ timeout: 3000 });
+    if (!from || !to) throw e;
+    await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 12 });
+    await page.mouse.up();
+  }
+}
+
+/** 拖放:拟人开着先走拟人拖动(曲线、慢一点),走不通或关着用原有实现 */
 export async function dragAndDrop(input: unknown): Promise<ToolResult<{ dragged: boolean }>> {
   try {
     const { source, target } = parseInput(DragAndDropSchema, input);
     const page = await getBrowserManager().getPage();
     const frame = await targetFrame(page, source, false);
-    try {
-      await frame.dragAndDrop(source, target, { timeout: 5000, ...sig() });
-    } catch (e) {
-      if (e instanceof ToolError && e.code === 'CANCELLED') throw e;
-      const from = await frame.locator(source).first().boundingBox({ timeout: 3000 });
-      const to = await frame.locator(target).first().boundingBox({ timeout: 3000 });
-      if (!from || !to) throw e;
-      await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
-      await page.mouse.down();
-      await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 12 });
-      await page.mouse.up();
-    }
+    await humanFirst(async () => {
+      // 先把源元素滚进视口,再量目标;目标不在视口里(鼠标够不着)就退回原有实现
+      const from = await elementBox(frame, source);
+      const to = await frame.locator(target).first().boundingBox({ timeout: 3000, ...sig() });
+      const vp = page.viewportSize();
+      if (!to || to.width < 1 || to.height < 1) throw new ToolError('ELEMENT_NOT_FOUND', '拖放目标没有可放的区域');
+      if (vp && (to.x + to.width < 0 || to.y + to.height < 0 || to.x > vp.width || to.y > vp.height)) {
+        throw new ToolError('ELEMENT_NOT_FOUND', '拖放目标不在视口内');
+      }
+      await humanDrag(page, from, to);
+    }, () => dragInFrame(page, frame, source, target));
     return { success: true, data: { dragged: true } };
   } catch (error) {
     return failFrom(error);
@@ -296,6 +349,17 @@ const SCROLL_FN = ([x, y, sel]: [number | null, number | null, string | null]) =
   return { x: box.scrollLeft, y: box.scrollTop, container: sel ?? (box.id ? `#${box.id}` : box.tagName.toLowerCase()) };
 };
 
+/** 拟人滚窗口到 y:目标夹到可滚范围内;窗口本身滚不动(SPA 容器滚动)就什么都不做 */
+async function humanWindowScroll(page: Page, y: number): Promise<void> {
+  const st = await withTimeout(page.evaluate(() => ({
+    y: window.scrollY,
+    max: document.documentElement.scrollHeight - window.innerHeight,
+  })), 5000, '读取滚动位置');
+  if (st.max <= 0) return;
+  const delta = Math.min(st.max, Math.max(0, y)) - st.y;
+  if (Math.abs(delta) >= 1) await humanScroll(page, delta);
+}
+
 export async function scroll(input: unknown): Promise<ToolResult<{ scrolled: boolean; x?: number; y?: number; container?: string }>> {
   try {
     const { x, y, selector } = parseInput(ScrollSchema, input);
@@ -305,6 +369,10 @@ export async function scroll(input: unknown): Promise<ToolResult<{ scrolled: boo
       const frame = await targetFrame(page, selector, false);
       await frame.locator(selector).first().scrollIntoViewIfNeeded({ timeout: 5000, ...sig() });
       return { success: true, data: { scrolled: true } };
+    }
+    if (!selector && y !== undefined && humanizeActive()) {
+      // 拟人:窗口能滚时先用滚轮分格滚过去;落点由下面的原有逻辑精确校正(滚轮滚不动的容器页也由它兜底)
+      await humanWindowScroll(page, y).catch((e: unknown) => { if (isCancelled(e)) throw e; });
     }
     // 给了 x/y(可同时给 selector = 在这个容器里滚)
     const frame = selector ? await targetFrame(page, selector, false) : page.mainFrame();
