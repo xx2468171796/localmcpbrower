@@ -73,7 +73,8 @@ const PROBE_SRC = String.raw`
     var dbg = gl && gl.getExtension('WEBGL_debug_renderer_info');
     var r = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : (gl ? 'no debug ext' : 'no webgl');
     add('WebGL 可用', !!gl, r);
-    add('不是软件渲染', !!gl && !/swiftshader|llvmpipe|softpipe|software/i.test(r), r, 'SwiftShader / llvmpipe 是「服务器机器人」的典型特征');
+    // 没显卡的机器(工位机 / 服务器)只能软件渲染,代码改不了(JS 改渲染器名又是谎言):只报不判,看到 SwiftShader 就知道这台机器有这个硬特征
+    add('显卡渲染(软件渲染只报不判)', /swiftshader|llvmpipe|softpipe|software/i.test(r) ? null : !!gl, r);
   } catch (e) { add('WebGL 可用', false, String(e)); }
   var c = document.createElement('canvas').getContext('2d');
   function width(font, text) { c.font = font; return c.measureText(text).width; }
@@ -120,7 +121,8 @@ const PROBE_SRC = String.raw`
       add('Worker UA = 页面 UA', d.ua === ua, d.ua);
       add('Worker 平台 = 页面平台', !!main && d.plat === main.platform, d.plat);
       main.getHighEntropyValues(['platformVersion', 'fullVersionList']).then(function (h) {
-        add('页面高熵 Client Hints 非空', !!h.platformVersion && h.fullVersionList.length > 0, (h.platformVersion || '空') + ' | ' + h.fullVersionList.map(function (b) { return b.brand + '/' + b.version; }).join(','), '真 Chrome 有真实的系统版本和完整版本号');
+        // Linux 上真 Chrome 原生 platformVersion 就是空的,只在 Windows / macOS 上要求非空
+        add('页面高熵 Client Hints 非空', (!!h.platformVersion || main.platform === 'Linux') && h.fullVersionList.length > 0,(h.platformVersion || '空') + ' | ' + h.fullVersionList.map(function (b) { return b.brand + '/' + b.version; }).join(','), '真 Chrome 有真实的系统版本和完整版本号');
         add('Worker 高熵 Client Hints = 页面', d.pv === h.platformVersion, (d.pv || '空') + ' / ' + (h.platformVersion || '空'), '自定义 UA 时 Worker 的高熵值可能为空');
         finish();
       });

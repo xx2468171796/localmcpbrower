@@ -72,13 +72,18 @@ function uaCacheKey(version: string): string {
   return `${process.platform}/${version}`;
 }
 
+/** 读到的是真正的原生值(有完整版本号列表)。platformVersion 不能当依据:Linux 上真 Chrome 原生就是空的 */
+function isNativeHints(d: UaDefaults): boolean {
+  return Array.isArray(d.fullVersionList) && d.fullVersionList.length > 0 && typeof d.platformVersion === 'string';
+}
+
 /** 某个内核版本没改过 UA 时的原生 Client Hints;没缓存过返回 null */
 export function cachedUaDefaults(version: string | null): UaDefaults | null {
   if (!version) return null;
   try {
     const all = JSON.parse(fs.readFileSync(UA_CACHE_FILE, 'utf8')) as Record<string, UaDefaults | undefined>;
     const hit = all[uaCacheKey(version)];
-    return hit && typeof hit.platformVersion === 'string' && hit.platformVersion !== '' ? hit : null;
+    return hit && isNativeHints(hit) ? hit : null;
   } catch {
     return null;
   }
@@ -86,7 +91,7 @@ export function cachedUaDefaults(version: string | null): UaDefaults | null {
 
 /** 记下原生 Client Hints(只留当前这一个版本,旧版本的作废);写失败不影响启动 */
 export function saveUaDefaults(version: string, defaults: UaDefaults): void {
-  if (!defaults.platformVersion) return;
+  if (!isNativeHints(defaults)) return;
   try {
     fs.mkdirSync(path.dirname(UA_CACHE_FILE), { recursive: true });
     fs.writeFileSync(UA_CACHE_FILE, JSON.stringify({ [uaCacheKey(version)]: defaults }, null, 2));
