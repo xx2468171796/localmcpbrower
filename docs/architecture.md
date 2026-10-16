@@ -242,6 +242,12 @@
 - 挂了代理的工作区不忽略证书错误（`fill_secret` 的证书校验是本进程直连验的，代理可以冒充站点）。换代理和换形态走同一条原地重启（拒绝打断别人的在途调用、带上会话 cookie 和标签页）。
 - `window.open` 弹出页的第一个文档没有 console 捕获（脚本按页面装，来不及）。
 
+**发版前安全审计（2026-10-17，第二轮）后的规则**：
+- **代理来源受限**：AI 经 `space_new` 只能给非默认工作区挂本机 / 局域网代理或 `BROWSER_PROXY_ALLOW` 里的主机；默认工作区只认运维的 `BROWSER_PROXY`（始终以它为准，格式错拒绝启动）。挂了代理：WebRTC 只走代理、`fill_secret` 只填 https 页面且不再本机直连验证书（证书交给浏览器严格校验）、Linux / macOS 上浏览器进程带 `TZ`（Worker 时区也跟出口）。`BROWSER_PROXY` 不传给浏览器子进程和工位其它单元。
+- **身份失败即关**：`identity.json` 读不了 / 坏了拒绝启动并在工具结果里说明，`space_new` 显式给 `proxy`（含 `""`）才按默认重建（旧文件留 `.broken-*` 备份）；文件 0600、目录 0700。
+- **console 捕获**：事件名每个页面各自随机；取日志只读数据属性、不调 getter；Node 端对应答条数 / 长度 / 类型封顶（页面能伪造应答）。残余：页面传进 `console.*` 的 Proxy 对象，取日志时它的 ownKeys 等陷阱仍会被触发。
+- **工位白名单**：托管工位禁用 Service Worker（它能直接回跳转、绕过 route）。残余：白名单生效时重定向链由 Node 先逐跳探测、再交浏览器自己跳，服务器两次回答不同可绕过；一次性链接（OAuth `code`、魔法链接）会被探测请求先用掉。根治要在 CDP `Fetch` 响应阶段查每一跳，另排期。
+
 **做不到的（如实写清）**：没有 GPU 的 Linux 机器（工位机）WebGL 只能是 SwiftShader 软件渲染，这是硬特征，原生改不了、JS 改了又是谎言，不改；体检照实报。canvas / 音频指纹噪声需要改内核（CloakBrowser 那一层），不做。
 **Linux 字体**：工位机 / Linux 本机装 CJK、彩色 emoji 和与 Windows 字体等宽的开源字体（`deploy/desk/install.sh`、`mcp.mjs install` 在 Linux 上提示 / 安装），缺字体是被拦的常见原因。
 

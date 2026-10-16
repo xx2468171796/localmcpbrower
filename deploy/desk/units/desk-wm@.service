@@ -10,7 +10,7 @@ User=desk-%i
 Group=desk-%i
 EnvironmentFile=/etc/ai-desk/desks/%i.env
 # 只要显示号 / Xauthority 这些非密钥项;密钥一律去掉
-UnsetEnvironment=MCP_AUTH_TOKEN ADMIN_TOKEN SELKIES_BASIC_AUTH_PASSWORD SELKIES_BASIC_AUTH_VIEWONLY_PASSWORD BAOLEI_MCP_URL BAOLEI_MCP_TOKEN
+UnsetEnvironment=MCP_AUTH_TOKEN ADMIN_TOKEN SELKIES_BASIC_AUTH_PASSWORD SELKIES_BASIC_AUTH_VIEWONLY_PASSWORD BAOLEI_MCP_URL BAOLEI_MCP_TOKEN BROWSER_PROXY
 ExecStartPre=/bin/sh -c 'for i in $(seq 1 50); do timeout 2 xdpyinfo >/dev/null 2>&1 && exit 0; sleep 0.2; done; exit 1'
 ExecStart=/usr/bin/openbox --config-file /etc/xdg/openbox/ai-desk-rc.xml
 Restart=always

@@ -119,6 +119,10 @@ async function main() {
   const viaUrl = `http://127.0.0.1:${site.port}/`;
   try {
     let srv = await startServer(scratch);
+    const onDefault = await srv.call('space_new', { name: 'default', proxy: proxy.url });
+    check('默认工作区不能经工具挂代理', onDefault.raw?.success === false, onDefault.raw?.error ?? '');
+    const publicProxy = await srv.call('space_new', { name: 'p2', proxy: 'http://proxy.attacker.example:8080' });
+    check('不在白名单的公网代理被拒', publicProxy.raw?.success === false, publicProxy.raw?.error ?? '');
     const made = await srv.call('space_new', { name: 'p1', proxy: proxy.url });
     check('space_new 挂代理成功', made.raw?.success === true, made.raw?.error ?? '');
     check('结果里代理账号密码打码', made.raw?.data?.proxy === `http://***@127.0.0.1:${new URL(proxy.url).port}` && !made.text.includes(PASS), made.raw?.data?.proxy);

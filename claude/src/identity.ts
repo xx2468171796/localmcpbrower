@@ -40,15 +40,47 @@ const COMMON_SCREENS: Screen[] = [
 ];
 const DEFAULT_SCREEN: Screen = { width: 1920, height: 1080 };
 
-const PROXY_RE = /^(https?|socks5):\/\/([^\s/@]+@)?[^\s/@:]+(:\d{1,5})?\/?$/i;
+/** 代理主机名:字母数字点横线,或方括号里的 IPv6 */
+const PROXY_HOST_RE = /^([A-Za-z0-9.-]+|\[[0-9a-fA-F:.]+\])$/;
 
 /**
- * 代理地址格式校验(space_new 的入参和 BROWSER_PROXY 都过它)。
+ * 代理地址格式校验(space_new 的入参和 BROWSER_PROXY 都过它)。按 URL 解析严格查:只许 http / https / socks5、
+ * 没有路径 / 查询 / 片段(否则 `http://tok#en@proxy` 会被解析成主机 tok,半截密码进启动参数和 DNS 查询)。
  * socks5 带账号密码的不收:Chromium 不支持 SOCKS5 认证,收下了工作区会起不来。
  */
 export function isProxyUrl(url: string): boolean {
   const v = url.trim();
-  return PROXY_RE.test(v) && !/^socks5:\/\/[^/]*@/i.test(v);
+  if (!v || /\s/.test(v)) return false;
+  let u: URL;
+  try { u = new URL(v); } catch { return false; }
+  if (!/^(https?|socks5):$/i.test(u.protocol) || u.search || u.hash) return false;
+  if (u.pathname !== '' && u.pathname !== '/') return false;
+  if (!PROXY_HOST_RE.test(u.hostname)) return false;
+  return !(u.protocol.toLowerCase() === 'socks5:' && (u.username || u.password));
+}
+
+/** 回环 / 局域网地址(公司自己的代理一般在这里) */
+function isPrivateHost(host: string): boolean {
+  const h = host.replace(/^\[|\]$/g, '').toLowerCase();
+  if (h === 'localhost' || h === '::1') return true;
+  const m = /^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(h);
+  if (!m) return false;
+  const a = Number(m[1]);
+  const b = Number(m[2]);
+  return a === 127 || a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31);
+}
+
+/**
+ * AI 经工具(space_new)能挂的代理:本机 / 局域网的,或运维在 BROWSER_PROXY_ALLOW 里列出的主机(`host` 或 `host:port`,逗号分隔)。
+ * 不限制的话,被网页诱导的 AI 一次调用就能把工作区永久挂到攻击者的代理上,明文 http 的内网系统、它们的 cookie 全过对方的手。
+ */
+export function proxyAllowedForTool(url: string, env: Record<string, string | undefined> = process.env): boolean {
+  if (!isProxyUrl(url)) return false;
+  const u = new URL(url.trim());
+  if (isPrivateHost(u.hostname)) return true;
+  const allow = (env['BROWSER_PROXY_ALLOW'] ?? '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  const host = u.hostname.toLowerCase();
+  return allow.includes(host) || (u.port !== '' && allow.includes(`${host}:${u.port}`));
 }
 
 /** 给人看 / 进事件流的代理地址:账号密码换成 *** */
@@ -68,57 +100,95 @@ export function pickScreen(rand: (n: number) => number = randomInt): Screen {
   return COMMON_SCREENS[rand(COMMON_SCREENS.length)] ?? DEFAULT_SCREEN;
 }
 
+/** 身份读不了 / 坏了 / 环境变量不对:拒绝启动(宁可起不来,也不悄悄改成直连、暴露真实出口) */
+export class IdentityError extends Error {
+  constructor(readonly kind: 'unreadable' | 'broken' | 'env', message: string) {
+    super(message);
+    this.name = 'IdentityError';
+  }
+}
+
+/** 运维给默认工作区配的代理(BROWSER_PROXY);格式不对直接报错 */
+function envProxy(isDefaultSpace: boolean, env: Record<string, string | undefined>): string | null {
+  const v = isDefaultSpace ? (env['BROWSER_PROXY'] ?? '').trim() : '';
+  if (!v) return null;
+  if (!isProxyUrl(v)) throw new IdentityError('env', 'BROWSER_PROXY 格式不对(http:// https:// socks5://,socks5 不能带账号密码),默认工作区不启动');
+  return v;
+}
+
 export function defaultIdentity(isDefaultSpace: boolean, env: Record<string, string | undefined> = process.env, rand?: (n: number) => number): Identity {
-  const proxy = isDefaultSpace ? (env['BROWSER_PROXY'] ?? '').trim() : '';
   return {
     version: 1,
     screen: isDefaultSpace ? DEFAULT_SCREEN : pickScreen(rand),
     locale: 'zh-CN',
-    proxy: proxy && isProxyUrl(proxy) ? proxy : null,
+    proxy: envProxy(isDefaultSpace, env),
     humanize: null,
     geo: null,
   };
 }
 
+function readIdentity(file: string): Identity | null {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw new IdentityError('unreadable', `读不了身份文件 ${file}(${(e as NodeJS.ErrnoException).code ?? String(e)}),工作区先不启动`);
+  }
+  let parsed: ReturnType<typeof IdentitySchema.safeParse> | null = null;
+  try { parsed = IdentitySchema.safeParse(JSON.parse(raw)); } catch { /* 不是 JSON */ }
+  if (parsed?.success) return parsed.data;
+  throw new IdentityError('broken', `身份文件 ${file} 坏了,工作区先不启动(里面可能记着代理,直接重建会悄悄改成直连)。`
+    + '用 space_new({ name, proxy: "<代理>" 或 "" }) 重设,旧文件会留备份');
+}
+
 /**
- * 读身份;没有就按默认新建并写回。
- * 文件在但坏了(手改坏、格式不认):原样留一份 identity.json.broken-<时刻> 并大声报错,再按默认建 ——
- * 默认身份没有代理,不报错的话工作区会悄悄改成直连、暴露真实出口。写不进去(杀毒软件占着等)不让启动失败。
+ * 读身份。没有就按默认新建;读不了 / 坏了抛 IdentityError(失败即关)。
+ * 默认工作区以运维配的 BROWSER_PROXY 为准(和身份里记的不一样就改过来)。
  */
 export function loadIdentity(dir: string, isDefaultSpace: boolean, env: Record<string, string | undefined> = process.env): Identity {
   const file = path.join(dir, IDENTITY_FILE);
-  let raw: string | null = null;
-  try { raw = fs.readFileSync(file, 'utf8'); } catch { /* 没有:按默认建 */ }
-  if (raw !== null) {
-    let parsed: ReturnType<typeof IdentitySchema.safeParse> | null = null;
-    try { parsed = IdentitySchema.safeParse(JSON.parse(raw)); } catch { /* 不是 JSON */ }
-    if (parsed?.success) return parsed.data;
-    const backup = `${file}.broken-${Date.now()}`;
-    try { fs.copyFileSync(file, backup); } catch { /* 备份不了也照样往下 */ }
-    console.error(`[identity] ${file} 坏了,已备份到 ${backup},按默认身份重建 —— 原来挂的代理不再生效,请用 space_new 重新设置`);
+  const stored = readIdentity(file);
+  const forced = envProxy(isDefaultSpace, env);
+  if (stored && (!forced || stored.proxy === forced)) return stored;
+  const next = stored ? { ...stored, proxy: forced, geo: null } : defaultIdentity(isDefaultSpace, env);
+  try { saveIdentity(dir, next); } catch (e) {
+    console.error(`[identity] 写不进 ${file}:${e instanceof Error ? e.message : String(e)}(这次先用内存里的身份)`);
   }
-  const fresh = defaultIdentity(isDefaultSpace, env);
-  try { saveIdentity(dir, fresh); } catch (e) {
-    console.error(`[identity] 写不进 ${file}:${e instanceof Error ? e.message : String(e)}(这次先用默认身份)`);
-  }
-  return fresh;
+  return next;
 }
 
+/** 写身份:目录 0700、文件 0600(里面可能有代理账号密码) */
 export function saveIdentity(dir: string, id: Identity): void {
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const file = path.join(dir, IDENTITY_FILE);
   const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(id, null, 2));
+  fs.writeFileSync(tmp, JSON.stringify(id, null, 2), { mode: 0o600 });
   fs.renameSync(tmp, file);
 }
 
-/** space_new 改身份:proxy 给 "" = 清掉;返回新身份和代理是否变了(变了要重启浏览器才生效) */
+/**
+ * space_new 改身份:proxy 给 "" = 清掉;返回新身份和代理是否变了(变了要重启浏览器才生效)。
+ * 身份文件坏了时,显式给了 proxy(含 "")= 人 / AI 明确重设:留 .broken-<时刻> 备份(0600)后按默认重建。
+ */
 export function patchIdentity(dir: string, isDefaultSpace: boolean, patch: { proxy?: string; humanize?: boolean }): { identity: Identity; proxyChanged: boolean } {
-  const cur = loadIdentity(dir, isDefaultSpace);
+  let cur: Identity;
+  let rebuilt = false;   // 从坏文件重建的:浏览器若开着,按新身份重开
+  try {
+    cur = loadIdentity(dir, isDefaultSpace);
+  } catch (e) {
+    if (!(e instanceof IdentityError) || e.kind !== 'broken' || patch.proxy === undefined) throw e;
+    const file = path.join(dir, IDENTITY_FILE);
+    const backup = `${file}.broken-${Date.now()}`;
+    fs.copyFileSync(file, backup);
+    fs.chmodSync(backup, 0o600);
+    cur = defaultIdentity(isDefaultSpace);
+    rebuilt = true;
+  }
   const proxy = patch.proxy === undefined ? cur.proxy : (patch.proxy.trim() || null);
   const next: Identity = { ...cur, proxy, humanize: patch.humanize ?? cur.humanize, geo: proxy === cur.proxy ? cur.geo : null };
   saveIdentity(dir, next);
-  return { identity: next, proxyChanged: proxy !== cur.proxy };
+  return { identity: next, proxyChanged: rebuilt || proxy !== cur.proxy };
 }
 
 /** navigator.languages 的顺序:zh-CN → zh-CN,zh,en;en-US → en-US,en */
@@ -135,12 +205,25 @@ function workArea(platform: NodeJS.Platform): { edge: 'workAreaTop' | 'workAreaB
   return { edge: 'workAreaBottom', px: 48 };
 }
 
-/** 身份对应的启动参数。--screen-info 只给无头(有头用真实屏幕) */
+/**
+ * 身份对应的启动参数。--screen-info 只给无头(有头用真实屏幕)。
+ * 挂了代理时 WebRTC 只许走代理:Chromium 默认 STUN 走 UDP 直连,页面能拿到真实出口 IP,检测站专门比这个。
+ */
 export function identityArgs(id: Identity, headless: boolean, platform: NodeJS.Platform = process.platform): string[] {
   const args = [`--lang=${id.locale}`, `--accept-lang=${acceptLanguages(id.locale)}`];
   const wa = workArea(platform);
   if (headless) args.push(`--screen-info={0,0 ${id.screen.width}x${id.screen.height} ${wa.edge}=${wa.px}}`);
+  if (id.proxy) args.push('--force-webrtc-ip-handling-policy=disable_non_proxied_udp');
   return args;
+}
+
+/**
+ * 浏览器进程要额外带的环境变量:时区跟出口时在 Linux / macOS 上设 TZ ——
+ * 上下文的 timezoneId 是按页面经 CDP 下发的,Service / Shared Worker 里多半还是系统时区,自相矛盾。Windows 不认 TZ。
+ */
+export function identityEnv(id: Identity, platform: NodeJS.Platform = process.platform): Record<string, string> {
+  const tz = effectiveTimezone(id);
+  return tz && platform !== 'win32' ? { TZ: tz } : {};
 }
 
 /** 窗口不能比屏幕大(无头时屏幕是报出来的,窗口按配置开,得收进屏幕里) */

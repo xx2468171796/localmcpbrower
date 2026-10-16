@@ -28,9 +28,9 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as http from 'http';
 import type { ConsoleLogEntry, NetworkRequestEntry, BrowserConfig } from './types.js';
-import { MAIN_WORLD_SRC, DRAIN_SRC, consoleCaptureEnabled } from './inject.js';
+import { consoleCaptureEnabled, drainSrc, mainWorldSrc, newConsoleEvent } from './inject.js';
 import { buildDocumentGate } from './document-gate.js';
-import { contextOptions, effectiveTimezone, fitWindow, identityArgs, loadIdentity, maskProxy, needsGeo, patchIdentity, saveIdentity, type Identity } from './identity.js';
+import { contextOptions, effectiveTimezone, fitWindow, identityArgs, identityEnv, loadIdentity, maskProxy, needsGeo, patchIdentity, proxyAllowedForTool, saveIdentity, type Identity } from './identity.js';
 import { lookupGeo } from './geoip.js';
 import { humanizeFromEnv, setHumanizeResolver } from './humanize/index.js';
 import { browserEnv } from './browser-env.js';
@@ -56,6 +56,7 @@ const UA_VERSION_OVERRIDE = (process.env['UA_CHROME_VERSION'] ?? '').trim() || u
 const LAUNCH_PROBE_TIMEOUT_MS = 3_000;
 /** 经代理查出口时区失败后,隔多久再查 */
 const GEO_RETRY_MS = 6 * 60 * 60 * 1000;
+/** get_console_logs 认的日志类型(页面伪造的应答里别的一律当 log) */const CONSOLE_TYPES: ReadonlySet<string> = new Set(['log', 'info', 'warn', 'error', 'debug']);
 /** 首次启动读原生 Client Hints(开回环小页面)的期限;只在每个内核版本第一次启动时发生,给宽一点 */
 const UA_PROBE_TIMEOUT_MS = 10_000;
 
@@ -243,6 +244,8 @@ class BrowserManager {
   private recycled = new RecycledSessions();
   /** 「工作区 profile + 代理」→ 上次查出口时区失败的时刻(adoptProxyGeo 隔 GEO_RETRY_MS 再试) */
   private geoFailedAt = new Map<string, number>();
+  /** 每个页面 console 捕获用的事件名(preparePage 生成,drainPageLogs 用) */
+  private consoleEvents = new WeakMap<Page, string>();
 
   private constructor(config: BrowserConfig) {
     this.config = config;
@@ -640,7 +643,9 @@ class BrowserManager {
         // 但它是本进程直连验的;挂了代理的工作区浏览器走代理,代理可以冒充站点 —— 所以有代理时也不忽略,由浏览器自己拒
         ignoreHTTPSErrors: !deskConfig.managed && !identity.proxy,
         // 浏览器只拿去掉了令牌 / 密码类变量的环境副本(browser-env.ts)
-        env: browserEnv(),
+        env: { ...browserEnv(), ...identityEnv(identity) },
+        // 托管工位禁用 Service Worker:它能拦下导航直接回一个跳转,不经过工位白名单的 route
+        ...(deskConfig.managed ? { serviceWorkers: 'block' as const } : {}),
         javaScriptEnabled: true,
         acceptDownloads: true,
         // 代理、跟出口走的时区(身份,见 identity.ts)。语言走启动参数,不再用 extraHTTPHeaders 改请求头
@@ -655,7 +660,8 @@ class BrowserManager {
     // 这个内核还没缓存过原生 Client Hints(这次没改 UA 启动):趁还没装路由读一次存起来,下次就能用启动参数改 UA
     let uaDefaults = cachedUa;
     if (headless && !cachedUa) {
-      uaDefaults = await within(this.readUaDefaults(context).catch(() => null), UA_PROBE_TIMEOUT_MS, null);
+      // 不在外面套超时:readUaDefaults 自己每步都有期限,并且返回前一定关掉探测页(否则超时后它可能被会话当成孤儿页接管,又被关掉)
+      uaDefaults = await this.readUaDefaults(context).catch(() => null);
       // 缓存键用查缓存时用的同一个版本(patchright 记录的内核版本),两者对不上时也不会每次都重读
       const key = bundled ?? context.browser()?.version();
       if (uaDefaults && key) saveUaDefaults(key, uaDefaults);
@@ -769,6 +775,13 @@ class BrowserManager {
     return effectiveTimezone(next) !== effectiveTimezone(identity);
   }
 
+  /** 当前会话所在工作区挂没挂代理(按这次启动用的身份;还没启动按磁盘上的,读不了按挂了算 —— 宁可多拒) */
+  public currentSpaceProxied(): boolean {
+    const sp = this.spaceFor(currentSessionId());
+    if (sp.identity) return !!sp.identity.proxy;
+    try { return !!loadIdentity(sp.userDataDir, sp.name === DEFAULT_SPACE).proxy; } catch { return true; }
+  }
+
   /** 当前会话所在工作区的拟人开关;null = 身份里没设,跟环境变量 */
   public humanizeForCurrentSession(): boolean | null {
     return this.spaceFor(currentSessionId()).identity?.humanize ?? null;
@@ -802,7 +815,8 @@ class BrowserManager {
       if (!addr || typeof addr === 'string') return null;
       await page.goto(`http://127.0.0.1:${addr.port}/`, { timeout: UA_PROBE_TIMEOUT_MS });
       const s = await context.newCDPSession(page);
-      const r = await s.send('Runtime.evaluate', { expression: READ_UA_DEFAULTS_SRC, awaitPromise: true, returnByValue: true });
+      const r = await within(s.send('Runtime.evaluate', { expression: READ_UA_DEFAULTS_SRC, awaitPromise: true, returnByValue: true }), UA_PROBE_TIMEOUT_MS, null);
+      if (!r) return null;
       const v: unknown = r.result.value;
       return v && typeof v === 'object' ? (v as UaDefaults) : null;
     } finally {
@@ -827,7 +841,11 @@ class BrowserManager {
     const run = (async () => {
       const s = await page.context().newCDPSession(page);
       await s.send('Page.enable');
-      if (consoleCaptureEnabled()) await s.send('Page.addScriptToEvaluateOnNewDocument', { source: MAIN_WORLD_SRC });
+      if (consoleCaptureEnabled()) {
+        const evt = newConsoleEvent();
+        await s.send('Page.addScriptToEvaluateOnNewDocument', { source: mainWorldSrc(evt) });
+        this.consoleEvents.set(page, evt);
+      }
       if (ov) await s.send('Emulation.setUserAgentOverride', { userAgent: ov.userAgent, userAgentMetadata: ov.userAgentMetadata });
     })();
     const p = within(run.catch(() => { /* 页面可能刚被关掉 */ }), LAUNCH_PROBE_TIMEOUT_MS, undefined);
@@ -1147,13 +1165,17 @@ class BrowserManager {
     this.pruneClosed(st);
     for (const p of st.pages) {
       if (p.isClosed()) continue;
+      const evt = this.consoleEvents.get(p);
+      if (!evt) continue;
       try {
-        const rows = (await p.evaluate(DRAIN_SRC)) as Array<{ type: string; text: string }>;
+        // 应答页面能伪造(抢先拦下我们的监听再自己回):条数、长度、类型都按我们的上限收
+        const rows: unknown = await p.evaluate(drainSrc(evt));
         if (!Array.isArray(rows) || rows.length === 0) continue;
-        for (const r of rows) {
+        for (const r of rows.slice(0, 500)) {
+          const row = (r && typeof r === 'object' ? r : {}) as { type?: unknown; text?: unknown };
           st.consoleLogs.push({
-            type: (r.type as ConsoleLogEntry['type']) ?? 'log',
-            text: String(r.text ?? ''),
+            type: CONSOLE_TYPES.has(String(row.type)) ? (row.type as ConsoleLogEntry['type']) : 'log',
+            text: String(row.text ?? '').slice(0, 5000),
             timestamp: Date.now(),
           });
         }
@@ -1518,6 +1540,15 @@ class BrowserManager {
     if (!clean) throw new Error('space 名不能为空');
     if (!/^[A-Za-z0-9_-]{1,40}$/.test(clean)) {
       throw new Error('space 名仅允许字母/数字/下划线/连字符,长度 1-40');
+    }
+    // 经工具挂代理有限制(被网页诱导的 AI 一次调用就能把工作区永久挂到攻击者的代理上,明文 http 的内网系统全过对方的手):
+    // 默认工作区(带着全部登录态)只认运维配的 BROWSER_PROXY;别的工作区只许本机 / 局域网或 BROWSER_PROXY_ALLOW 里的代理
+    const wanted = identity.proxy?.trim();
+    if (wanted !== undefined && clean === DEFAULT_SPACE) {
+      throw new Error('默认工作区的代理只能由运维用环境变量 BROWSER_PROXY 配置;要走代理请 space_new 一个新工作区');
+    }
+    if (wanted && !proxyAllowedForTool(wanted)) {
+      throw new Error('这个代理不在允许范围:只能用本机 / 局域网的代理,或运维在 BROWSER_PROXY_ALLOW 里列出的主机');
     }
     let created = false;
     let reason: string | undefined;

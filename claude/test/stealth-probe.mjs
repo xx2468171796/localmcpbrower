@@ -123,6 +123,8 @@ const PROBE_SRC = String.raw`
       var d = e.data, main = navigator.userAgentData;
       add('Worker UA = 页面 UA', d.ua === ua, d.ua);
       add('Worker 平台 = 页面平台', !!main && d.plat === main.platform, d.plat);
+      var pageTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      add('Worker 时区 = 页面时区', d.tz === pageTz, d.tz + ' / ' + pageTz);
       main.getHighEntropyValues(['platformVersion', 'fullVersionList']).then(function (h) {
         // Linux 上真 Chrome 原生 platformVersion 就是空的,只在 Windows / macOS 上要求非空
         add('页面高熵 Client Hints 非空', (!!h.platformVersion || main.platform === 'Linux') && h.fullVersionList.length > 0,(h.platformVersion || '空') + ' | ' + h.fullVersionList.map(function (b) { return b.brand + '/' + b.version; }).join(','), '真 Chrome 有真实的系统版本和完整版本号');
@@ -159,7 +161,7 @@ export function probeHtml(headers) {
 export const PROBE_WORKER_JS = `function report(reply) {
   var d = navigator.userAgentData;
   d.getHighEntropyValues(['platformVersion']).then(function (h) {
-    reply({ ua: navigator.userAgent, plat: d.platform, pv: h.platformVersion });
+    reply({ ua: navigator.userAgent, plat: d.platform, pv: h.platformVersion, tz: Intl.DateTimeFormat().resolvedOptions().timeZone });
   });
 }
 onmessage = function () { report(postMessage); };

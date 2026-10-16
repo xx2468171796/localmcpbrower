@@ -108,6 +108,7 @@ for f in fonts-noto-cjk fonts-noto-color-emoji fonts-liberation2 fonts-crosextra
   dpkg -s "$f" >/dev/null 2>&1 || missing+=("$f")
 done
 if [ ${#missing[@]} -gt 0 ]; then
+  DEBIAN_FRONTEND=noninteractive apt-get update -q >/dev/null || true   # 索引旧了 install 会找不到包
   DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends "${missing[@]}" || die "装不上 ${missing[*]}"
 fi
 install -m 644 "$HERE/polkit/50-ai-desk.rules" /etc/polkit-1/rules.d/50-ai-desk.rules

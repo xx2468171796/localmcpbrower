@@ -8,8 +8,9 @@
 
 type Env = Record<string, string | undefined>;
 
-/** 名字像密钥的变量:令牌 / 密码 / 密钥 / 私钥,以及堡垒机、远程画面的全部配置 */
-const SENSITIVE = /TOKEN|PASSWORD|PASSWD|SECRET|CREDENTIAL|_KEY$|^BAOLEI_|^SELKIES_/i;
+/** 名字像密钥的变量:令牌 / 密码 / 密钥 / 私钥,以及堡垒机、远程画面的全部配置、默认工作区的代理(可能带账号密码;浏览器经启动选项拿代理,用不到它) */
+// BROWSER_PROXY:默认工作区的代理,可能带账号密码;浏览器经启动选项拿代理,用不到这个变量
+const SENSITIVE = /TOKEN|PASSWORD|PASSWD|SECRET|CREDENTIAL|_KEY$|^BAOLEI_|^SELKIES_|^BROWSER_PROXY/i;
 
 export function isSensitiveEnvName(name: string): boolean {
   return SENSITIVE.test(name);

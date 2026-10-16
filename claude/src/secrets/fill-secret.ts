@@ -76,8 +76,13 @@ function requireOrigin(chain: FrameChain): URL {
   return u;
 }
 
-/** 目标文档和每一层祖先都要:属于资产登记的站点 + 需要时是 https + https 证书校验通过 */
+/**
+ * 目标文档和每一层祖先都要:属于资产登记的站点 + 需要时是 https + https 证书校验通过。
+ * 挂了代理的工作区:代理能看到、改掉一切明文流量,只许填 https 页面;证书由浏览器自己严格校验(有代理时不忽略证书错误),
+ * 不再从本进程直连去验 —— 直连会让登录站点在代理出口之外再看到一次本机真实 IP。
+ */
 async function assertChain(chain: FrameChain, info: AssetInfo): Promise<void> {
+  const proxied = getBrowserManager().currentSpaceProxied();
   const rules = assetHostRules(info);
   if (rules.length === 0) {
     throw new ToolError('SECRET_ORIGIN_MISMATCH', `资产「${info.name}」没登记网址(address),不知道该填到哪个站点;请先在堡垒机里给它补上地址`);
@@ -90,6 +95,12 @@ async function assertChain(chain: FrameChain, info: AssetInfo): Promise<void> {
     }
     if (requiresHttps(info) && u.protocol !== 'https:') {
       throw new ToolError('SECRET_ORIGIN_MISMATCH', `资产「${info.name}」登记的是 https 站点,${where}是 ${u.protocol.replace(':', '')},拒绝填写`);
+    }
+    if (proxied) {
+      if (u.protocol !== 'https:') {
+        throw new ToolError('SECRET_ORIGIN_MISMATCH', `这个工作区挂了代理,${where}是明文 http,代理能看到填进去的内容,拒绝填写;换不挂代理的工作区`);
+      }
+      continue;
     }
     if (!(await originCertTrusted(u))) {
       throw new ToolError('SECRET_ORIGIN_MISMATCH', `${where}「${u.origin}」的 HTTPS 证书校验不通过(自签 / 过期 / 主机名不符,或网络被劫持),拒绝填写`);

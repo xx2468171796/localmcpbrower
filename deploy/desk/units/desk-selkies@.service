@@ -22,7 +22,7 @@ Requires=ai-desk-firewall.service
 User=desk-%i
 Group=desk-%i
 EnvironmentFile=/etc/ai-desk/desks/%i.env
-UnsetEnvironment=MCP_AUTH_TOKEN ADMIN_TOKEN BAOLEI_MCP_URL BAOLEI_MCP_TOKEN
+UnsetEnvironment=MCP_AUTH_TOKEN ADMIN_TOKEN BAOLEI_MCP_URL BAOLEI_MCP_TOKEN BROWSER_PROXY
 # 内网只许 Hermes 宿主机 ubuntu-244 连进来 / 回包
 IPAddressDeny=10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 fc00::/7 fe80::/10
 IPAddressAllow=192.168.10.244 192.168.110.239

@@ -232,7 +232,7 @@ space_close({ name: "job1" })   # 关闭并释放（default 不可关）
 
 每个工作区有固定「身份」（存在它的 profile 目录 identity.json 里，每次打开都一样 = 网站眼里同一个回访用户）：
 屏幕尺寸（default 1920x1080，其它首次随机一个常见分辨率）、语言 zh-CN，可选：
-space_new({ name: "us1", proxy: "http://user:pass@host:3128" })   # 挂代理(socks5 不能带账号密码),记住;时区自动跟出口 IP
+space_new({ name: "us1", proxy: "http://user:pass@192.168.1.5:3128" })  # 挂代理,记住;时区跟出口 IP。只许本机 / 局域网代理或运维 BROWSER_PROXY_ALLOW 里的主机;默认工作区不能经工具挂
 space_new({ name: "us1", humanize: true })                          # 拟人操作，记住
 space_new({ name: "us1", proxy: "" })                               # 去掉代理（浏览器开着会自动重开，登录态不丢）
 代理账号密码不进时间线 / 工具结果（打码成 ***）。
@@ -421,7 +421,8 @@ Linux 上缺字体也容易被拦：`mcp.mjs install`（root）/ 工位 `install
 | `BROWSER_EXTENSION` | 自带扩展：`auto`（默认，只在有窗口时加载）/ `on`（无头也加载）/ `off` |
 | `BROWSER_HUMANIZE=1` | 所有工作区默认拟人操作（鼠标曲线、逐字输入、滚轮缓动），见「拟人操作」一节；工作区自己设了 humanize 以它为准 |
 | `BROWSER_CONSOLE_CAPTURE=off` | 不装页面 console 捕获(`get_console_logs` 就拿不到页面日志)。装着时 `console.log.toString()` 不带函数名,是一行就能查出的破绽;对隐身要求最高时关掉 |
-| `BROWSER_PROXY` | 默认工作区第一次建身份时挂的代理（`http://` / `socks5://`…）；之后以 identity.json 为准，改用 `space_new({ name: "default", proxy })` |
+| `BROWSER_PROXY` | 默认工作区的代理(`http://` / `https://` / `socks5://`;socks5 不能带账号密码)。运维配置,始终以它为准;格式不对默认工作区拒绝启动。浏览器子进程和工位其它服务都拿不到这个变量 |
+| `BROWSER_PROXY_ALLOW` | AI 经 `space_new` 能挂的代理主机白名单(`host` 或 `host:port`,逗号分隔);本机 / 局域网地址不用列。不在名单里的公网代理一律拒绝 |
 | `IDLE_CLOSE_MIN` 等 | 空闲回收，0 = 永不回收（长流程建议 0） |
 | `DEVTOOLS_PORT` | 浏览器远程调试端口（多工位同机时**别开**：回环端口无鉴权，邻居能接管；真要开按工位分配，别撞） |
 | `BAOLEI_MCP_URL` + `BAOLEI_MCP_TOKEN` | fill_secret 用的堡垒机地址和密钥（不设则按 ~/.claude.json、~/.codex/config.toml 找本机的） |

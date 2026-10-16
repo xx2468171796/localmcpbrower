@@ -61,7 +61,7 @@ export const SpaceNewSchema = SpaceNameSchema.extend({
   proxy: z.string().max(500)
     .refine((v) => v.trim() === '' || isProxyUrl(v), '代理格式：http://主机:端口、https://…（可带 用户名:密码@）或 socks5://主机:端口（socks5 不支持账号密码，Chromium 限制）；给空字符串 = 去掉代理')
     .optional()
-    .describe('给这个工作区挂代理（http:// https:// 可带 用户名:密码@；socks5:// 不能带账号密码），记住，以后每次打开都走它；时区自动跟出口 IP。给 "" 去掉代理。'),
+    .describe('给这个工作区挂代理（http:// https:// 可带 用户名:密码@；socks5:// 不能带账号密码），记住，以后每次打开都走它；时区自动跟出口 IP。给 "" 去掉代理。只许本机 / 局域网代理或运维允许的主机；默认工作区不能挂；挂了代理的工作区 fill_secret 只填 https 页面。'),
   humanize: z.boolean().optional()
     .describe('拟人操作：点击 / 输入 / 滚动像真人（鼠标走曲线、逐字输入）。慢一些，被反爬拦时再开。记住到这个工作区。'),
 });
