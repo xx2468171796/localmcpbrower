@@ -54,6 +54,10 @@ export async function targetFrame(page: Page, selector: string, fromRef: boolean
 
 /** 等当前文档至少解析完(导航中途调用时用);有上限、可取消 */
 export async function settle(page: Page, ms = 10_000): Promise<void> {
+  // 已经解析完就不等:后退 / 前进从往返缓存(bfcache)恢复的页面不会再发生命周期事件,
+  // waitForLoadState 会一直等到超时(完整版 Chromium 默认开 bfcache;2026-10-17 实测后退一次白等 5 秒)
+  const state = await withTimeout(page.evaluate(() => document.readyState), 1000, '读页面状态').catch(() => 'loading');
+  if (state !== 'loading') return;
   await page.waitForLoadState('domcontentloaded', { timeout: ms, ...sig() }).catch(() => { /* 慢页面:到点就继续 */ });
 }
 
