@@ -63,6 +63,13 @@ if [ "$BUILD" = 1 ]; then
     fi
     "${GIT[@]}" -C "$SRC" merge --ff-only "origin/$BRANCH"
   fi
+  # 拉下来的可能是新版本的本脚本:bash 是边读边执行的,接着跑旧的会漏掉新步骤(2026-10-16 就漏装过 polkit 规则)。
+  # 换成刚拉的那份从头再跑一次(--branch 已定,不再拉)
+  if [ -z "${DESK_INSTALL_REEXEC:-}" ] && ! cmp -s "$0" "$SRC/deploy/desk/install.sh"; then
+    echo "install: 脚本有新版本,用新版重跑"
+    args=(--branch "$BRANCH"); [ "$FIREWALL" = 1 ] || args+=(--no-firewall)
+    DESK_INSTALL_REEXEC=1 exec bash "$SRC/deploy/desk/install.sh" "${args[@]}"
+  fi
   sha=$("${GIT[@]}" -C "$SRC" rev-parse --short=12 HEAD)
   rel=$RELEASES/$sha
   if [ ! -f "$rel/.built" ]; then
