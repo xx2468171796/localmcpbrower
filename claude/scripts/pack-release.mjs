@@ -22,8 +22,9 @@ import zlib from 'node:zlib';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 /** 包里要带的(相对 claude/):目录整个带,文件不存在就跳过(必需的另查) */
-export const INCLUDE = ['dist', 'bin', 'mcp.mjs', 'ecosystem.config.cjs', 'ecosystem.headless.config.cjs', 'start.bat', 'stop.bat', 'check-mcp-health.sh', 'install.sh', 'README.md', 'package.json', 'package-lock.json'];
-const REQUIRED = ['dist/server.js', 'bin/shim.mjs', 'mcp.mjs', 'package.json', 'package-lock.json'];
+// extension = 自带 Chrome 扩展(3.0 起,录制 / 浏览器内网络规则 / 全标签页):运行时按 dist 的相对位置加载,漏打包等于这些工具全失效
+export const INCLUDE = ['dist', 'bin', 'extension', 'mcp.mjs', 'ecosystem.config.cjs', 'ecosystem.headless.config.cjs', 'start.bat', 'stop.bat', 'check-mcp-health.sh', 'install.sh', 'README.md', 'package.json', 'package-lock.json'];
+const REQUIRED = ['dist/server.js', 'bin/shim.mjs', 'extension/manifest.json', 'mcp.mjs', 'package.json', 'package-lock.json'];
 const VERSION_RE = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,39}$/;
 
 function arg(name) {

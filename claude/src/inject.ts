@@ -146,14 +146,62 @@ const HEADERS_TO_STRIP = /^(content-security-policy(-report-only)?|content-lengt
  * 脚本进了 DOM 也不执行(实测)。本服务是自动化浏览器、只绑回环,
  * 但这条要写清楚 —— 它确实降低了被访问页面的安全边界。
  */
-export function buildHtmlInjector(sources: string[]) {
+const MAX_REDIRECT_HOPS = 10;
+
+/**
+ * 顺着重定向链在服务端逐跳查一遍,每一跳都问 allows();有一跳不许就返回那一跳的网址(拦下),全许返回 null。
+ * 浏览器自己跟随重定向时后续跳**不再经过 route**(实测),所以只能在这里提前把整条链查完。
+ *
+ * 探测一律用 GET、不带请求体(不重放原请求的方法和表单内容:原请求是 POST 时,重放等于替页面多提交一次)。
+ * 只在白名单生效时调用,所以按「失败即拦」处理:探测出错、链太长都当作不许。
+ */
+async function blockedHop(route: import('patchright').Route, first: string, allows: (url: string) => boolean): Promise<string | null> {
+  const headers = Object.fromEntries(Object.entries(route.request().headers()).filter(([k]) => !/^content-(type|length)$/i.test(k)));
+  let url = first;
+  for (let hop = 0; hop < MAX_REDIRECT_HOPS; hop++) {
+    const r = await route.fetch({ url, method: 'GET', headers, postData: Buffer.alloc(0), maxRedirects: 0 }).catch(() => null);
+    if (!r) return url;
+    const loc = r.headers()['location'];
+    if (r.status() < 300 || r.status() >= 400 || !loc) return null;
+    url = new URL(loc, url).href;
+    if (!allows(url)) return url;
+  }
+  return url;
+}
+
+/** 工位白名单(document 跳转的每一跳都要过);restricting() = 白名单非空(为空时不多跑一遍重定向链) */
+export interface NavGate {
+  allows: (url: string) => boolean;
+  restricting: () => boolean;
+  onBlocked: (url: string) => void;
+}
+
+const OPEN_GATE: NavGate = { allows: () => true, restricting: () => false, onBlocked: () => {} };
+
+export function buildHtmlInjector(sources: string[], gate: NavGate = OPEN_GATE) {
   const tag = `<script>${sources.join('\n')}</script>`;
   return async function injectRoute(route: import('patchright').Route): Promise<void> {
     const req = route.request();
     if (req.resourceType() !== 'document') { await route.fallback(); return; }
     try {
-      const resp = await route.fetch();
+      // 不在 Node 里跟随重定向(默认会跟 20 跳):跟了的话最终内容会挂在**原网址**下给浏览器,
+      // 工位白名单和 fill_secret 的站点检查都只看得到第一跳 —— 可信站点上任何一个开放跳转都能把恶意页面伪装成它。
+      // 3xx:先在服务端把整条链逐跳过白名单,有一跳不许就整个拦下;全许则把第一跳原样交回浏览器,
+      // 浏览器自己跳,地址栏 / location.origin 都是真实的最终站点。
+      const resp = await route.fetch({ maxRedirects: 0 });
       const headers = resp.headers();
+      if (resp.status() >= 300 && resp.status() < 400 && headers['location']) {
+        const target = new URL(headers['location'], req.url()).href;
+        // 第一跳总要查(白名单为空时 allows 也会拦本服务自己的地址);整条链只在白名单非空时逐跳探
+        const bad = !gate.allows(target) ? target : gate.restricting() ? await blockedHop(route, target, gate.allows) : null;
+        if (bad) {
+          gate.onBlocked(bad);
+          await route.abort('blockedbyclient');
+          return;
+        }
+        await route.fulfill({ status: resp.status(), headers });
+        return;
+      }
       const ct = headers['content-type'] ?? '';
       if (!ct.includes('text/html')) { await route.fulfill({ response: resp }); return; }
 
@@ -172,9 +220,10 @@ export function buildHtmlInjector(sources: string[]) {
         contentType: 'text/html; charset=utf-8',
       });
     } catch {
-      // 取原响应失败(网络错误/被中断)—— 放行,让浏览器自己去报错,
-      // 别因为注入失败就把整个导航吞掉
-      await route.fallback().catch(() => { /* 已被别处处理 */ });
+      // 取原响应失败(网络错误/被中断):白名单生效时一律拦下(失败即拦 —— 交回浏览器自己取,
+      // 它跟随的重定向就不再经过这里);白名单为空时放行,让浏览器自己去报错,别因为注入失败吞掉导航
+      if (gate.restricting()) await route.abort('blockedbyclient').catch(() => { /* 已被别处处理 */ });
+      else await route.fallback().catch(() => { /* 已被别处处理 */ });
     }
   };
 }

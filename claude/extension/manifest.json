@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "ankotti-desk",
+  "description": "浏览器 MCP 自带扩展:操作录制、浏览器内网络规则、全标签页与下载管理。由 MCP 经 Service Worker 直接调用,不对网页暴露任何资源。",
+  "version": "3.0.0",
+  "minimum_chrome_version": "120",
+  "background": { "service_worker": "background.js" },
+  "permissions": ["tabs", "storage", "downloads", "declarativeNetRequest", "declarativeNetRequestFeedback", "webNavigation", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["recorder.js"],
+      "all_frames": true,
+      "match_about_blank": true,
+      "run_at": "document_start"
+    }
+  ]
+}

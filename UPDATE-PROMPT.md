@@ -103,7 +103,7 @@ cd ~/code/localmcpbrower/claude && node -e "
 const { Client } = await import('@modelcontextprotocol/client');
 const { StdioClientTransport } = await import('@modelcontextprotocol/client/stdio');
 const SHIM = process.cwd() + '/bin/shim.mjs';
-for (const [name, svc, want] of [['浏览器','headless',47],['有头','headed',47]]) {
+for (const [name, svc, want] of [['浏览器','headless',57],['有头','headed',57]]) {
   try {
     const c = new Client({name:'probe',version:'1'}, {capabilities:{elicitation:{}}});
     await c.connect(new StdioClientTransport({command: process.execPath, args:[SHIM, svc]}));
@@ -122,7 +122,7 @@ for (const [name, svc, want] of [['浏览器','headless',47],['有头','headed',
 
 ```bash
 cd ~/code/localmcpbrower/claude
-npm run test:smoke        # 浏览器 47 个工具,末尾应为「覆盖 47/47 … 通过 49/49」
+npm run test:smoke        # 浏览器 57 个工具,末尾应为「覆盖 57/57 … 通过 59/59」
 npm run test:headed       # 按需弹窗(2.3.0):自己起一份独立服务测,不碰在跑的服务;Windows 上会短暂弹出窗口
 ```
 
@@ -158,6 +158,16 @@ npm run test:headed       # 按需弹窗(2.3.0):自己起一份独立服务测,�
 - `snapshot` 的 `deep:true` 静默失效 —— 与 `deep:false` 输出逐字节相同。⚠️ 这条**没修好功能**,
   是改成**如实报告不可用**(当前 patchright 版本下主世界/隔离世界不互通,深扫描做不了);
   以前它假装成功,调用方会误以为「这页确实没有隐藏可点元素」
+
+**3.0.0 AI 浏览器工位**(47 → 57,设计见 `docs/architecture.md`):本机照常用、不用改配置,升级照本文第 4 步验收即可。
+- 新工具:`cdp_send`(CDP 直通)、`fill_secret` / `login_with_asset`(按堡垒机资产填账号密码,明文不经过 AI,站点对不上拒填)、
+  `run_flow`(多步流程一次跑完,跨导航)、`record_start` / `record_stop` / `record_status`(录制人的操作转流程)、
+  `browser_tabs` / `browser_downloads` / `browser_block_rules`(自带 Chrome 扩展,只在有窗口的浏览器里加载)。
+- 失败结果带错误码 `code` 并标 MCP `isError`;`snapshot` 不再输出密码框内容;无头 UA / Client Hints 不再暴露 HeadlessChrome;
+  翻页爬取、点击后跳转 / 弹窗 / 下载、自定义下拉框、内部容器滚动等一批老 bug 修好;截图 / PDF / 上传路径收口。
+- 新增 `/livez`(不拉起浏览器)和 `/admin/*`(时间线、接管、白名单、截图、重启;不设 `ADMIN_TOKEN` 时只许本机访问)。
+  一台机器跑多个工位的环境变量见 `USAGE.md` 第五节;本机单用全都不用设。
+- 发布包新带 `extension/` 目录(自带扩展),自动更新会一起装。
 
 **2.3.1 搬登录态**:`node mcp.mjs merge-headed` 把旧 `browser-headed`(profile `user_data_headed`)里的 cookie 并进 `browser`
 (两边都有的取过期更晚的,不拿旧的盖新的;会话 cookie 和 localStorage 搬不了),会先暂停在跑的浏览器服务、合并完原样恢复。

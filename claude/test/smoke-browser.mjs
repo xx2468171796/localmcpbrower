@@ -1,5 +1,5 @@
 /**
- * 浏览器 MCP 冒烟测试 —— 47 个工具全覆盖,走真实调用路径(shim → named pipe → 常驻服务)。
+ * 浏览器 MCP 冒烟测试 —— 57 个工具全覆盖(3.0 新增 10 个的细节行为另见 test/desk-e2e.mjs),走真实调用路径(shim → named pipe → 常驻服务)。
  *
  *   node test/smoke-browser.mjs [headless|headed] [临时目录]
  *
@@ -33,7 +33,8 @@ async function step(name, args = {}, opts = {}) {
     const txt = r.content?.[0]?.text ?? '';
     // 输出已排成给人看的文本;原始结果在 _meta['localmcp/result']
     let parsed = r._meta?.['localmcp/result']; if (!parsed) { try { parsed = JSON.parse(txt); } catch { parsed = { raw: txt.slice(0, 200) }; } }
-    const ok = parsed?.success !== false;
+    // opts.allow:这些错误码算「安全地拒绝」(如无头服务上的扩展工具返回 UNSUPPORTED),也记通过
+    const ok = parsed?.success !== false || (opts.allow ?? []).includes(parsed?.code);
     results.push({ name, ok, ms: Date.now() - t0, note: (opts.note ? opts.note(parsed) : '') || (ok ? '' : parsed.error) });
     return parsed;
   } catch (e) {
@@ -154,6 +155,24 @@ await step('wait_for_human', { appears: 'body', timeoutSec: 5 }, { timeout: 3000
 await step('hide_window', {}, { timeout: 60000, note: p => brief(p, 80) });
 await step('request_human', { message: '自动化探测:预期被「无 elicitation 能力」的客户端直接拒绝,不应挂起' },
   { timeout: 20000, note: p => brief(p, 110) });
+
+// ───── F. 3.0 新增(详细行为另见 test/desk-e2e.mjs;这里只确认常驻服务上每个都能正常应答)
+await step('cdp_send', { method: 'Runtime.evaluate', params: { expression: '6*7', returnByValue: true } },
+  { note: p => 'eval=' + (p?.data?.result?.result?.value ?? '?') });
+await step('run_flow', { steps: [{ tool: 'list_tabs' }, { tool: 'snapshot', args: { interactiveOnly: true, maxChars: 300 }, as: 'S' }] },
+  { note: p => '完成 ' + (p?.data?.completed ?? '?') + '/' + (p?.data?.total ?? '?') });
+// 不存在的资产 / 元素:必须安全地拒绝,绝不能抛异常或填错
+const SECRET_SAFE = ['ELEMENT_NOT_FOUND', 'SECRET_UNAVAILABLE', 'SECRET_ORIGIN_MISMATCH'];
+await step('fill_secret', { asset: '__smoke_no_such_asset__', selector: '#__smoke_none__' }, { allow: SECRET_SAFE, note: p => p?.code ?? 'ok' });
+await step('login_with_asset', { asset: '__smoke_no_such_asset__', pass: { selector: '#__smoke_none__' } }, { allow: SECRET_SAFE, note: p => p?.code ?? 'ok' });
+// 扩展工具:有头服务上真跑,无头服务上应返回 UNSUPPORTED
+const EXT = { allow: ['UNSUPPORTED'], note: p => p?.code ?? 'ok' };
+await step('record_status', {}, EXT);
+await step('record_start', {}, EXT);
+await step('record_stop', {}, EXT);
+await step('browser_tabs', {}, EXT);
+await step('browser_downloads', { limit: 5 }, EXT);
+await step('browser_block_rules', { patterns: [], resourceTypes: [] }, EXT);
 
 // ───── 汇总
 const all = (await c.listTools()).tools.map(t => t.name);

@@ -247,12 +247,18 @@ export class ToolTelemetry {
   }
 }
 
+/** 上报里的 service 标签:托管工位(DESK_ID)带上工位 id,成绩单能分清是哪个工位的调用 */
+export function telemetryLabel(service: string, env: Env = process.env): string {
+  const desk = (env['DESK_ID'] ?? '').trim();
+  return desk ? `${service}@desk-${desk}` : service;
+}
+
 /** 按环境建一个(没配堡垒机密钥或被关掉 → null) */
 export function createToolTelemetry(version: string, service: string, env: Env = process.env, home = os.homedir()): ToolTelemetry | null {
   try {
     const target = resolveTarget(env, home);
     const flushMs = Math.max(1000, Number(env['BROWSER_TELEMETRY_FLUSH_MS']) || 60_000);
-    return target ? new ToolTelemetry({ target, version, service, flushMs }) : null;
+    return target ? new ToolTelemetry({ target, version, service: telemetryLabel(service, env), flushMs }) : null;
   } catch {
     return null;
   }

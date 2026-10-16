@@ -1,0 +1,191 @@
+/**
+ * 工位闸门(控制层):人接管时让 AI 停手,以及网站白名单。
+ *
+ * 状态机只有两态:running ⇄ paused。
+ *   - pause:在途调用不打断(打断一半的点击 / 填表比让它做完更糟),之后进来的调用按模式处理:
+ *     wait(默认)= 原地等人 resume,最多 maxWaitMs,超时返回 DESK_PAUSED;reject = 立即返回 DESK_PAUSED。
+ *   - resume:放行全部等待中的调用。
+ *   - 只读工具(看页面、截图、列标签页)和 wait_for_human 永远放行:人接管时 AI 仍能看,只是不能动。
+ * 白名单为空 = 不限;非空时只放行列表里的站点(含子域名)。
+ */
+
+import { ToolError } from '../errors.js';
+
+export type GateState = 'running' | 'paused';
+export type PauseMode = 'wait' | 'reject';
+
+/** 暂停时照常放行的工具:只读,不改页面 */
+export const READONLY_TOOLS: ReadonlySet<string> = new Set([
+  'snapshot', 'take_screenshot', 'list_tabs', 'space_list', 'get_page_content', 'get_element_text',
+  'get_element_attribute', 'get_console_logs', 'get_network', 'get_cookies', 'extract_links', 'extract_data',
+  'extract_article', 'generate_page_report', 'wait_for_human',
+]);
+
+interface Waiter { resolve: () => void; reject: (e: Error) => void; timer: NodeJS.Timeout; onAbort?: () => void; signal?: AbortSignal }
+
+export interface GateStatus {
+  state: GateState;
+  mode: PauseMode;
+  since: number;
+  by?: string;
+  reason?: string;
+  waiting: number;
+  allowlist: string[];
+}
+
+export class DeskGate {
+  private state: GateState = 'running';
+  private since: number;
+  private by?: string;
+  private reason?: string;
+  private waiters = new Set<Waiter>();
+  private allow: string[] = [];
+  private self = new Set<string>();
+
+  /** 本次暂停的模式;resume 后回到 defaultMode(pause 时临时指定的 reject 不会粘住以后的暂停) */
+  private mode: PauseMode;
+
+  constructor(
+    private readonly maxWaitMs = 600_000,
+    private readonly defaultMode: PauseMode = 'wait',
+    private readonly now: () => number = Date.now,
+  ) {
+    this.since = now();
+    this.mode = defaultMode;
+  }
+
+  status(): GateStatus {
+    return { state: this.state, mode: this.mode, since: this.since, by: this.by, reason: this.reason, waiting: this.waiters.size, allowlist: [...this.allow] };
+  }
+
+  pause(opts: { by?: string; reason?: string; mode?: PauseMode } = {}): GateStatus {
+    if (opts.mode) this.mode = opts.mode;
+    if (this.state !== 'paused') {
+      this.state = 'paused';
+      this.since = this.now();
+    }
+    this.by = opts.by;
+    this.reason = opts.reason;
+    if (this.mode === 'reject') this.rejectAll();
+    return this.status();
+  }
+
+  resume(): GateStatus {
+    if (this.state === 'paused') {
+      this.state = 'running';
+      this.since = this.now();
+      this.by = undefined;
+      this.reason = undefined;
+      this.mode = this.defaultMode;
+      for (const w of this.waiters) this.settle(w).resolve();
+    }
+    return this.status();
+  }
+
+  /**
+   * 工具调用前过闸:放行就正常返回,不放行抛 ToolError(DESK_PAUSED)。
+   * navigates = 这次调用会打开网址(参数里带 url):只读工具带了网址也会换页(如 extract_article 传 url),不算只读。
+   */
+  async admit(tool: string, signal?: AbortSignal, navigates = false): Promise<void> {
+    if (this.state === 'running' || (READONLY_TOOLS.has(tool) && !navigates)) return;
+    if (this.mode === 'reject') throw this.pausedError();
+    await new Promise<void>((resolve, reject) => {
+      const w: Waiter = {
+        resolve, reject, signal,
+        timer: setTimeout(() => this.settle(w).reject(this.pausedError()), this.maxWaitMs),
+      };
+      if (signal) {
+        if (signal.aborted) { clearTimeout(w.timer); reject(new ToolError('CANCELLED', '调用已取消')); return; }
+        w.onAbort = () => this.settle(w).reject(new ToolError('CANCELLED', '调用已取消'));
+        signal.addEventListener('abort', w.onAbort, { once: true });
+      }
+      this.waiters.add(w);
+    });
+  }
+
+  // ── 白名单 ──
+
+  setAllowlist(domains: string[]): string[] {
+    this.allow = [...new Set(domains.map(normalizeDomain).filter((d): d is string => d !== null))];
+    return [...this.allow];
+  }
+
+  /**
+   * 本服务自己的地址(host:port,和 Host 白名单同一份)。被操控的页面一律不许打开它们:
+   * 页面落到本服务的来源上,就能以「同源」身份调 /admin(解除暂停、改白名单、截图)。不受白名单是否为空影响。
+   */
+  setSelfHosts(hosts: readonly string[]): void {
+    this.self = new Set(hosts.map((h) => h.trim().toLowerCase()).filter(Boolean));
+  }
+
+  /** 网址是否指向本服务自己 */
+  isSelf(url: string): boolean {
+    if (this.self.size === 0) return false;
+    try {
+      const u = new URL(url);
+      return /^(https?|wss?):$/.test(u.protocol) && this.self.has(u.host.toLowerCase());
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 网址是否放行。本服务自己的地址永远不放行;白名单为空 = 其余不限。
+   * 非空时默认拒绝:http(s) / ws(s) 按主机名比对;页面内部用的 about: / data: / blob: 放行;
+   * file: / ftp: / view-source: / chrome: 等其它协议一律拒绝(否则白名单形同虚设)。
+   */
+  allows(url: string): boolean {
+    if (this.isSelf(url)) return false;
+    if (this.allow.length === 0) return true;
+    let host: string;
+    try {
+      const u = new URL(url);
+      if (/^(about|data|blob):$/.test(u.protocol)) return true;
+      if (!/^(https?|wss?):$/.test(u.protocol)) return false;
+      host = u.hostname.toLowerCase().replace(/\.$/, '');
+    } catch {
+      return false;
+    }
+    return this.allow.some((d) => host === d || host.endsWith(`.${d}`));
+  }
+
+  /** 不放行就抛 DOMAIN_BLOCKED(给 navigate / new_tab / batch_fetch 等先查一遍) */
+  checkUrl(url: string): void {
+    if (this.isSelf(url)) {
+      throw new ToolError('DOMAIN_BLOCKED', `「${url}」是本浏览器服务自己的地址,被操控的页面不许打开它`);
+    }
+    if (!this.allows(url)) {
+      throw new ToolError('DOMAIN_BLOCKED', `「${url}」不在本工位允许访问的网站里(白名单:${this.allow.join('、')})`);
+    }
+  }
+
+  private pausedError(): ToolError {
+    const who = this.by ? `(${this.by})` : '';
+    const why = this.reason ? `:${this.reason}` : '';
+    return new ToolError('DESK_PAUSED', `工位正在被人接管${who}${why}。等对方交还后再继续;只读操作(snapshot / 截图)可以照常用`);
+  }
+
+  private rejectAll(): void {
+    for (const w of this.waiters) this.settle(w).reject(this.pausedError());
+  }
+
+  /** 从等待集合里摘掉并清理定时器 / 取消监听,返回它的 resolve / reject */
+  private settle(w: Waiter): Waiter {
+    this.waiters.delete(w);
+    clearTimeout(w.timer);
+    if (w.onAbort && w.signal) w.signal.removeEventListener('abort', w.onAbort);
+    return w;
+  }
+}
+
+/** 'https://A.example.com/x' / '*.example.com' / 'example.com' → 'example.com' 形式;无效返回 null */
+export function normalizeDomain(raw: string): string | null {
+  const s = raw.trim().toLowerCase().replace(/^\*\./, '');
+  if (!s) return null;
+  try {
+    const host = s.includes('://') ? new URL(s).hostname : new URL(`http://${s}`).hostname;
+    return host || null;
+  } catch {
+    return null;
+  }
+}

@@ -1,0 +1,39 @@
+# 工位 %i 的虚拟屏。显示号、Xauthority 来自 /etc/ai-desk/desks/%i.env(deskctl 写)。
+# 不用 -ac:X 的抽象 socket 不受 PrivateTmp 隔离,别的工位用户也连得上,必须靠 Xauthority 小甜饼挡住。
+[Unit]
+Description=AI desk %i - Xvfb 1920x1080
+PartOf=desk@%i.target
+After=network.target
+
+[Service]
+User=desk-%i
+Group=desk-%i
+EnvironmentFile=/etc/ai-desk/desks/%i.env
+# 只要显示号 / Xauthority 这些非密钥项;密钥一律去掉
+UnsetEnvironment=MCP_AUTH_TOKEN ADMIN_TOKEN SELKIES_BASIC_AUTH_PASSWORD SELKIES_BASIC_AUTH_VIEWONLY_PASSWORD BAOLEI_MCP_URL BAOLEI_MCP_TOKEN
+ExecStart=/usr/bin/Xvfb ${DISPLAY} -screen 0 1920x1080x24 -s 0 -dpms -nolisten tcp -auth ${XAUTHORITY}
+Restart=always
+RestartSec=2
+
+# 沙箱(各工位单元相同)
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindPaths=/home/desk-%i
+PrivateTmp=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+UMask=0077
+IPAddressDeny=any
+PrivateDevices=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+ProtectClock=yes
+ProtectKernelLogs=yes
+ProtectHostname=yes
+SystemCallArchitectures=native

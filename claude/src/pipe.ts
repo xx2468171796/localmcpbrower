@@ -201,27 +201,16 @@ export function startPipeLeg(opts: PipeLegOptions): { close: () => void; endpoin
       return;
     }
     retried = true;
-    let settled = false;
-    const reclaim = () => {
-      if (settled) return;
-      settled = true;
-      try { fs.unlinkSync(endpoint); } catch { /* 已被别人清掉 */ }
-      listen();
-    };
-    let probe: net.Socket;
-    try {
-      probe = net.connect(endpoint);
-    } catch {
-      reclaim();
-      return;
-    }
-    probe.on('error', reclaim);                       // 连不上 = 死文件
-    probe.on('connect', () => {                        // 连得上 = 另一个实例还活着
-      settled = true;
-      probe.destroy();
-      console.error(`[Pipe] ${endpoint} 已被另一个实例占用,本进程不启 pipe 腿(HTTP 腿不受影响)`);
+    void probeEndpoint(endpoint).then((verdict) => {
+      if (verdict === 'stale') {
+        try { fs.unlinkSync(endpoint); } catch { /* 已被别人清掉 */ }
+        listen();
+        return;
+      }
+      console.error(verdict === 'live'
+        ? `[Pipe] ${endpoint} 已被另一个实例占用,本进程不启 pipe 腿(HTTP 腿不受影响)`
+        : `[Pipe] ${endpoint} 被占用,但探不清对面是不是活实例(连接一直没回应),为免踢掉别人不删它;本进程不启 pipe 腿(HTTP 腿不受影响)`);
     });
-    probe.setTimeout(300, () => { probe.destroy(); reclaim(); });
   });
 
   listen();
@@ -229,8 +218,60 @@ export function startPipeLeg(opts: PipeLegOptions): { close: () => void; endpoin
   return {
     endpoint,
     close: () => {
+      // 只删**自己**监听着的 socket 文件:没抢到端点(让位给了另一个实例)时删它 = 把那个实例踢下线
+      const owned = srv.listening;
       srv.close();
-      if (process.platform !== 'win32') { try { fs.unlinkSync(endpoint); } catch { /* 无所谓 */ } }
+      if (owned && process.platform !== 'win32') { try { fs.unlinkSync(endpoint); } catch { /* 无所谓 */ } }
     },
   };
+}
+
+/** 一次探活的结果:连上了 / 超时 / 连接报错(带错误码) */
+export type ProbeOutcome = { kind: 'connect' } | { kind: 'timeout' } | { kind: 'error'; code: string | undefined };
+
+/**
+ * 按一次探活结果判断 socket 文件的状态:
+ *   - live:连上了,对面有活实例;
+ *   - stale:ECONNREFUSED(文件在、没人 listen)/ ENOENT(文件已经没了)—— 确凿的死文件,可以删;
+ *   - unknown:超时或其它错误(EAGAIN = 对面 backlog 满了,恰恰说明它活着且很忙;EACCES = 别的用户的)。
+ * 原实现把「300ms 内没连上」也当死文件删掉:对面实例正忙(冷启动 Chromium、事件循环卡住)时就会被踢下线。
+ * **只有确凿证据才删**,超时永不删。
+ */
+export function probeVerdict(outcome: ProbeOutcome): 'live' | 'stale' | 'unknown' {
+  if (outcome.kind === 'connect') return 'live';
+  if (outcome.kind === 'timeout') return 'unknown';
+  return outcome.code === 'ECONNREFUSED' || outcome.code === 'ENOENT' ? 'stale' : 'unknown';
+}
+
+/** 探一次:timeoutMs 内没有结论算超时 */
+function probeOnce(endpoint: string, timeoutMs: number): Promise<ProbeOutcome> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (o: ProbeOutcome, sock?: net.Socket) => {
+      if (done) return;
+      done = true;
+      sock?.destroy();
+      resolve(o);
+    };
+    let sock: net.Socket;
+    try {
+      sock = net.connect(endpoint);
+    } catch (e) {
+      finish({ kind: 'error', code: (e as NodeJS.ErrnoException).code });
+      return;
+    }
+    sock.on('connect', () => finish({ kind: 'connect' }, sock));
+    sock.on('error', (e) => finish({ kind: 'error', code: (e as NodeJS.ErrnoException).code }, sock));
+    sock.setTimeout(timeoutMs, () => finish({ kind: 'timeout' }, sock));
+  });
+}
+
+/** 探几次(每次 1.5 秒):有确凿结论(live / stale)就停;一直不确定就返回 unknown,调用方不删文件 */
+export async function probeEndpoint(endpoint: string, attempts = 3, timeoutMs = 1500): Promise<'live' | 'stale' | 'unknown'> {
+  for (let i = 0; i < attempts; i++) {
+    const verdict = probeVerdict(await probeOnce(endpoint, timeoutMs));
+    if (verdict !== 'unknown') return verdict;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return 'unknown';
 }

@@ -1,0 +1,40 @@
+# 工位 %i 的空闲壁纸(一次性)。别并进 desk-wm 的 ExecStartPost:失败会拖挂窗口管理器。
+[Unit]
+Description=AI desk %i - idle wallpaper
+PartOf=desk@%i.target
+# Xvfb 重启后桌面背景要重画
+PartOf=desk-xvfb@%i.service
+After=desk-wm@%i.service
+Requires=desk-xvfb@%i.service
+
+[Service]
+Type=oneshot
+User=desk-%i
+Group=desk-%i
+EnvironmentFile=/etc/ai-desk/desks/%i.env
+# 只要显示号 / Xauthority 这些非密钥项;密钥一律去掉
+UnsetEnvironment=MCP_AUTH_TOKEN ADMIN_TOKEN SELKIES_BASIC_AUTH_PASSWORD SELKIES_BASIC_AUTH_VIEWONLY_PASSWORD BAOLEI_MCP_URL BAOLEI_MCP_TOKEN
+ExecStartPre=/bin/sleep 2
+ExecStart=/usr/bin/feh --no-fehbg --bg-fill /opt/ai-desk/idle.png
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindPaths=/home/desk-%i
+PrivateTmp=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+UMask=0077
+IPAddressDeny=any
+PrivateDevices=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+ProtectClock=yes
+ProtectKernelLogs=yes
+ProtectHostname=yes
+SystemCallArchitectures=native

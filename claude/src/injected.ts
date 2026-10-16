@@ -64,7 +64,12 @@ export const SNAPSHOT_WALKER_FN = `function egoSnapshot(interactiveOnly, cap, st
   function nameOf(el) {
     var n = el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('title') || el.getAttribute('alt') || '';
     if (!n) {
-      if (el.tagName.toLowerCase() === 'input' && el.value) n = el.value;
+      // 密码框的值绝不进快照(以前没标签的密码框会把明文密码当名字输出)
+      var itype = (el.getAttribute('type') || '').toLowerCase();
+      // fill_secret 填过的框(账号 / 自定义字段也算):值来自堡垒机,不回给 AI(标记见 secrets/fill-target.ts)
+      if (el.getAttribute('data-ego-secret') === '1') n = el.value ? '(已填资产)' : '';
+      else if (el.tagName.toLowerCase() === 'input' && itype === 'password') n = el.value ? '(已填密码)' : '';
+      else if (el.tagName.toLowerCase() === 'input' && itype !== 'hidden' && el.value) n = el.value;
       else n = (el.textContent || '').replace(/\\s+/g, ' ').trim();
     }
     if (n.length > 80) n = n.slice(0, 80) + '\\u2026';
@@ -82,7 +87,11 @@ export const SNAPSHOT_WALKER_FN = `function egoSnapshot(interactiveOnly, cap, st
       if (truncated) return;
       var el = node.children[i];
       var tag = el.tagName.toLowerCase();
-      if (['script','style','noscript','svg','head','meta','link'].indexOf(tag) !== -1) continue;
+      if (['script','style','noscript','svg','head','meta','link','template'].indexOf(tag) !== -1) continue;
+      // display:contents 的元素自身没有盒子(宽高为 0),但子元素照常显示:以前整棵子树被当成不可见跳过
+      var disp = '';
+      try { disp = window.getComputedStyle(el).display; } catch (e) { /* noop */ }
+      if (disp === 'contents') { walk(el, depth); walkShadow(el, depth); continue; }
       if (!isVisible(el)) continue;
       var meaningful = isInteractive(el) || /^h[1-6]$/.test(tag) || el.hasAttribute('role');
       var role = roleOf(el);
@@ -114,11 +123,21 @@ export const SNAPSHOT_WALKER_FN = `function egoSnapshot(interactiveOnly, cap, st
       } else {
         walk(el, depth);
       }
+      walkShadow(el, depth + 1);
     }
   }
-  var prev = document.querySelectorAll('[data-mcp-ref]');
-  for (var k = 0; k < prev.length; k++) prev[k].removeAttribute('data-mcp-ref');
-  walk(document.body, 0);
+  // Web Components:开放的 shadow root 里的元素以前完全看不到;click 用的 CSS 选择器本来就穿透 open shadow DOM
+  function walkShadow(el, depth) {
+    if (el.shadowRoot && !truncated) walk(el.shadowRoot, depth);
+  }
+  function clearRefs(root) {
+    var prev = root.querySelectorAll('[data-mcp-ref]');
+    for (var k = 0; k < prev.length; k++) prev[k].removeAttribute('data-mcp-ref');
+    var all = root.querySelectorAll('*');
+    for (var h = 0; h < all.length; h++) if (all[h].shadowRoot) clearRefs(all[h].shadowRoot);
+  }
+  clearRefs(document);
+  walk(document.body || document.documentElement, 0);
   return { snapshot: lines.join('\\n'), refCount: refCount, truncated: truncated };
 }`;
 
@@ -146,11 +165,20 @@ export const EGO_HELPER_SRC = `(function () {
   function resolve(sel) {
     if (sel && typeof sel === 'object' && sel.nodeType === 1) return sel;
     var s = String(sel);
-    try {
-      var byRef = document.querySelector('[data-mcp-ref="' + s.replace(/"/g, '') + '"]');
-      if (byRef) return byRef;
-    } catch (e) { /* noop */ }
-    try { return document.querySelector(s); } catch (e) { return null; }
+    var byRef = deepQuery(document, '[data-mcp-ref="' + s.replace(/["\\\\]/g, '') + '"]');
+    if (byRef) return byRef;
+    return deepQuery(document, s);
+  }
+  // 先在文档里找,找不到再进开放的 shadow root(snapshot 会给 Web Component 里的元素打 ref)
+  function deepQuery(root, s) {
+    var hit = null;
+    try { hit = root.querySelector(s); } catch (e) { return null; }
+    if (hit) return hit;
+    var all = root.querySelectorAll('*');
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].shadowRoot) { hit = deepQuery(all[i].shadowRoot, s); if (hit) return hit; }
+    }
+    return null;
   }
   function must(sel) {
     var el = resolve(sel);

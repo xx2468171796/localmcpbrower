@@ -29,6 +29,11 @@ import { buildHumanRequest, readHumanAck } from './elicit.js';
 import { createToolTelemetry, RetryTracker, sampleOf, type ToolCallSample } from './telemetry.js';
 import type { HealthCheckResult } from './types.js';
 import { Activity, packageVersion } from './activity.js';
+import { deskConfig } from './desk/config.js';
+import { deskGate, deskRing } from './desk/runtime.js';
+import { deadlineFor, errorOf, preflight, trackCall, withCode, withDeadline, type RawResult } from './desk/instrument.js';
+import { registerExtraTools } from './desk/extra-tools.js';
+import { createAdminRouter } from './desk/admin-routes.js';
 import {
   NavigateSchema, ClickSchema, TypeSchema, ScreenshotSchema,
   ExecuteJsSchema, ScrollSchema, WaitForSelectorSchema,
@@ -100,6 +105,9 @@ function buildAllowLists(): { hosts: string[]; origins: string[] } {
   return { hosts: [...hosts], origins: [...origins] };
 }
 const ALLOWED = buildAllowLists();
+/** 本服务自己的来源(http://<允许的 Host>);/admin 不接受它们,被操控的页面也不许打开这些地址 */
+const SELF_ORIGINS: ReadonlySet<string> = new Set(ALLOWED.hosts.map((h) => `http://${h}`));
+if (!STDIO) deskGate.setSelfHosts(ALLOWED.hosts);
 
 /** 定长比较，避免 token 校验被计时侧信道逐字节试出来 */
 function tokenMatches(candidate: string): boolean {
@@ -135,7 +143,11 @@ const SERVER_INSTRUCTIONS = `本地浏览器操控 MCP。工具配合要点:
 - 批量场景:多个不同 URL 用 batch_fetch,自动翻页用 crawl_pages,爬大站前先 discover_urls 探明地址。
 - 新闻/博客/文档类页面用 extract_article 直接拿干净 Markdown 正文。
 - 填 2 个以上表单字段用 fill_form;click/type 内置三级 fallback,仍失败改 execute_js 直接操作 DOM。
-- 多步交互(填表→点击→等待→读结果)优先用 run_script 一次跑完:脚本里调 __ego.click/fill/waitFor/snapshot,省去多次往返。
+- 多步交互(填表→点击→等待→读结果)一次跑完省往返:同一页内用 run_script(脚本里调 __ego.click/fill/waitFor/snapshot);跨页面跳转用 run_flow(按步骤调现有工具,{{变量.路径}} 引用前面的结果)。
+- 登录公司系统:用 login_with_asset / fill_secret 按堡垒机资产填账号密码和两步验证码,明文不经过你;不要 get_asset 拿明文再 type。
+- 人想教你一套操作:record_start → 人在窗口里做一遍 → record_stop 拿到流程,交给 run_flow 回放。
+- 现有工具做不到的浏览器能力(模拟地理位置 / 网速 / 设备、读性能指标等)用 cdp_send 直接发 CDP 命令。
+- 失败结果带错误码 code:DESK_PAUSED = 人正在接管,等一会儿再试,别换别的办法硬做;DOMAIN_BLOCKED = 网站不在本工位白名单,别绕。
 - snapshot/click/type/hover 已能穿透 iframe(含跨域),iframe 内元素同样带 ref、可直接操作。
 - 需要并行多任务或多账号隔离时用 space_new 开独立工作区(cookie/登录态互不干扰),space_switch 切换,space_list 查看。
 - 自家站点的拼图滑块(页面 <html data-yz-slider="1">,或「拖动滑块完成拼图」)不用叫人:堡垒机 list_assets 搜「AI 测试通行码」取域名对得上的那条 → get_asset otp=true 拿 8 位码 → 照资产介绍用 execute_js 提交;没有这条资产或提交失败才叫人。
@@ -185,6 +197,10 @@ const ResultEnvelope = z.object({
   success: z.boolean(),
   data: z.unknown().optional(),
   error: z.string().optional(),
+  /** 失败时的稳定错误码(errors.ts) */
+  code: z.string().optional(),
+  /** 这次调用前标签页被回收 / 重启清掉过,页面已重建 */
+  recycled: z.boolean().optional(),
 });
 
 /** 工具 handler 的最宽签名 —— 只用于 wrap 的泛型约束，不参与实际类型推导 */
@@ -206,37 +222,65 @@ const telemetry = createToolTelemetry(SERVER_VERSION, STDIO ? 'stdio' : PIPE_SER
 // 工具调用活动(两条腿合计):/health 报给本机自动更新器,它只在空闲时换版本
 const activity = new Activity();
 
-function humanizeOutput(server: McpServer): void {
+type RawHandler = (...a: unknown[]) => Promise<{ content?: Array<{ type: string; text?: string }>; _meta?: Record<string, unknown>; isError?: boolean }>;
+
+/** 本会话里每个工具的原始 handler(未排版):run_flow 按名字调它们 */
+type ToolRegistry = Map<string, RawHandler>;
+
+function rawResultOf(out: Awaited<ReturnType<RawHandler>> | undefined): { index: number; parsed: RawResult | undefined } {
+  const index = out?.content?.findIndex((c) => c.type === 'text') ?? -1;
+  if (index < 0 || !out?.content) return { index, parsed: undefined };
+  try {
+    const p = JSON.parse(out.content[index]?.text ?? '') as unknown;
+    return { index, parsed: p && typeof p === 'object' && typeof (p as { success?: unknown }).success === 'boolean' ? p as RawResult : undefined };
+  } catch {
+    return { index, parsed: undefined };
+  }
+}
+
+function humanizeOutput(server: McpServer, sessionId: string, registry: ToolRegistry): void {
   const retries = new RetryTracker(); // 每个会话一个:重试率按会话算
   const record = (sample: ToolCallSample): void => { if (telemetry) telemetry.record(retries.mark(sample)); };
   const register = server.registerTool.bind(server) as (...a: unknown[]) => unknown;
   (server as unknown as { registerTool: (...a: unknown[]) => unknown }).registerTool = (name: unknown, config: unknown, handler: unknown) => {
-    const title = (config as { title?: string }).title ?? String(name);
-    const fn = handler as (...a: unknown[]) => Promise<{ content?: Array<{ type: string; text?: string }>; _meta?: Record<string, unknown> }>;
+    const tool = String(name);
+    const title = (config as { title?: string }).title ?? tool;
+    const fn = handler as RawHandler;
+    registry.set(tool, fn);
     return register(name, config, async (...args: unknown[]) => {
       const t0 = performance.now();
       const end = activity.begin();
-      let out: Awaited<ReturnType<typeof fn>>;
+      const meta = { tool, session: sessionId, args: args[0], signal: (args[1] as { mcpReq?: { signal?: AbortSignal } } | undefined)?.mcpReq?.signal };
+      const done = trackCall(meta);
+      let out: Awaited<ReturnType<RawHandler>>;
+      // 「在忙」计数跟着底层调用真正结束才减:期限到了先回 TIMEOUT,但浏览器可能还在动,
+      // 这时让自动更新器以为空闲去换版本,会把正在进行的操作掐断
+      let settled: Promise<unknown> = Promise.resolve();
       try {
-        out = await fn(...args);
+        // 闸门(人接管中 / 白名单)和调用期限都在这里:两条腿、所有工具一视同仁
+        await preflight(meta);
+        const running = fn(...args);
+        settled = running.then(() => undefined, () => undefined);
+        out = await withDeadline(running, tool, deadlineFor(tool, meta.args));
       } catch (e) {
-        record({ tool: String(name), ok: false, ms: Math.round(performance.now() - t0), bytes: 0, truncated: false });
-        throw e;
+        out = text(errorOf(e));
       } finally {
-        end();
+        void settled.then(end);
       }
       const ms = performance.now() - t0;
-      const i = out?.content?.findIndex((c) => c.type === 'text') ?? -1;
-      let parsed: unknown;
-      if (i >= 0) { try { parsed = JSON.parse(out.content![i]!.text ?? ''); } catch { parsed = undefined; } }
-      if (!parsed || typeof parsed !== 'object' || typeof (parsed as { success?: unknown }).success !== 'boolean') {
-        record(sampleOf(String(name), out, ms));
+      const { index, parsed: raw } = rawResultOf(out);
+      if (!raw || !out.content) {
+        done(null, ms);
+        record(sampleOf(tool, out, ms));
         return out;
       }
-      const content = [...out.content!];
-      content[i] = { type: 'text', text: formatResult(title, parsed as { success: boolean; data?: unknown; error?: string }, ms) };
-      const result = { ...out, content, _meta: { ...(out._meta ?? {}), [RAW_META_KEY]: parsed } };
-      record(sampleOf(String(name), result, ms, parsed));
+      const parsed = withCode(raw);
+      if (getBrowserManager().consumeRecycled(sessionId)) parsed.recycled = true;
+      done(parsed, ms);
+      const content = [...out.content];
+      content[index] = { type: 'text', text: formatResult(title, parsed, ms) };
+      const result = { ...out, content, ...(parsed.success ? {} : { isError: true }), _meta: { ...(out._meta ?? {}), [RAW_META_KEY]: parsed } };
+      record(sampleOf(tool, result, ms, parsed));
       return result;
     });
   };
@@ -247,7 +291,8 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
     { name: 'claudemcp-browser', title: '本地浏览器操控', version: SERVER_VERSION },
     { instructions: SERVER_INSTRUCTIONS }
   );
-  humanizeOutput(server);
+  const registry: ToolRegistry = new Map();
+  humanizeOutput(server, sessionId, registry);
 
   /**
    * 从 MCP 请求上下文里取出进度上报器。
@@ -708,7 +753,7 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
 
   server.registerTool('batch_fetch', {
     title: '批量抓取 URL',
-    description: '批量抓取多个不同 URL（最多 20 个），支持内容提取和请求间隔。胜过循环 navigate + get_page_content。URL 分属不同站点时设 concurrency 3–5 并发抓，快几倍；同一站点保持 1–2，delay 500-1000ms 防封号。',
+    description: '批量抓取多个不同 URL（最多 50 个；接近调用期限时提前收尾，返回已抓到的部分并标 incomplete），支持内容提取和请求间隔。胜过循环 navigate + get_page_content。URL 分属不同站点时设 concurrency 3–5 并发抓，快几倍；同一站点保持 1–2，delay 500-1000ms 防封号。',
     inputSchema: BatchFetchSchema,
     outputSchema: ResultEnvelope,
     annotations: { title: '批量抓取 URL', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } satisfies ToolAnnotations,
@@ -747,12 +792,20 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
     annotations: { title: '提取正文', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } satisfies ToolAnnotations,
   }, wrap(async (args: unknown) => structured(await tools.extractArticle(args))));
 
+  // 3.0:CDP 直通、堡垒机取密钥、流程、录制、扩展(见 desk/extra-tools.ts)
+  registerExtraTools(server, wrap, text, registry, sessionId);
+
   return server;
 }
 
 function createApp(): express.Application {
   const app = express();
-  app.use(express.json({ limit: '10mb' }));
+  // /admin 用自己的 64kb 解析器(admin-routes.ts):全局 10mb 解析器要是先跑,那个上限就形同虚设
+  const bigJson = express.json({ limit: '10mb' });
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    if (req.path === '/admin' || req.path.startsWith('/admin/')) { next(); return; }
+    bigJson(req, res, next);
+  });
 
   // CORS：从 '*' 收紧到白名单。带 Origin 的请求一定来自浏览器页面，
   // 不在白名单直接 403（这也是 DNS rebinding 的第一道拦截）；
@@ -799,6 +852,27 @@ function createApp(): express.Application {
   // 鉴权只挡 MCP 数据面；/health 留给 PM2/探活脚本，不含敏感信息
   app.use('/mcp', requireAuth);
   app.use('/connections', requireAuth);
+
+  // 只看进程活着,绝不拉起浏览器(/health 会拉起,管理服务轮询它会让空闲回收永远不生效)
+  app.get('/livez', (_req: Request, res: Response) => {
+    res.json({ status: 'ok', version: SERVER_VERSION, deskId: deskConfig.deskId, uptime: Date.now() - startTime, browserAlive: getBrowserManager().isAlive(), ...activity.snapshot() });
+  });
+
+  // 管理接口(工位管理服务 / Hermes 面板 / 人):独立的 ADMIN_TOKEN;没设时只许本机访问
+  app.use('/admin', createAdminRouter({
+    ring: deskRing,
+    gate: deskGate,
+    adminToken: deskConfig.adminToken ?? '',
+    allowedHosts: ALLOWED.hosts,
+    // 去掉本服务自己的来源:被操控的页面一旦落到本服务的地址上,带的就是这个 Origin,不能凭它调 /admin
+    allowedOrigins: ALLOWED.origins.filter((o) => !SELF_ORIGINS.has(o)),
+    deskId: deskConfig.deskId ?? undefined,
+    version: SERVER_VERSION,
+    state: () => getBrowserManager().snapshotState(),
+    screenshot: (space) => getBrowserManager().screenshotActive(space),
+    restart: (space) => getBrowserManager().restartSpace(space),
+    metrics: () => getBrowserManager().metrics(),
+  }));
 
   // Health
   app.get('/health', async (_req: Request, res: Response) => {
@@ -1132,6 +1206,11 @@ async function runHttp(): Promise<void> {
   //
   // 这样「拉新代码」和「改客户端注册」彻底解耦:没改注册的机器照常用 HTTP,
   // 改了的走新协议。全机群切换期间不会出现半边不可用。
+  // 托管工位(PIPE_DISABLE=1)只走 HTTP:管道是本机单用的接入方式,工位都是远程调用
+  if (deskConfig.pipeDisable) {
+    console.log('[Server] PIPE_DISABLE=1:不起 pipe 腿');
+    return;
+  }
   try {
     const leg = startPipeLeg({
       service: PIPE_SERVICE,

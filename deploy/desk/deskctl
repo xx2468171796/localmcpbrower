@@ -1,0 +1,387 @@
+#!/usr/bin/env bash
+# deskctl —— AI 浏览器工位增删查改(第 4 期,设计见 docs/architecture.md §11;用法见 USAGE.md §五)。root 跑。
+#
+#   deskctl create <id> [--owner 人] [--index n] [--import 文件] [--no-start]
+#   deskctl list
+#   deskctl status [<id>]
+#   deskctl restart <id>
+#   deskctl rotate <id> [mcp|admin|selkies|all]
+#   deskctl set-baolei <id> [--url 地址]      # 服务密钥从 stdin 读;stdin 为空 = 去掉
+#   deskctl show-secrets <id> [--format env|panel|gateway]
+#   deskctl delete <id> [--keep-data] [--force] --yes   # --force:登记表里没有也清理残留
+#
+# 一个工位 = Linux 用户 desk-<id>(家目录 700)+ 单元 desk@<id>.target(xvfb / wm / wallpaper / selkies / browser-mcp)
+#          + /etc/ai-desk/desks/<id>.env(root 600)+ /etc/ai-desk/desks/registry 里一行。
+# 序号 n:显示 :(20+n)、Selkies 8080+n、浏览器 MCP 3215+n(n = 0..19)。
+# 密钥只写进 root 600 的 env 文件;除 show-secrets 外任何命令都不打印密钥。所有命令可重复执行。
+set -euo pipefail
+umask 077
+
+DESK_DIR=/etc/ai-desk/desks
+REGISTRY=$DESK_DIR/registry
+LOCK=$DESK_DIR/.lock
+HOST_IP=${DESK_HOST_IP:-192.168.110.239}
+DEFAULT_BAOLEI_URL=http://192.168.110.246:8770/mcp
+MAX_DESKS=20
+DISPLAY_BASE=20
+SELKIES_BASE=8080
+MCP_BASE=3215
+UNITS=(desk-xvfb desk-wm desk-wallpaper desk-selkies desk-browser-mcp)
+SECRET_KEYS=(MCP_AUTH_TOKEN ADMIN_TOKEN SELKIES_BASIC_AUTH_PASSWORD SELKIES_BASIC_AUTH_VIEWONLY_PASSWORD BAOLEI_MCP_URL BAOLEI_MCP_TOKEN)
+
+die() { echo "deskctl: $*" >&2; exit 1; }
+say() { echo "deskctl: $*" >&2; }
+
+[ "$(id -u)" = 0 ] || die "需要 root"
+install -d -m 700 -o root -g root /etc/ai-desk "$DESK_DIR"
+[ -f "$REGISTRY" ] || { : > "$REGISTRY"; chmod 600 "$REGISTRY"; }
+
+valid_id() { [[ "${1:-}" =~ ^[a-z][a-z0-9]{0,26}$ ]] || die "工位 id 不合法:'${1:-}'(小写字母开头,小写字母数字,最长 27 位 —— Linux 用户名 desk-<id> 最长 32)"; }
+envf() { echo "$DESK_DIR/$1.env"; }
+user_of() { echo "desk-$1"; }
+home_of() { echo "/home/desk-$1"; }
+
+# registry 行:<id> <序号> <主人> <创建时间>
+reg_line() { awk -v id="$1" '$1==id' "$REGISTRY"; }
+reg_index() { reg_line "$1" | awk '{print $2}'; }
+reg_ids() { awk 'NF{print $1}' "$REGISTRY"; }
+
+# 读 env 文件里的一个值(不 source,值里不可能有空格 / 引号)
+env_get() { [ -f "$2" ] && sed -n "s/^$1=//p" "$2" | tail -n1 || true; }
+
+gen_token() { openssl rand -hex 32; }
+gen_password() { openssl rand -base64 24 | tr -d '/+=\n' | cut -c1-24; }
+
+with_lock() { exec 9>"$LOCK"; flock -w 30 9 || die "另一个 deskctl 在跑(锁 $LOCK)"; }
+
+free_index() {
+  local used n
+  used=$(awk 'NF{print $2}' "$REGISTRY")
+  for ((n = 0; n < MAX_DESKS; n++)); do
+    grep -qx "$n" <<<"$used" || { echo "$n"; return; }
+  done
+  die "序号用完了(最多 $MAX_DESKS 个工位)"
+}
+
+port_busy() { ss -Hltn "sport = :$1" | grep -q .; }
+
+# 写 env 文件:非密钥项每次按序号重算,密钥项保留已有值(或 --import 来的),缺的生成
+write_env() {
+  local id=$1 idx=$2 import=${3:-} f tmp h k v
+  f=$(envf "$id"); h=$(home_of "$id")
+  declare -A sec=()
+  for k in "${SECRET_KEYS[@]}"; do sec[$k]=$(env_get "$k" "$f"); done
+  if [ -n "$import" ]; then
+    [ -r "$import" ] || die "读不到 $import"
+    for k in MCP_AUTH_TOKEN ADMIN_TOKEN BAOLEI_MCP_URL BAOLEI_MCP_TOKEN; do
+      v=$(env_get "$k" "$import"); [ -n "$v" ] && sec[$k]=$v
+    done
+    v=$(env_get SELKIES_BASIC_AUTH_PASSWORD "$import"); [ -n "$v" ] || v=$(env_get SELKIES_PASSWORD "$import")
+    [ -n "$v" ] && sec[SELKIES_BASIC_AUTH_PASSWORD]=$v
+    v=$(env_get SELKIES_BASIC_AUTH_VIEWONLY_PASSWORD "$import"); [ -n "$v" ] || v=$(env_get SELKIES_VIEWONLY_PASSWORD "$import")
+    [ -n "$v" ] && sec[SELKIES_BASIC_AUTH_VIEWONLY_PASSWORD]=$v
+  fi
+  [ -n "${sec[MCP_AUTH_TOKEN]}" ] || sec[MCP_AUTH_TOKEN]=$(gen_token)
+  [ -n "${sec[ADMIN_TOKEN]}" ] || sec[ADMIN_TOKEN]=$(gen_token)
+  [ -n "${sec[SELKIES_BASIC_AUTH_PASSWORD]}" ] || sec[SELKIES_BASIC_AUTH_PASSWORD]=$(gen_password)
+  [ -n "${sec[SELKIES_BASIC_AUTH_VIEWONLY_PASSWORD]}" ] || sec[SELKIES_BASIC_AUTH_VIEWONLY_PASSWORD]=$(gen_password)
+  for k in "${SECRET_KEYS[@]}"; do
+    [[ "${sec[$k]}" =~ ^[A-Za-z0-9._:/@-]*$ ]] || die "$k 的值含不允许的字符(只许字母数字和 ._:/@-)"
+  done
+  tmp=$(mktemp "$DESK_DIR/.$id.env.XXXXXX")
+  {
+    echo "# deskctl 生成,root 600。非密钥项每次 create 按序号重算;密钥用 deskctl rotate / set-baolei 改。"
+    echo "DESK_ID=$id"
+    echo "DESK_INDEX=$idx"
+    echo "DISPLAY=:$((DISPLAY_BASE + idx))"
+    echo "XAUTHORITY=$h/.Xauthority"
+    echo "HOST=$HOST_IP"
+    echo "PORT=$((MCP_BASE + idx))"
+    echo "SELKIES_PORT=$((SELKIES_BASE + idx))"
+    echo "USER_DATA_DIR=$h/data/profile"
+    echo "LOCALMCP_DATA_DIR=$h/data/data"
+    echo "SCREENSHOT_DIR=$h/data/shots"
+    for k in "${SECRET_KEYS[@]}"; do [ -n "${sec[$k]}" ] && echo "$k=${sec[$k]}"; done
+  } > "$tmp"
+  chmod 600 "$tmp"; chown root:root "$tmp"
+  mv -f "$tmp" "$f"
+}
+
+# 改 env 文件里的一项(值空 = 删掉这一项)
+env_set() {
+  local f=$1 key=$2 val=$3 tmp
+  [[ "$val" =~ ^[A-Za-z0-9._:/@-]*$ ]] || die "$key 的值含不允许的字符"
+  tmp=$(mktemp "$DESK_DIR/.set.XXXXXX")
+  grep -v "^$key=" "$f" > "$tmp" || true
+  [ -n "$val" ] && echo "$key=$val" >> "$tmp"
+  chmod 600 "$tmp"; mv -f "$tmp" "$f"
+}
+
+ensure_user() {
+  local id=$1 u h
+  u=$(user_of "$id"); h=$(home_of "$id")
+  if ! id "$u" >/dev/null 2>&1; then
+    [ -e "$h" ] && die "$h 已存在但没有用户 $u(可能是 delete --keep-data 留下的,先挪走)"
+    useradd --create-home --home-dir "$h" --shell /usr/sbin/nologin --user-group --comment "AI desk $id" "$u"
+    passwd -l "$u" >/dev/null
+  fi
+  # 家目录本身在 /home 下(root 所有),工位用户换不掉;家目录里面的东西一律以工位用户身份动 ——
+  # root 在用户可写的目录里 chown / 写文件会跟随用户放的符号链接(比如 data → /etc/ai-desk/desks),把 root 的文件交出去
+  [ -L "$h" ] && die "$h 是符号链接,拒绝"
+  chown "$u:$u" "$h"; chmod 700 "$h"
+  runuser -u "$u" -- install -d -m 700 "$h/data" "$h/data/profile" "$h/data/data" "$h/data/shots"
+}
+
+# X 小甜饼:只写一次(重启 Xvfb 不换),FamilyWild 免得主机名对不上;值经 stdin 给 xauth,不进命令行。
+# 全程以工位用户身份做(理由同 ensure_user)。
+ensure_xauth() {
+  local id=$1 u h f disp
+  u=$(user_of "$id"); h=$(home_of "$id"); f=$h/.Xauthority
+  disp=":$((DISPLAY_BASE + $2))"
+  if ! runuser -u "$u" -- sh -c '[ -s "$1" ] && xauth -f "$1" list 2>/dev/null | grep -q "^#ffff#.*$2[[:space:]]"' _ "$f" "$disp"; then
+    printf 'add %s . %s\n' "$disp" "$(mcookie)" | runuser -u "$u" -- sh -c '
+      umask 077; rm -f "$1"; : > "$1"
+      xauth -q -f "$1" source - 2>/dev/null
+      xauth -f "$1" nlist | sed -e "s/^..../ffff/" | xauth -q -f "$1" nmerge -' _ "$f"
+  fi
+  runuser -u "$u" -- chmod 600 "$f"
+}
+
+wait_livez() {
+  local id=$1 port i
+  port=$(env_get PORT "$(envf "$id")")
+  for ((i = 0; i < 60; i++)); do
+    curl -fsS -m 2 "http://$HOST_IP:$port/livez" >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  return 1
+}
+
+cmd_create() {
+  local id=${1:-}; shift || true
+  valid_id "$id"
+  local owner="" want_idx="" import="" start=1
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --owner) owner=${2:-}; shift 2 ;;
+      --index) want_idx=${2:-}; shift 2 ;;
+      --import) import=${2:-}; shift 2 ;;
+      --no-start) start=0; shift ;;
+      *) die "create:看不懂参数 $1" ;;
+    esac
+  done
+  [ -z "$owner" ] || [[ "$owner" =~ ^[A-Za-z0-9._-]{1,40}$ ]] || die "--owner 不合法"
+  with_lock
+  local idx line
+  idx=$(reg_index "$id")
+  if [ -n "$idx" ]; then
+    [ -z "$want_idx" ] || [ "$want_idx" = "$idx" ] || die "$id 已存在,序号是 $idx(不能改成 $want_idx;要改先 delete)"
+    say "$id 已存在(序号 $idx),补齐缺的部分"
+  else
+    if [ -n "$want_idx" ]; then
+      [[ "$want_idx" =~ ^[0-9]+$ ]] && [ "$want_idx" -lt "$MAX_DESKS" ] || die "--index 应为 0..$((MAX_DESKS - 1))"
+      awk -v n="$want_idx" '$2==n{f=1} END{exit !f}' "$REGISTRY" && die "序号 $want_idx 已被 $(awk -v n="$want_idx" '$2==n{print $1}' "$REGISTRY") 占用"
+      idx=$want_idx
+    else
+      idx=$(free_index)
+    fi
+    if [ "$start" = 1 ]; then
+      port_busy $((MCP_BASE + idx)) && die "端口 $((MCP_BASE + idx)) 已被占用(别的进程);确认后用 --no-start 先建再启动"
+      port_busy $((SELKIES_BASE + idx)) && die "端口 $((SELKIES_BASE + idx)) 已被占用"
+    fi
+    echo "$id $idx ${owner:--} $(date -Iseconds)" >> "$REGISTRY"
+  fi
+  if [ -n "$owner" ]; then
+    awk -v id="$id" -v o="$owner" '$1==id{$3=o} {print}' "$REGISTRY" > "$REGISTRY.tmp" && mv -f "$REGISTRY.tmp" "$REGISTRY"
+  fi
+  ensure_user "$id"
+  ensure_xauth "$id" "$idx"
+  write_env "$id" "$idx" "$import"
+  systemctl daemon-reload
+  systemctl enable -q "desk@$id.target"
+  if [ "$start" = 1 ]; then
+    systemctl start "desk@$id.target"
+    wait_livez "$id" || die "$id 的浏览器 MCP 60 秒内没起来:journalctl -u desk-browser-mcp@$id"
+  fi
+  echo "DESK_OK $id index=$idx display=:$((DISPLAY_BASE + idx)) selkies=https://$HOST_IP:$((SELKIES_BASE + idx)) mcp=http://$HOST_IP:$((MCP_BASE + idx))/mcp started=$start"
+}
+
+target_state() { systemctl is-active "desk@$1.target" 2>/dev/null || true; }
+
+cmd_list() {
+  printf '%-14s %-5s %-12s %-8s %-6s %-6s %-9s %s\n' ID 序号 主人 显示 画面 MCP 状态 创建
+  while read -r id idx owner created; do
+    [ -n "$id" ] || continue
+    printf '%-14s %-5s %-12s %-8s %-6s %-6s %-9s %s\n' "$id" "$idx" "$owner" ":$((DISPLAY_BASE + idx))" \
+      "$((SELKIES_BASE + idx))" "$((MCP_BASE + idx))" "$(target_state "$id")" "$created"
+  done < "$REGISTRY"
+}
+
+status_one() {
+  local id=$1 f port sport u st livez state code
+  f=$(envf "$id")
+  [ -n "$(reg_line "$id")" ] || die "没有工位 $id"
+  port=$(env_get PORT "$f"); sport=$(env_get SELKIES_PORT "$f")
+  echo "== 工位 $id(主人 $(reg_line "$id" | awk '{print $3}'),显示 $(env_get DISPLAY "$f"),画面 :$sport,MCP :$port)"
+  for u in "${UNITS[@]}"; do
+    st=$(systemctl is-active "$u@$id.service" 2>/dev/null || true)
+    [ "$u" = desk-wallpaper ] && [ "$st" = inactive ] && st="inactive(一次性,正常)"
+    printf '  %-22s %s\n' "$u@$id" "$st"
+  done
+  livez=$(curl -fsS -m 3 "http://$HOST_IP:$port/livez" 2>/dev/null || true)
+  if [ -n "$livez" ]; then
+    echo "  /livez       $(jq -r '"ok 版本 \(.version) 浏览器在跑=\(.browserAlive) 运行 \((.uptime/1000|floor))s"' <<<"$livez" 2>/dev/null || echo "$livez")"
+  else
+    echo "  /livez       不通"
+  fi
+  state=$(printf 'Authorization: Bearer %s\n' "$(env_get ADMIN_TOKEN "$f")" | curl -fsS -m 5 -H @- "http://$HOST_IP:$port/admin/state" 2>/dev/null || true)
+  if [ -n "$state" ]; then
+    echo "  /admin/state $(jq -r '"闸门 \(.gate.state)(\(.gate.mode)) 在途 \(.inFlight // [] | if type=="array" then length elif type=="object" then (.count // 0) else . end) 白名单 \(.gate.allowlist|length) 条 最新事件 \(.lastEventId)"' <<<"$state" 2>/dev/null || echo "取到了但解析失败")"
+  else
+    echo "  /admin/state 取不到"
+  fi
+  code=$(curl -sk -m 3 -o /dev/null -w '%{http_code}' "https://127.0.0.1:$sport/" 2>/dev/null || true)
+  echo "  Selkies      https :$sport → HTTP $code(401 = 正常,要密码)"
+  echo "  堡垒机密钥   $([ -n "$(env_get BAOLEI_MCP_TOKEN "$f")" ] && echo 已配 || echo 未配)"
+}
+
+cmd_status() {
+  if [ -n "${1:-}" ]; then valid_id "$1"; status_one "$1"; return; fi
+  local id any=0
+  for id in $(reg_ids); do any=1; status_one "$id"; done
+  [ "$any" = 1 ] || echo "(还没有工位)"
+}
+
+need_desk() { valid_id "${1:-}"; [ -n "$(reg_line "$1")" ] && [ -f "$(envf "$1")" ] || die "没有工位 ${1:-}"; }
+
+cmd_restart() {
+  need_desk "${1:-}"
+  systemctl restart "desk@$1.target"
+  wait_livez "$1" || die "$1 重启后 60 秒内 /livez 不通"
+  echo "DESK_OK restarted $1"
+}
+
+cmd_rotate() {
+  need_desk "${1:-}"
+  local id=$1 what=${2:-all} f
+  f=$(envf "$id")
+  with_lock
+  case $what in
+    mcp)     env_set "$f" MCP_AUTH_TOKEN "$(gen_token)"; systemctl restart "desk-browser-mcp@$id" ;;
+    admin)   env_set "$f" ADMIN_TOKEN "$(gen_token)"; systemctl restart "desk-browser-mcp@$id" ;;
+    selkies) env_set "$f" SELKIES_BASIC_AUTH_PASSWORD "$(gen_password)"
+             env_set "$f" SELKIES_BASIC_AUTH_VIEWONLY_PASSWORD "$(gen_password)"
+             systemctl restart "desk-selkies@$id" ;;
+    all)     env_set "$f" MCP_AUTH_TOKEN "$(gen_token)"; env_set "$f" ADMIN_TOKEN "$(gen_token)"
+             env_set "$f" SELKIES_BASIC_AUTH_PASSWORD "$(gen_password)"
+             env_set "$f" SELKIES_BASIC_AUTH_VIEWONLY_PASSWORD "$(gen_password)"
+             systemctl restart "desk-browser-mcp@$id" "desk-selkies@$id" ;;
+    *) die "rotate:只认 mcp|admin|selkies|all" ;;
+  esac
+  wait_livez "$id" || say "警告:$id 的 /livez 暂时不通"
+  echo "DESK_OK rotated $id $what —— 记得同步 Hermes(ubuntu-244 的 <实例>.desk.env / <实例>.panel.env,重启对应服务)和堡垒机资产"
+}
+
+cmd_set_baolei() {
+  need_desk "${1:-}"
+  local id=$1 url=$DEFAULT_BAOLEI_URL token f
+  shift
+  while [ $# -gt 0 ]; do
+    case $1 in --url) url=${2:-}; shift 2 ;; *) die "set-baolei:看不懂参数 $1" ;; esac
+  done
+  [[ "$url" =~ ^https?://[A-Za-z0-9._:-]+(/[A-Za-z0-9._/-]*)?$ ]] || die "--url 不合法"
+  IFS= read -r token || true
+  token=$(tr -d '[:space:]' <<<"$token")
+  f=$(envf "$id")
+  with_lock
+  if [ -z "$token" ]; then
+    env_set "$f" BAOLEI_MCP_TOKEN ""; env_set "$f" BAOLEI_MCP_URL ""
+    echo "DESK_OK baolei-removed $id"
+  else
+    env_set "$f" BAOLEI_MCP_URL "$url"; env_set "$f" BAOLEI_MCP_TOKEN "$token"
+    echo "DESK_OK baolei-set $id url=$url"
+  fi
+  systemctl restart "desk-browser-mcp@$id"
+  wait_livez "$id" || say "警告:$id 的 /livez 暂时不通"
+}
+
+cmd_show_secrets() {
+  need_desk "${1:-}"
+  local id=$1 fmt=env f port sport
+  shift
+  while [ $# -gt 0 ]; do
+    case $1 in --format) fmt=${2:-}; shift 2 ;; *) die "show-secrets:看不懂参数 $1" ;; esac
+  done
+  f=$(envf "$id"); port=$(env_get PORT "$f"); sport=$(env_get SELKIES_PORT "$f")
+  case $fmt in
+    env)
+      echo "MCP_URL=http://$HOST_IP:$port/mcp"
+      echo "MCP_AUTH_TOKEN=$(env_get MCP_AUTH_TOKEN "$f")"
+      echo "ADMIN_URL=http://$HOST_IP:$port"
+      echo "ADMIN_TOKEN=$(env_get ADMIN_TOKEN "$f")"
+      echo "SELKIES_URL=https://$HOST_IP:$sport"
+      echo "SELKIES_USER=admin"
+      echo "SELKIES_PASSWORD=$(env_get SELKIES_BASIC_AUTH_PASSWORD "$f")"
+      echo "SELKIES_VIEWONLY_PASSWORD=$(env_get SELKIES_BASIC_AUTH_VIEWONLY_PASSWORD "$f")" ;;
+    gateway)   # ubuntu-244 /etc/hermes/users/<实例>.desk.env
+      echo "BROWSER_DESK_MCP_KEY=$(env_get MCP_AUTH_TOKEN "$f")" ;;
+    panel)     # ubuntu-244 /etc/hermes/desk/<实例>.panel.env(hermes-desk-proxy@<实例>)
+      echo "AI_DESK_ADMIN_URL=http://$HOST_IP:$port"
+      echo "AI_DESK_ADMIN_TOKEN=$(env_get ADMIN_TOKEN "$f")"
+      echo "AI_DESK_SELKIES_URL=https://$HOST_IP:$sport"
+      echo "AI_DESK_SELKIES_USER=admin"
+      echo "AI_DESK_SELKIES_PASSWORD=$(env_get SELKIES_BASIC_AUTH_PASSWORD "$f")"
+      echo "AI_DESK_SELKIES_VIEWONLY_PASSWORD=$(env_get SELKIES_BASIC_AUTH_VIEWONLY_PASSWORD "$f")" ;;
+    *) die "--format 只认 env|panel|gateway" ;;
+  esac
+}
+
+cmd_delete() {
+  local id=${1:-}; shift || true
+  valid_id "$id"
+  local keep=0 yes=0 force=0 u h t
+  while [ $# -gt 0 ]; do
+    case $1 in --keep-data) keep=1; shift ;; --yes) yes=1; shift ;; --force) force=1; shift ;; *) die "delete:看不懂参数 $1" ;; esac
+  done
+  [ "$yes" = 1 ] || die "删除工位会停服务、删用户$([ "$keep" = 1 ] || echo '和全部登录态 / 数据');确认就加 --yes"
+  with_lock
+  [ -n "$(reg_line "$id")" ] || [ "$force" = 1 ] || die "登记表里没有工位 $id(确认要清理残留就加 --force)"
+  u=$(user_of "$id"); h=$(home_of "$id")
+  systemctl disable -q --now "desk@$id.target" 2>/dev/null || true
+  for t in "${UNITS[@]}"; do systemctl stop "$t@$id.service" 2>/dev/null || true; done
+  for t in "${UNITS[@]}"; do systemctl reset-failed "$t@$id.service" 2>/dev/null || true; done
+  if id "$u" >/dev/null 2>&1; then
+    pkill -KILL -u "$u" 2>/dev/null || true
+    sleep 1
+    # 共享内存 / IPC 残留别留给以后复用这个 UID 的工位
+    find /dev/shm -maxdepth 1 -user "$u" -delete 2>/dev/null || true
+    ipcs -m | awk -v u="$u" '$3==u{print $2}' | xargs -r -n1 ipcrm -m 2>/dev/null || true
+    if [ "$keep" = 1 ] && [ -d "$h" ]; then
+      t="$h.deleted-$(date +%Y%m%d%H%M%S)"
+      mv "$h" "$t"; chown -R root:root "$t"; chmod 700 "$t"
+      userdel "$u"
+      say "数据留在 $t(root 700)"
+    else
+      userdel --remove "$u" 2>/dev/null || { userdel "$u"; rm -rf --one-file-system "$h"; }
+    fi
+  fi
+  rm -f "$(envf "$id")"
+  awk -v id="$id" '$1!=id' "$REGISTRY" > "$REGISTRY.tmp" && chmod 600 "$REGISTRY.tmp" && mv -f "$REGISTRY.tmp" "$REGISTRY"
+  echo "DESK_OK deleted $id keep_data=$keep"
+}
+
+usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; }
+
+cmd=${1:-}; shift || true
+case $cmd in
+  create) cmd_create "$@" ;;
+  list) cmd_list ;;
+  status) cmd_status "$@" ;;
+  restart) cmd_restart "$@" ;;
+  rotate) cmd_rotate "$@" ;;
+  set-baolei) cmd_set_baolei "$@" ;;
+  show-secrets) cmd_show_secrets "$@" ;;
+  delete) cmd_delete "$@" ;;
+  ''|-h|--help|help) usage ;;
+  *) usage; exit 2 ;;
+esac

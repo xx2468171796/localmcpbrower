@@ -1,0 +1,48 @@
+# 工位 %i 的远程画面(Selkies,H.264 over WebSocket,HTTPS 自签证书在 ~/.local/state/selkies/,每工位一份)。
+# 端口 SELKIES_PORT、主密码 SELKIES_BASIC_AUTH_PASSWORD、只看密码 SELKIES_BASIC_AUTH_VIEWONLY_PASSWORD
+# 都由 Selkies 直接从环境变量读 —— 不放命令行(命令行别的用户 ps 看得见)。
+# 画质参数与第 0 期单工位 desk-selkies 一致。
+[Unit]
+Description=AI desk %i - Selkies streaming (https)
+PartOf=desk@%i.target
+After=desk-wm@%i.service network-online.target ai-desk-firewall.service
+Wants=network-online.target
+Requires=desk-xvfb@%i.service
+# 防火墙没加载(或被停)就不跑:监听 0.0.0.0,没防火墙整个内网都能连
+Requires=ai-desk-firewall.service
+
+[Service]
+User=desk-%i
+Group=desk-%i
+EnvironmentFile=/etc/ai-desk/desks/%i.env
+UnsetEnvironment=MCP_AUTH_TOKEN ADMIN_TOKEN BAOLEI_MCP_URL BAOLEI_MCP_TOKEN
+# 内网只许 Hermes 宿主机 ubuntu-244 连进来 / 回包
+IPAddressDeny=10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 fc00::/7 fe80::/10
+IPAddressAllow=192.168.10.244 192.168.110.239
+Environment=XDG_RUNTIME_DIR=/run/desk-%i
+RuntimeDirectory=desk-%i
+RuntimeDirectoryMode=0700
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 50); do timeout 2 xdpyinfo >/dev/null 2>&1 && exit 0; sleep 0.2; done; exit 1'
+ExecStart=/usr/bin/selkies --addr=0.0.0.0 --enable-https=true --enable-resize=false --encoder=h264enc --framerate=60,30-60 --video-crf=20,12-22 --video-fullcolor=true --use-paint-over-quality=true --video-paintover-crf=12,5-20 --audio-enabled=false --microphone-enabled=false --gamepad-enabled=false --basic-auth-user=admin
+Restart=always
+RestartSec=3
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindPaths=/home/desk-%i
+PrivateTmp=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+UMask=0077
+RestrictNamespaces=yes
+RestrictRealtime=yes
+ProtectClock=yes
+ProtectKernelLogs=yes
+ProtectHostname=yes
+SystemCallArchitectures=native
