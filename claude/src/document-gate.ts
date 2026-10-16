@@ -4,7 +4,7 @@
  * 白名单为空(本机日常用法):文档请求原样交回浏览器自己发 —— TLS 指纹、请求头(Accept-Language、带 zstd 的
  * Accept-Encoding)、HTTP/2 都是真 Chrome 的。以前为了往 HTML 里注脚本,所有文档都在 Node 端代取(route.fetch),
  * 网站看到的是 Node 的 TLS 指纹和请求头,这是比任何 JS 特征都硬的机器人特征(2026-10-17 体检发现,
- * docs/architecture.md §12)。脚本现在走 context.addInitScript(patchright 1.63 + 完整版 Chromium 实测原生执行)。
+ * docs/architecture.md §12)。脚本现在按页面经 CDP 装(browser.ts preparePage),不再碰文档响应。
  * 「本服务自己的地址」:直接请求由调用方的 route 拦;经重定向落过来的由 HTTP 入口按 Sec-Fetch-* 拒(desk/gate.ts isForeignNavigation)。
  *
  * 白名单非空(托管工位):浏览器自己跟随重定向时后续跳**不经过 route**(实测),所以仍在 Node 端不跟随地取第一跳,

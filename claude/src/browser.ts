@@ -32,6 +32,7 @@ import { MAIN_WORLD_SRC, DRAIN_SRC } from './inject.js';
 import { buildDocumentGate } from './document-gate.js';
 import { contextOptions, effectiveTimezone, fitWindow, identityArgs, loadIdentity, maskProxy, needsGeo, patchIdentity, saveIdentity, type Identity } from './identity.js';
 import { lookupGeo } from './geoip.js';
+import { humanizeFromEnv, setHumanizeResolver } from './humanize/index.js';
 import { browserEnv } from './browser-env.js';
 import { currentSessionId } from './context.js';
 import { killProcessTreeSync } from './portkill.js';
@@ -175,8 +176,8 @@ interface Space {
   baseHeaded: boolean;
   /** 无头时每个页面要补的 UA / Client Hints 覆盖;有头或还没启动为 null */
   uaOverride: UaOverride | null;
-  /** 哪些页面已经(或正在)下发过 UA 覆盖 —— openPage 要等它下发完才把页面交出去 */
-  uaApplied: WeakMap<Page, Promise<void>>;
+  /** 哪些页面已经(或正在)做过准备(console 捕获 + UA 覆盖,见 preparePage)—— openPage 要等它做完才把页面交出去 */
+  prepared: WeakMap<Page, Promise<void>>;
   /** openPage 的排队链(见 openPage) */
   pageChain: Promise<void>;
   /** 这次启动用的身份(identity.ts);还没启动过为 null */
@@ -231,6 +232,8 @@ class BrowserManager {
   private constructor(config: BrowserConfig) {
     this.config = config;
     this.spaces.set(DEFAULT_SPACE, this.newSpaceState(DEFAULT_SPACE, config.userDataDir));
+    // 拟人开关按调用方会话所在工作区的身份(space_new { humanize });身份里没设就跟环境变量 BROWSER_HUMANIZE
+    setHumanizeResolver(() => this.humanizeForCurrentSession() ?? humanizeFromEnv());
   }
 
   public static getInstance(config: BrowserConfig = DEFAULT_CONFIG): BrowserManager {
@@ -254,7 +257,7 @@ class BrowserManager {
       headed: !this.config.headless,
       baseHeaded: !this.config.headless,
       uaOverride: null,
-      uaApplied: new WeakMap<Page, Promise<void>>(),
+      prepared: new WeakMap<Page, Promise<void>>(),
       pageChain: Promise.resolve(),
       identity: null,
     };
@@ -628,9 +631,8 @@ class BrowserManager {
       }
     );
 
-    // ── console 捕获:addInitScript 原生执行(patchright 1.63 + 完整版 Chromium 实测,早于页面脚本、不受 CSP 限制),见 src/inject.ts。
-    // 指纹伪装已经删掉:完整版 Chromium 原生就像真浏览器,JS 改出来的值反而是破绽(docs/architecture.md §12)。
-    await context.addInitScript(MAIN_WORLD_SRC);
+    // console 捕获脚本按页面经 CDP 装(preparePage);指纹伪装已经删掉:完整版 Chromium 原生就像真浏览器,
+    // JS 改出来的值反而是破绽(docs/architecture.md §12)。
 
     // 这个内核还没缓存过原生 Client Hints(这次没改 UA 启动):趁还没装路由读一次存起来,下次就能用启动参数改 UA
     let uaDefaults = cachedUa;
@@ -696,30 +698,34 @@ class BrowserManager {
   }
 
   /**
-   * 启动后的两件事(都尽力而为,失败 / 超时不影响启动):
+   * 启动后的事(都尽力而为,失败 / 超时不影响启动):
    *   1. 记下浏览器主进程 pid(退出钩子 killChromiumSync 按它收整棵进程树)。
    *      原实现读 `browser._process.pid` —— 那是服务端对象上的字段,客户端拿到的 Browser 上**根本没有**,
    *      实测恒为 undefined,所以 pid 一直是 null,退出钩子从来没杀到过浏览器。改用 CDP SystemInfo.getProcessInfo,
    *      三平台一致。
-   *   2. 无头:按原生 Client Hints(缓存或刚读到的)算出要给每个页面补的 UA 覆盖,并给已有 / 以后的页面下发。
+   *   2. 无头:按原生 Client Hints(缓存或刚读到的)算出要给每个页面补的 UA 覆盖。
+   *   3. 给已有 / 以后的每个页面做准备(console 捕获脚本 + 无头的 UA 覆盖),见 preparePage。
    */
   private async afterLaunch(sp: Space, context: BrowserContext, headless: boolean, defaults: UaDefaults | null, uaByFlag: boolean): Promise<void> {
     sp.chromiumPid = await within(this.readChromiumPid(context), LAUNCH_PROBE_TIMEOUT_MS, null);
-    sp.uaOverride = null;
-    if (!headless) return;
+    sp.uaOverride = headless ? this.uaOverrideFor(context, defaults, uaByFlag) : null;
+    // window.open 弹出的页、人手动开的页也要做;openPage 自己会等做完
+    context.on('page', (page) => { void this.preparePage(sp, page); });
+    await Promise.all(context.pages().map((p) => this.preparePage(sp, p)));
+  }
+
+  /** 无头时每个页面要补的 UA / Client Hints;读不到真实版本返回 null(不覆盖) */
+  private uaOverrideFor(context: BrowserContext, defaults: UaDefaults | null, uaByFlag: boolean): UaOverride | null {
     const real = context.browser()?.version() ?? null;
     const token = uaVersionToken(UA_VERSION_OVERRIDE, real);
-    if (!real || !token) return;
+    if (!real || !token) return null;
     if (uaByFlag && !UA_VERSION_OVERRIDE && majorOf(bundledChromiumVersion()) !== majorOf(real)) {
       console.warn(`[BrowserManager] patchright 记录的内核版本和实际启动的(${real})对不上,页面 UA 以实际为准`);
     }
-    sp.uaOverride = {
+    return {
       userAgent: platformUserAgent(process.platform, token),
       userAgentMetadata: headfulMetadata(defaults, real, UA_VERSION_OVERRIDE),
     };
-    // window.open 弹出的页、人手动开的页也要补;openPage 自己会等下发完成
-    context.on('page', (page) => { void this.applyUa(sp, page); });
-    await Promise.all(context.pages().map((p) => this.applyUa(sp, p)));
   }
 
   /**
@@ -782,20 +788,26 @@ class BrowserManager {
   }
 
   /**
-   * 给一个页面下发 UA 覆盖(幂等,每页只做一次)。
-   * CDP 会话不 detach:覆盖跟着会话走,detach 就失效;页面关闭时会话自动结束。
+   * 给一个页面做准备(幂等,每页只做一次),用一条不 detach 的 CDP 会话(覆盖跟着会话走,页面关闭时会话自动结束):
+   *   - console 捕获脚本:Page.addScriptToEvaluateOnNewDocument(要先 Page.enable,否则不执行)。只作用于这个页面
+   *     及同进程的 iframe;跨站 iframe(独立进程)不受影响。不用 context.addInitScript:patchright 1.63 下它会让
+   *     跨站 iframe 加载失败(chrome-error,2026-10-17 实测,Turnstile / 支付组件都是跨站 iframe)。
+   *     window.open 弹出页的第一个文档来不及装,之后的导航都有。
+   *   - 无头的 UA / Client Hints 覆盖(sp.uaOverride)。
    */
-  private applyUa(sp: Space, page: Page): Promise<void> {
-    const ov = sp.uaOverride;
-    if (!ov || page.isClosed()) return Promise.resolve();
-    const done = sp.uaApplied.get(page);
+  private preparePage(sp: Space, page: Page): Promise<void> {
+    if (page.isClosed()) return Promise.resolve();
+    const done = sp.prepared.get(page);
     if (done) return done;
+    const ov = sp.uaOverride;
     const run = (async () => {
       const s = await page.context().newCDPSession(page);
-      await s.send('Emulation.setUserAgentOverride', { userAgent: ov.userAgent, userAgentMetadata: ov.userAgentMetadata });
+      await s.send('Page.enable');
+      await s.send('Page.addScriptToEvaluateOnNewDocument', { source: MAIN_WORLD_SRC });
+      if (ov) await s.send('Emulation.setUserAgentOverride', { userAgent: ov.userAgent, userAgentMetadata: ov.userAgentMetadata });
     })();
-    const p = within(run, LAUNCH_PROBE_TIMEOUT_MS, undefined);
-    sp.uaApplied.set(page, p);
+    const p = within(run.catch(() => { /* 页面可能刚被关掉 */ }), LAUNCH_PROBE_TIMEOUT_MS, undefined);
+    sp.prepared.set(page, p);
     return p;
   }
 
@@ -960,8 +972,8 @@ class BrowserManager {
     sp.pageChain = run.then(() => undefined, () => undefined);
     const page = await run;
     this.setupPageListeners(sp, sessionId, page);
-    // 无头时先把 UA / Client Hints 覆盖下发完再交出去,否则第一次导航带的还是 HeadlessChrome
-    await this.applyUa(sp, page);
+    // 先把页面准备做完再交出去,否则第一次导航没有 console 捕获、无头时带的还是 HeadlessChrome
+    await this.preparePage(sp, page);
     // 本会话若开着屏蔽规则,新标签页要补挂 —— 原来挂 context 时新页自动生效,语义要保持一致
     if (st.blockRoute) {
       await page.route('**/*', st.blockRoute).catch(() => { /* 页面可能刚被关掉 */ });

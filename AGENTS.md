@@ -15,6 +15,7 @@
 | 了解协议/架构为什么这么设计、踩过哪些坑 | **`MCP-V2-PLAN.md`**(含七条踩坑清单) |
 | **验证本机装得对不对** | 跑 `npm run test:smoke`(浏览器 57 工具);3.0 工位能力跑 `node claude/test/desk-e2e.mjs` |
 | **改了工具行为,看有没有退步** | 跑 `pnpm eval`(50 道本地题,和 `claude/eval/baseline.json` 比,不放行就别交) |
+| **改了浏览器启动 / 注入 / UA,看会不会被识别成机器人** | 跑 `node claude/test/stealth-check.mjs`(本地探针,0 项破绽才算过;`--online` 另看公网检测站) |
 | 想知道「AI 用这些工具干活顺不顺」(AI 做题考卷,草案未启用) | `claude/eval/mcp-exam/SPEC.md`(给业主的说明 `docs/review/2026-10-14-exam-proposal.md`) |
 | Codex 专属配置与排错 | `CODEX.md` |
 | ~~`HTTP-DESIGN.md`~~ | 描述的是**已被 pipe 取代**的旧会话架构,只作历史参考 |
@@ -51,9 +52,10 @@ Codex 写 `~/.codex/config.toml` 时,Windows 路径**必须用 TOML 字面量字
 
 1. **`page.evaluate` 跑在隔离世界。** 判断注入脚本有没有执行**必须走 DOM**(跨世界共享),
    用 `page.evaluate` 读主世界的 `window.X` 会把"执行了"误判成"没执行"。
-2. **`addInitScript` 在 patchright 1.62.2 下不执行**(context 级和 page 级都不执行,
-   CDP `addScriptToEvaluateOnNewDocument` 也不执行)。唯一可用通道是 route 拦 HTML 注 `<script>`,
-   见 `claude/src/inject.ts`。
+2. **页面脚本只能按页面经 CDP 装**(先 `Page.enable` 再 `Page.addScriptToEvaluateOnNewDocument`,见 `browser.ts preparePage`)。
+   `context.addInitScript` 在 patchright 1.63 下能执行,但会让**跨站 iframe 加载失败**(chrome-error);
+   别再回到「route 拦 HTML 注 `<script>`」——那样文档由 Node 代取,网站看到的是 Node 的 TLS 指纹(最硬的机器人特征)。
+   也别往页面里加指纹伪装,改之前先跑 `node claude/test/stealth-check.mjs`(反检测见 `docs/architecture.md` §12)。
 3. **别把 pipe 腿的 `legacy` 改成 `'reject'`** —— 客户端在 stdio 上不探测新协议,改了全部连不上。
 4. **共享会话 id 必须带代际** —— `BrowserManager` 回收时会立墓碑,固定 id 会导致
    "最后一个窗口关掉后永远连不上"。

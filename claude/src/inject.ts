@@ -1,12 +1,13 @@
 /**
- * 页面主世界脚本:只做一件事 —— **console 捕获**。由 browser.ts 用 `context.addInitScript` 装上。
+ * 页面主世界脚本:只做一件事 —— **console 捕获**。由 browser.ts preparePage 按页面经 CDP Page.addScriptToEvaluateOnNewDocument 装上。
  *
  * ## 历史:注入通道
  *
  * 2026-08-31(patchright 1.62.2 + headless shell)实测 addInitScript / CDP addScriptToEvaluateOnNewDocument 都不执行,
  * 只好拦 HTML 响应往 `<head>` 里塞 `<script>`。代价很大:文档改由 Node 端代取(TLS 指纹和请求头都不是 Chrome 的),
- * 还要剥 CSP。2026-10-17 复测(patchright 1.63 + 完整版 Chromium):`context.addInitScript` 原生执行,
- * 早于页面脚本、不受 CSP 限制、iframe 里也有、请求是浏览器自己发的 —— 于是拦 HTML 注入整个删掉(见 document-gate.ts)。
+ * 还要剥 CSP。2026-10-17 复测(patchright 1.63 + 完整版 Chromium):先 Page.enable 再 Page.addScriptToEvaluateOnNewDocument
+ * 能原生执行(早于页面脚本、不受 CSP 限制、请求是浏览器自己发的)—— 于是拦 HTML 注入整个删掉(见 document-gate.ts)。
+ * 不用 context.addInitScript:它也能执行,但会让跨站 iframe 加载失败(chrome-error),Turnstile / 支付组件都是跨站 iframe。
  *
  * ⚠️ `page.evaluate` 跑在**隔离世界**,主世界设的 `window.X` 它看不见;判断脚本有没有执行要走 DOM 或事件(跨世界共享)。
  *
@@ -37,7 +38,7 @@ const EVT = 'e' + randomBytes(8).toString('hex');
 const EVT_REQ = EVT + 'q';
 const EVT_RES = EVT + 's';
 
-/** 主世界脚本。每个文档执行一次(addInitScript 按文档执行),所以不需要防重复的全局标记 */
+/** 主世界脚本。每个文档执行一次(按文档执行),所以不需要防重复的全局标记 */
 export const MAIN_WORLD_SRC = `(function(){
   var P = Proxy, R = Reflect, CE = CustomEvent, add = EventTarget.prototype.addEventListener,
       fire = EventTarget.prototype.dispatchEvent, keys = Object.keys, str = JSON.stringify, tag = Object.prototype.toString,

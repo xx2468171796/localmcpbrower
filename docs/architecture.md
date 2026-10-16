@@ -227,7 +227,9 @@
 | 模块（文件） | 职责 | 不负责 |
 |---|---|---|
 | `browser.ts` 启动处 | 无头一律用完整版 Chromium 的**新无头模式**（不再用 headless shell：它没有 GPU、`window.chrome`、mimeTypes）；无头时 `--screen-info` 给出与身份一致的屏幕；`--accept-lang` 定语言；不再用 `extraHTTPHeaders` 改请求头 | 身份怎么定 |
-| `inject.ts` | 只注入 console 捕获：方法用 `Proxy` 包（`toString` 仍是原生）、日志存在闭包里、不设全局变量、不插 DOM 节点、脚本执行完把自己的 `<script>` 删掉；跨世界取日志用随机名字的 `CustomEvent`（字符串能跨世界）；**不剥 CSP**，改为把本脚本的 sha256 加进 `script-src`（`csp.ts`，纯函数） | 指纹伪装（全部删掉） |
+| `inject.ts` + `browser.ts` `preparePage` | 只注入 console 捕获：按页面经 CDP `Page.addScriptToEvaluateOnNewDocument` 装（先 `Page.enable`；不用 `context.addInitScript`——patchright 1.63 下它让跨站 iframe 加载失败）；方法用 `Proxy` 包（`toString` 仍是原生）、日志存在闭包里、不设全局变量、不插 DOM 节点；跨世界取日志用随机名字的 `CustomEvent`（字符串能跨世界） | 指纹伪装（全部删掉） |
+| `document-gate.ts` | 文档请求：白名单为空时交回浏览器自己发（以前为注脚本由 Node 代取，TLS 指纹 / 请求头都不是 Chrome 的，这是最硬的机器人特征）；白名单生效时仍逐跳查重定向链。不再 `bypassCSP`、不再剥 CSP | 本服务地址（route 里拦直接请求；经重定向落过来的由 HTTP 入口按 `Sec-Fetch-Site/Dest` 拒，`desk/gate.ts isForeignNavigation`） |
+| `user-agent.ts` | 无头 UA 用 `--user-agent` 启动参数改（Worker 里也一致）；原生 Client Hints 在某内核版本首次启动时于回环小页面读（`about:blank` 不是安全上下文，读不到），按版本缓存 `ua-defaults.json`，读到后立即按参数重启一次；页面上用 CDP 补完整的高熵 Client Hints | 有头（本来就自洽，不碰） |
 | **新** `identity.ts` | 工作区身份 `identity.json`（存在该工作区 profile 目录里，跟着登录态走）：屏幕尺寸、时区、语言、代理、拟人开关。首次创建按种子从常见分辨率里挑（默认工作区固定 1920×1080），以后每次启动都一样 = 「同一个回访用户」 | 读写 profile 里别的东西 |
 | **新** `geoip.ts` | 有代理时，经这个工作区的浏览器自己（走代理）查一次出口 IP 的时区 / 国家，记进身份；和启动时用的不一致就按新身份重启一次（只发生在第一次或换代理后） | 代理本身的可用性 |
 | **新** `humanize/` | 拟人输入：鼠标走带随机扰动的贝塞尔曲线、点在元素内的随机位置、按下抬起有间隔；逐字输入带节奏；滚轮分段缓动。纯计算（`path.ts` / `timing.ts`，随机数可注入，单测可复现）+ 执行（`actions.ts`） | 决定要不要拟人（看身份 / 环境变量） |
