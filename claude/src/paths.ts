@@ -148,13 +148,40 @@ export function removeLegacyLeftover(target: string): void {
   } catch { /* 还被占着,下次再删 */ }
 }
 
+/** `/org.chromium.Chromium.XXXXXX/SingletonSocket` 的字节数 */
+const SINGLETON_SUFFIX_BYTES = 39;
+/** 留点余量(macOS 上限 104) */
+const SOCKET_PATH_MAX = 100;
+
+/**
+ * 系统临时目录下本服务专用的短目录(/tmp/lmb-<id>,0700)。/tmp 谁都能写:先建好再核对它是我们自己的真目录
+ * (不是别人预先放的符号链接 / 别人的目录),不是就退回一个随机新目录。
+ */
+function shortTmpDir(id: string): string {
+  const dir = path.join(SYSTEM_TMP, `lmb-${id}`);
+  try { fs.mkdirSync(dir, { mode: 0o700 }); } catch { /* 已经有了:下面核对 */ }
+  try {
+    const st = fs.lstatSync(dir);
+    const mine = typeof process.getuid !== 'function' || st.uid === process.getuid();
+    if (st.isDirectory() && !st.isSymbolicLink() && mine) {
+      fs.chmodSync(dir, 0o700);
+      return dir;
+    }
+  } catch { /* 退回随机目录 */ }
+  return fs.mkdtempSync(path.join(SYSTEM_TMP, `lmb-${id}-`));
+}
+
 /**
  * 这个服务的临时目录(按 profile 区分:有头、无头两个服务同时在跑,互不清对方的)。
  * 设进 TMPDIR / TEMP / TMP 后,Chromium 和 patchright(下载、临时 profile 等)都写到这里,不再写系统临时目录。
  */
 export function useServiceTmp(userDataDir: string): string {
   const id = createHash('sha256').update(path.resolve(userDataDir)).digest('hex').slice(0, 8);
-  const dir = path.join(DATA_ROOT, 'tmp', `${path.basename(userDataDir)}-${id}`);
+  let dir = path.join(DATA_ROOT, 'tmp', `${path.basename(userDataDir)}-${id}`);
+  // Linux / macOS:完整版 Chromium 在临时目录里建 Unix 套接字 <dir>/org.chromium.Chromium.XXXXXX/SingletonSocket,
+  // 路径超过 sun_path 上限(Linux 108、macOS 104 字节)就 FATAL「Socket path too long」直接崩(2026-10-17 ubuntu-244,
+  // 装在 ~/code/localmcpbrower/claude/storage 下;headless shell 不建这个套接字,以前没暴露)。太长就换到系统临时目录下的短目录
+  if (process.platform !== 'win32' && Buffer.byteLength(dir) + SINGLETON_SUFFIX_BYTES > SOCKET_PATH_MAX) dir = shortTmpDir(id);
   fs.mkdirSync(dir, { recursive: true });
   process.env['TMPDIR'] = dir;
   process.env['TEMP'] = dir;

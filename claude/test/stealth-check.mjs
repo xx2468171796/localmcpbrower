@@ -54,6 +54,10 @@ function playwrightBrowsersPath() {
   return path.join(os.homedir(), '.cache', 'ms-playwright');
 }
 
+// 数据目录故意放深:像装在 ~/code/localmcpbrower/claude/storage 下那样(Linux / macOS 上临时目录太长,完整版 Chromium 的
+// SingletonSocket 路径超长会直接崩,2026-10-17 ubuntu-244 灰度时遇到过)
+const DEEP_DATA = path.join('data', 'deep-install-path', 'claude', 'storage', 'x'.repeat(40));
+
 /** 起被测服务。scratch 由调用方给:两次启动共用同一个数据目录(第二次才用得上缓存的原生 Client Hints) */
 async function startServer(scratch) {
   const port = await freePort();
@@ -63,7 +67,7 @@ async function startServer(scratch) {
     ...process.env, HOME: home, USERPROFILE: home, PLAYWRIGHT_BROWSERS_PATH: playwrightBrowsersPath(),
     PORT: String(port), HOST: '127.0.0.1', HEADLESS: HEADED ? 'false' : 'true',
     KILL_PORT_ON_START: '0', PIPE_DISABLE: '1',
-    USER_DATA_DIR: d('profile'), LOCALMCP_DATA_DIR: d('data'), SCREENSHOT_DIR: d('shots'),
+    USER_DATA_DIR: d('profile'), LOCALMCP_DATA_DIR: d(DEEP_DATA), SCREENSHOT_DIR: d('shots'),
     BROWSER_TELEMETRY: '0', MCP_AUTH_TOKEN: '',
   };
   const log = fs.openSync(path.join(scratch, 'server.log'), 'w');
