@@ -8,6 +8,9 @@ PartOf=desk@%i.target
 After=desk-wm@%i.service network-online.target ai-desk-firewall.service
 Wants=network-online.target
 Requires=desk-xvfb@%i.service
+# 和本工位 Xvfb 共用私有 /tmp:Selkies 的采集模块(pixelflux)只认 /tmp/.X11-unix/X<n> 这个文件 socket,
+# 不走抽象 socket;各自 PrivateTmp 时看不到 → "X11 connect failed: Connection refused",画面一直 Waiting for stream
+JoinsNamespaceOf=desk-xvfb@%i.service
 # 防火墙没加载(或被停)就不跑:监听 0.0.0.0,没防火墙整个内网都能连
 Requires=ai-desk-firewall.service
 
