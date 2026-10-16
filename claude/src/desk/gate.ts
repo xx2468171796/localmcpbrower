@@ -21,6 +21,16 @@ export const READONLY_TOOLS: ReadonlySet<string> = new Set([
   'extract_article', 'generate_page_report', 'wait_for_human',
 ]);
 
+const NAV_DESTS: ReadonlySet<string> = new Set(['document', 'iframe', 'frame', 'embed', 'object']);
+
+/**
+ * 从别的站点(含同 IP 别的端口,算同站)导航 / 嵌入到本服务的请求(看浏览器带的 Sec-Fetch-Site / Sec-Fetch-Dest,页面脚本改不了)。
+ * 本服务的 HTTP 入口凭它拒绝:被操控的浏览器经重定向落到本服务时,后续跳不经过 route,isSelf 管不到。
+ */
+export function isForeignNavigation(site: string | string[] | undefined, dest: string | string[] | undefined): boolean {
+  return (site === 'cross-site' || site === 'same-site') && typeof dest === 'string' && NAV_DESTS.has(dest);
+}
+
 interface Waiter { resolve: () => void; reject: (e: Error) => void; timer: NodeJS.Timeout; onAbort?: () => void; signal?: AbortSignal }
 
 export interface GateStatus {

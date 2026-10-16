@@ -1,229 +1,89 @@
 /**
- * 页面脚本注入 —— 绕开 patchright 失效的 addInitScript。
+ * 页面主世界脚本:只做一件事 —— **console 捕获**。由 browser.ts 用 `context.addInitScript` 装上。
  *
- * ## 背景:三条注入通道全废,只剩一条
+ * ## 历史:注入通道
  *
- * 原实现用 `context.addInitScript()` 注入反爬指纹伪装与 console 劫持。实测(2026-08-31,
- * patchright 1.62.2 + 本机 chromium)**它整段从未在页面里执行过**,连带 6 项指纹伪装
- * 全部形同虚设 —— `navigator.webdriver` 直接暴露、`window.chrome` 不存在、plugins 为空,
- * 爬公网站点基本会被当成机器人。而且这不是协议迁移引入的,是一直如此。
+ * 2026-08-31(patchright 1.62.2 + headless shell)实测 addInitScript / CDP addScriptToEvaluateOnNewDocument 都不执行,
+ * 只好拦 HTML 响应往 `<head>` 里塞 `<script>`。代价很大:文档改由 Node 端代取(TLS 指纹和请求头都不是 Chrome 的),
+ * 还要剥 CSP。2026-10-17 复测(patchright 1.63 + 完整版 Chromium):`context.addInitScript` 原生执行,
+ * 早于页面脚本、不受 CSP 限制、iframe 里也有、请求是浏览器自己发的 —— 于是拦 HTML 注入整个删掉(见 document-gate.ts)。
  *
- * 逐条实测(用 **DOM 属性**当跨世界信道,避免 page.evaluate 读到隔离世界产生假阴性):
+ * ⚠️ `page.evaluate` 跑在**隔离世界**,主世界设的 `window.X` 它看不见;判断脚本有没有执行要走 DOM 或事件(跨世界共享)。
  *
- * | 通道 | 结果 |
- * |---|---|
- * | `context.addInitScript` | ❌ 不执行 |
- * | `page.addInitScript` | ❌ 不执行 |
- * | CDP `Page.enable` + `Page.addScriptToEvaluateOnNewDocument` | 下发成功但 ❌ 不执行 |
- * | **route 拦截 HTML 响应,把 `<script>` 注进 `<head>`** | ✅ **执行,且早于页面自己的脚本** |
+ * ## 为什么不再做指纹伪装(docs/architecture.md §12)
  *
- * ⚠️ 排查时差点被带偏:`page.evaluate` 跑在**隔离世界**,主世界设的 `window.X` 它看不见。
- * 所以判断"脚本有没有执行"**必须走 DOM**(跨世界共享),不能用 `page.evaluate` 读全局变量,
- * 否则会把"执行了但读不到"误判成"没执行"。
+ * 以前这里还改 navigator.webdriver / languages / plugins、补 window.chrome、包 permissions.query。
+ * 体检(test/stealth-check.mjs)显示这些**全是破绽**:navigator 上多出自有属性、plugins 是普通数组、
+ * webdriver 成了 undefined(真 Chrome 是 false)、函数 toString 不是原生。完整版 Chromium(有头 / 新无头)
+ * 本来就是 webdriver=false、5 个 PDF 插件、完整的 window.chrome —— 什么都不改才最像真浏览器。
  *
- * ## console 转发为什么要绕一圈
+ * ## console 捕获怎么做到不留痕迹
  *
- * `exposeBinding` 暴露的 `__mcpConsoleLog` **在主世界里是 undefined**(实测),
- * 而我们的脚本只能在主世界跑。所以主世界不能直接调 binding,改成:
- *
- *   主世界 console 劫持 → 写进一个隐藏 DOM 节点(跨世界共享)
- *   → 隔离世界的排空器读走 → 调 binding → Node 端
- *
- * 隐藏节点同时充当**缓冲**:页面早期的日志先攒着,等排空器装好一次性取走,不会丢。
+ * patchright 禁用了 CDP Console 域(开了会被检测),page.on('console') 收不到页面日志,只能在主世界里接:
+ * - console 方法用 `Proxy` 包:`Function.prototype.toString` 对 Proxy 照样给出 `[native code]`,`name` / `length` 透传;
+ * - 记录时只存参数**引用**,不序列化 —— 真浏览器(没开开发者工具)不会去读日志对象的属性,
+ *   当场 JSON.stringify 会触发对象上的 getter,这是检测 CDP / 自动化的经典手法;取日志时才有界地序列化;
+ * - 不设全局变量、不插 DOM 节点;
+ * - 取日志:隔离世界派发一个**随机名字**的 CustomEvent,主世界监听到后把日志 JSON(字符串能跨世界)
+ *   放进应答事件的 detail 里同步派发回去。事件名每个服务进程随机生成,页面猜不到;
+ *   用到的原生函数在注入那一刻先拿住,页面之后再改原型也影响不到。
+ * - 早期日志先攒在闭包里(最多 500 条),等排空器来取,不会丢。
  */
 
-/** 主世界与隔离世界之间传日志用的隐藏节点 id */
-export const LOG_BRIDGE_ID = '__mcp_log_bridge__';
+import { randomBytes } from 'node:crypto';
 
-/**
- * 主世界注入脚本。**必须是纯字符串**(要塞进 HTML),不能是 TS 函数。
- *
- * 幂等:重复注入只生效一次(SPA 或 route 重放时不会把 console 包两层)。
- */
+/** 这次服务进程里请求 / 应答日志用的事件名(随机,页面猜不到) */
+const EVT = 'e' + randomBytes(8).toString('hex');
+const EVT_REQ = EVT + 'q';
+const EVT_RES = EVT + 's';
+
+/** 主世界脚本。每个文档执行一次(addInitScript 按文档执行),所以不需要防重复的全局标记 */
 export const MAIN_WORLD_SRC = `(function(){
-  if (window.__mcpInjected) return;
-  window.__mcpInjected = true;
-
-  // ── 1. navigator.webdriver -> undefined
-  try { delete Navigator.prototype.webdriver; } catch (e) {}
-  try { Object.defineProperty(navigator, 'webdriver', { get: function(){ return undefined; } }); } catch (e) {}
-
-  // ── 2. navigator.languages
-  try { Object.defineProperty(navigator, 'languages', { get: function(){ return ['zh-CN','zh','en']; } }); } catch (e) {}
-
-  // ── 3. navigator.plugins 非空伪装(空 plugins 是最常被查的自动化特征之一)
-  try {
-    Object.defineProperty(navigator, 'plugins', { get: function(){
-      var arr = [
-        { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
-        { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
-        { name: 'Native Client', filename: 'internal-nacl-plugin' }
-      ];
-      arr.item = function(i){ return arr[i]; };
-      return arr;
+  var P = Proxy, R = Reflect, CE = CustomEvent, add = EventTarget.prototype.addEventListener,
+      fire = EventTarget.prototype.dispatchEvent, keys = Object.keys, str = JSON.stringify, tag = Object.prototype.toString,
+      isArr = Array.isArray, doc = document;
+  var buf = [];
+  function show(a, depth) {
+    if (a === null || a === undefined) return String(a);
+    var t = typeof a;
+    if (t === 'string') return a;
+    if (t !== 'object' && t !== 'function') return String(a);
+    try {
+      if (a instanceof Error) return (a.name || 'Error') + ': ' + a.message;
+      if (t === 'function' || depth > 1) return tag.call(a);
+      var ks = keys(a).slice(0, 50), o = isArr(a) ? [] : {};
+      for (var i = 0; i < ks.length; i++) { var v = a[ks[i]]; o[ks[i]] = (v && typeof v === 'object') ? show(v, depth + 1) : v; }
+      return str(o);
+    } catch (e) { return tag.call(a); }
+  }
+  ['log','info','warn','error','debug'].forEach(function(m){
+    var orig = console[m];
+    if (typeof orig !== 'function') return;
+    console[m] = new P(orig, { apply: function(target, self, args){
+      if (buf.length >= 500) buf.shift();
+      buf.push([m, args]);
+      return R.apply(target, self, args);
     }});
-  } catch (e) {}
-
-  // ── 4. window.chrome
-  try { if (!window.chrome) window.chrome = { runtime: {} }; } catch (e) {}
-
-  // ── 5. permissions.query(notifications 返回正常状态,否则是明显的无头特征)
-  try {
-    var oq = navigator.permissions.query.bind(navigator.permissions);
-    navigator.permissions.query = function(p){
-      return (p && p.name === 'notifications')
-        ? Promise.resolve({ state: Notification.permission })
-        : oq(p);
-    };
-  } catch (e) {}
-
-  // ── 6. console 劫持 → 写进 DOM 桥(见文件头:主世界调不到 exposeBinding)
-  try {
-    var bridgeId = ${JSON.stringify(LOG_BRIDGE_ID)};
-    function bridge(){
-      var el = document.getElementById(bridgeId);
-      if (!el) {
-        el = document.createElement('div');
-        el.id = bridgeId;
-        el.style.display = 'none';
-        (document.documentElement || document).appendChild(el);
-      }
-      return el;
-    }
-    ['log','info','warn','error','debug'].forEach(function(m){
-      var orig = console[m].bind(console);
-      console[m] = function(){
-        try {
-          var args = Array.prototype.slice.call(arguments);
-          var text = args.map(function(a){
-            if (typeof a === 'string') return a;
-            try { return JSON.stringify(a); } catch (e) { return String(a); }
-          }).join(' ');
-          var el = bridge();
-          // 每条一个子节点,排空器取走后删除 —— 天然的 FIFO 队列
-          var n = document.createElement('i');
-          n.setAttribute('data-t', m);
-          n.textContent = text;
-          el.appendChild(n);
-          // 页面自己疯狂打日志时别把 DOM 撑爆(排空器没跟上时的兜底)
-          while (el.childNodes.length > 500) el.removeChild(el.firstChild);
-        } catch (e) {}
-        orig.apply(console, arguments);
-      };
+  });
+  add.call(doc, ${JSON.stringify(EVT_REQ)}, function(){
+    var rows = buf.splice(0, buf.length).map(function(r){
+      var parts = [];
+      for (var i = 0; i < r[1].length; i++) parts.push(show(r[1][i], 0));
+      return { type: r[0], text: parts.join(' ').slice(0, 5000) };
     });
-  } catch (e) {}
+    fire.call(doc, new CE(${JSON.stringify(EVT_RES)}, { detail: str(rows) }));
+  });
 })();`;
 
 /**
- * 隔离世界排空器。由 Node 端在每次导航后 `page.evaluate` 执行,
- * 把 DOM 桥里攒的日志取走并**从 DOM 中删除**(取走即消费,不会重复上报)。
- *
- * 返回值直接是日志数组 —— 走 evaluate 的返回值比再调 binding 少一跳,也更好排错。
+ * 隔离世界排空器。由 Node 端在需要时 `page.evaluate` 执行:派发请求事件,同步收到主世界的应答,取走即清空。
+ * 页面上没有这段脚本(非 HTML 文档等)时没人应答,返回空数组。
  */
 export const DRAIN_SRC = `(function(){
-  var el = document.getElementById(${JSON.stringify(LOG_BRIDGE_ID)});
-  if (!el) return [];
-  var out = [];
-  while (el.firstChild) {
-    var n = el.firstChild;
-    out.push({ type: n.getAttribute ? (n.getAttribute('data-t') || 'log') : 'log',
-               text: n.textContent || '' });
-    el.removeChild(n);
-  }
-  return out;
+  var got = '[]';
+  function on(e){ got = typeof e.detail === 'string' ? e.detail : '[]'; }
+  document.addEventListener(${JSON.stringify(EVT_RES)}, on);
+  try { document.dispatchEvent(new CustomEvent(${JSON.stringify(EVT_REQ)})); }
+  finally { document.removeEventListener(${JSON.stringify(EVT_RES)}, on); }
+  try { return JSON.parse(got); } catch (e) { return []; }
 })()`;
-
-/** 会挡住内联脚本执行的响应头 —— 注入时必须剥掉,否则脚本进了 DOM 也不跑 */
-const HEADERS_TO_STRIP = /^(content-security-policy(-report-only)?|content-length)$/i;
-
-/**
- * 把脚本注进 HTML 响应。
- *
- * 只处理 `document` 类型且 `content-type` 含 `text/html` 的响应,其余一律放行 ——
- * 对图片/JS/CSS 改字节是灾难。
- *
- * ⚠️ 会剥掉 **CSP** 响应头。这是必要代价:站点的 CSP 会拦住我们的内联脚本,
- * 脚本进了 DOM 也不执行(实测)。本服务是自动化浏览器、只绑回环,
- * 但这条要写清楚 —— 它确实降低了被访问页面的安全边界。
- */
-const MAX_REDIRECT_HOPS = 10;
-
-/**
- * 顺着重定向链在服务端逐跳查一遍,每一跳都问 allows();有一跳不许就返回那一跳的网址(拦下),全许返回 null。
- * 浏览器自己跟随重定向时后续跳**不再经过 route**(实测),所以只能在这里提前把整条链查完。
- *
- * 探测一律用 GET、不带请求体(不重放原请求的方法和表单内容:原请求是 POST 时,重放等于替页面多提交一次)。
- * 只在白名单生效时调用,所以按「失败即拦」处理:探测出错、链太长都当作不许。
- */
-async function blockedHop(route: import('patchright').Route, first: string, allows: (url: string) => boolean): Promise<string | null> {
-  const headers = Object.fromEntries(Object.entries(route.request().headers()).filter(([k]) => !/^content-(type|length)$/i.test(k)));
-  let url = first;
-  for (let hop = 0; hop < MAX_REDIRECT_HOPS; hop++) {
-    const r = await route.fetch({ url, method: 'GET', headers, postData: Buffer.alloc(0), maxRedirects: 0 }).catch(() => null);
-    if (!r) return url;
-    const loc = r.headers()['location'];
-    if (r.status() < 300 || r.status() >= 400 || !loc) return null;
-    url = new URL(loc, url).href;
-    if (!allows(url)) return url;
-  }
-  return url;
-}
-
-/** 工位白名单(document 跳转的每一跳都要过);restricting() = 白名单非空(为空时不多跑一遍重定向链) */
-export interface NavGate {
-  allows: (url: string) => boolean;
-  restricting: () => boolean;
-  onBlocked: (url: string) => void;
-}
-
-const OPEN_GATE: NavGate = { allows: () => true, restricting: () => false, onBlocked: () => {} };
-
-export function buildHtmlInjector(sources: string[], gate: NavGate = OPEN_GATE) {
-  const tag = `<script>${sources.join('\n')}</script>`;
-  return async function injectRoute(route: import('patchright').Route): Promise<void> {
-    const req = route.request();
-    if (req.resourceType() !== 'document') { await route.fallback(); return; }
-    try {
-      // 不在 Node 里跟随重定向(默认会跟 20 跳):跟了的话最终内容会挂在**原网址**下给浏览器,
-      // 工位白名单和 fill_secret 的站点检查都只看得到第一跳 —— 可信站点上任何一个开放跳转都能把恶意页面伪装成它。
-      // 3xx:先在服务端把整条链逐跳过白名单,有一跳不许就整个拦下;全许则把第一跳原样交回浏览器,
-      // 浏览器自己跳,地址栏 / location.origin 都是真实的最终站点。
-      const resp = await route.fetch({ maxRedirects: 0 });
-      const headers = resp.headers();
-      if (resp.status() >= 300 && resp.status() < 400 && headers['location']) {
-        const target = new URL(headers['location'], req.url()).href;
-        // 第一跳总要查(白名单为空时 allows 也会拦本服务自己的地址);整条链只在白名单非空时逐跳探
-        const bad = !gate.allows(target) ? target : gate.restricting() ? await blockedHop(route, target, gate.allows) : null;
-        if (bad) {
-          gate.onBlocked(bad);
-          await route.abort('blockedbyclient');
-          return;
-        }
-        await route.fulfill({ status: resp.status(), headers });
-        return;
-      }
-      const ct = headers['content-type'] ?? '';
-      if (!ct.includes('text/html')) { await route.fulfill({ response: resp }); return; }
-
-      let body = await resp.text();
-      body = /<head[^>]*>/i.test(body)
-        ? body.replace(/<head[^>]*>/i, (m) => m + tag)
-        : tag + body;
-
-      const out: Record<string, string> = {};
-      for (const [k, v] of Object.entries(headers)) if (!HEADERS_TO_STRIP.test(k)) out[k] = v;
-
-      await route.fulfill({
-        status: resp.status(),
-        headers: out,
-        body,
-        contentType: 'text/html; charset=utf-8',
-      });
-    } catch {
-      // 取原响应失败(网络错误/被中断):白名单生效时一律拦下(失败即拦 —— 交回浏览器自己取,
-      // 它跟随的重定向就不再经过这里);白名单为空时放行,让浏览器自己去报错,别因为注入失败吞掉导航
-      if (gate.restricting()) await route.abort('blockedbyclient').catch(() => { /* 已被别处处理 */ });
-      else await route.fallback().catch(() => { /* 已被别处处理 */ });
-    }
-  };
-}

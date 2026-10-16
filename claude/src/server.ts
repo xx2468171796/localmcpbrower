@@ -31,6 +31,7 @@ import type { HealthCheckResult } from './types.js';
 import { Activity, packageVersion } from './activity.js';
 import { deskConfig } from './desk/config.js';
 import { deskGate, deskRing } from './desk/runtime.js';
+import { isForeignNavigation } from './desk/gate.js';
 import { deadlineFor, errorOf, preflight, trackCall, withCode, withDeadline, type RawResult } from './desk/instrument.js';
 import { registerExtraTools } from './desk/extra-tools.js';
 import { createAdminRouter } from './desk/admin-routes.js';
@@ -567,7 +568,7 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
 
   server.registerTool('space_new', {
     title: '新建工作区',
-    description: '新建并切换到一个隔离工作区，拥有独立的 userDataDir（cookie/登录态与其它工作区完全隔离）。用于并行跑多任务或同站多账号，互不污染。已存在同名则直接切过去。headed 一般不用给：默认无头，要人工时 wait_for_human 会自动弹窗。',
+    description: '新建并切换到一个隔离工作区，拥有独立的 userDataDir（cookie/登录态与其它工作区完全隔离）。用于并行跑多任务或同站多账号，互不污染。已存在同名则直接切过去。headed 一般不用给：默认无头，要人工时 wait_for_human 会自动弹窗。每个工作区有固定身份（屏幕、语言；可选 proxy 代理，时区跟出口 IP；可选 humanize 拟人操作），网站看来是同一个回访用户；被反爬拦时开一个带 proxy / humanize 的工作区再试。',
     inputSchema: SpaceNewSchema,
     outputSchema: ResultEnvelope,
     annotations: { title: '新建工作区', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,
@@ -826,6 +827,18 @@ function createApp(): express.Application {
     // 浏览器端要读会话 ID 才能续用会话，必须显式 expose
     res.header('Access-Control-Expose-Headers', 'mcp-session-id');
     if (req.method === 'OPTIONS') { res.sendStatus(204); return; }
+    next();
+  });
+
+  // 别的网站把浏览器导航 / 嵌进本服务(重定向、iframe、链接、object):一律拒绝。
+  // 被操控的浏览器经重定向落到本服务地址上时,后续跳**不经过** route(实测),route 里的「本服务地址」检查管不到;
+  // 而浏览器给导航请求带的 Sec-Fetch-* 头页面脚本改不了,这是唯一可靠的一道。
+  // 同站也拒(同一 IP 不同端口算同站)。人在地址栏直接打开(site=none)、经网关反代的面板(same-origin)不受影响。
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    if (isForeignNavigation(req.headers['sec-fetch-site'], req.headers['sec-fetch-dest'])) {
+      res.status(403).json({ error: 'Navigation from other sites not allowed' });
+      return;
+    }
     next();
   });
 

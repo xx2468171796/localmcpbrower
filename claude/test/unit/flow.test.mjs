@@ -97,7 +97,7 @@ test('extension launch patch: auto skips headless, off disables, on forces', () 
   assert.equal(extensionLaunchPatch(true, {}), null);
   assert.ok(extensionLaunchPatch(false, {}).args.some((a) => a.startsWith('--load-extension=')));
   assert.equal(extensionLaunchPatch(false, { BROWSER_EXTENSION: 'off' }), null);
-  assert.equal(extensionLaunchPatch(true, { BROWSER_EXTENSION: 'on' }).needsFullChromium, true);
+  assert.ok(extensionLaunchPatch(true, { BROWSER_EXTENSION: 'on' }));
 });
 
 // ── M2(b):闸门看到的是替换过 {{变量}} 的实参 ──

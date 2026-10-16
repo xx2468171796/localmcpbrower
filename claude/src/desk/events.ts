@@ -82,7 +82,7 @@ export class EventRing {
 }
 
 /** 这些参数名的值一律不进时间线(可能是密码、正文、脚本、cookie) */
-const SECRET_KEYS = /^(text|value|values|password|secret|token|script|code|expression|cookies?|headers?|body|content|otp)$/i;
+const SECRET_KEYS = /^(text|value|values|password|secret|token|script|code|expression|cookies?|headers?|body|content|otp|proxy)$/i;
 const MAX_STR = 200;
 
 /**

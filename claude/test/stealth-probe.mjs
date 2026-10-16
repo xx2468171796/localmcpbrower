@@ -63,8 +63,7 @@ const PROBE_SRC = String.raw`
     add('通知权限前后一致', !(np === 'denied' && r.state === 'prompt'), np + ' / ' + r.state, '经典无头特征:denied 配 prompt');
     finish();
   }, function () { add('通知权限前后一致', false, 'query 失败'); finish(); });
-  add('窗口有边框(outer > inner)', window.outerWidth > 0 && window.outerHeight > window.innerHeight,
-    window.outerWidth + 'x' + window.outerHeight + ' / inner ' + window.innerWidth + 'x' + window.innerHeight);
+  var earlyOuter = window.outerWidth + 'x' + window.outerHeight;
   add('屏幕不小于窗口', screen.width >= window.innerWidth && screen.height >= window.innerHeight, screen.width + 'x' + screen.height);
   add('有任务栏(availHeight < height)', screen.availHeight < screen.height, screen.availHeight + ' / ' + screen.height, '无头多为相等;仅供参考');
 
@@ -84,8 +83,13 @@ const PROBE_SRC = String.raw`
     return ['monospace', 'serif', 'sans-serif'].some(function (b) { return width('32px "' + f + '",' + b, probeText) !== width('32px ' + b, probeText); });
   });
   add('常见字体', null, have.length + '/' + fonts.length + ': ' + have.join(','));
-  var tofu = width('32px sans-serif', '￿');
-  add('有中文字体', width('32px sans-serif', '中') !== tofu, '');
+  // 「中」画出来和缺字的豆腐块(U+FFFF)像素不同 = 有中文字体(按宽度比会误判:两者常常一样宽)
+  function glyph(ch) {
+    var g = document.createElement('canvas'); g.width = g.height = 40;
+    var x = g.getContext('2d'); x.font = '32px sans-serif'; x.textBaseline = 'top'; x.fillText(ch, 2, 2);
+    return Array.prototype.join.call(x.getImageData(0, 0, 40, 40).data, ',');
+  }
+  add('有中文字体', glyph('中') !== glyph('￿'), '');
   var ec = document.createElement('canvas'); ec.width = ec.height = 40;
   var ex = ec.getContext('2d'); ex.font = '32px sans-serif'; ex.textBaseline = 'top'; ex.fillText('😀', 2, 2);
   var px = ex.getImageData(0, 0, 40, 40).data, colored = 0;
@@ -102,11 +106,33 @@ const PROBE_SRC = String.raw`
   Object.defineProperty(err, 'stack', { get: function () { leaked = true; return ''; } });
   console.debug(err);
 
-  var pending = 1;
+  // ── Worker 里看到的和页面一致(按页面下发的 UA 覆盖管不到 Worker,检测站会专门去 Worker 里对比)
+  var pending = 3;
+  try {
+    var sw = new SharedWorker('/probe-worker.js?shared');
+    sw.port.onmessage = function (e) { add('SharedWorker UA = 页面 UA', e.data.ua === ua, e.data.ua); finish(); };
+    sw.port.postMessage(1);
+  } catch (e) { add('SharedWorker UA = 页面 UA', null, '不支持:' + e); finish(); }
+  try {
+    var w = new Worker('/probe-worker.js');
+    w.onmessage = function (e) {
+      var d = e.data, main = navigator.userAgentData;
+      add('Worker UA = 页面 UA', d.ua === ua, d.ua);
+      add('Worker 平台 = 页面平台', !!main && d.plat === main.platform, d.plat);
+      main.getHighEntropyValues(['platformVersion', 'fullVersionList']).then(function (h) {
+        add('页面高熵 Client Hints 非空', !!h.platformVersion && h.fullVersionList.length > 0, (h.platformVersion || '空') + ' | ' + h.fullVersionList.map(function (b) { return b.brand + '/' + b.version; }).join(','), '真 Chrome 有真实的系统版本和完整版本号');
+        add('Worker 高熵 Client Hints = 页面', d.pv === h.platformVersion, (d.pv || '空') + ' / ' + (h.platformVersion || '空'), '自定义 UA 时 Worker 的高熵值可能为空');
+        finish();
+      });
+    };
+    w.postMessage(1);
+  } catch (e) { add('Worker UA = 页面 UA', false, String(e)); finish(); }
   function finish() {
     if (--pending > 0) return;
     setTimeout(function () {
       add('无 CDP Runtime 泄漏', !leaked, String(leaked));
+      add('窗口有边框(outer > inner)', window.outerWidth > 0 && window.outerHeight > window.innerHeight,
+        window.outerWidth + 'x' + window.outerHeight + ' / inner ' + window.innerWidth + 'x' + window.innerHeight + ' / 解析时 ' + earlyOuter);
       var pre = document.createElement('pre'); pre.id = 'out'; pre.textContent = JSON.stringify(out);
       document.body.appendChild(pre);
     }, 300);
@@ -124,5 +150,15 @@ export function probeHtml(headers) {
 </head><body><h1>probe</h1></body></html>`;
 }
 
-/** 探针页的 CSP:只许带 nonce 的脚本,canary 被拦 */
-export const PROBE_CSP = "script-src 'nonce-stealthprobe'";
+/** 探针页起的 Worker:报回 Worker 里看到的 UA、平台、高熵 platformVersion */
+export const PROBE_WORKER_JS = `function report(reply) {
+  var d = navigator.userAgentData;
+  d.getHighEntropyValues(['platformVersion']).then(function (h) {
+    reply({ ua: navigator.userAgent, plat: d.platform, pv: h.platformVersion });
+  });
+}
+onmessage = function () { report(postMessage); };
+onconnect = function (e) { var p = e.ports[0]; p.onmessage = function () { report(function (m) { p.postMessage(m); }); }; };`;
+
+/** 探针页的 CSP:只许带 nonce 的脚本和同源脚本文件(Worker),内联的 canary 被拦 */
+export const PROBE_CSP = "script-src 'nonce-stealthprobe' 'self'";

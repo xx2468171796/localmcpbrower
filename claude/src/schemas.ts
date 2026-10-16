@@ -3,6 +3,7 @@
  */
 
 import { z } from 'zod';
+import { isProxyUrl } from './identity.js';
 
 /** 只认 http(s) 的网址:z.url() 只校验语法,file:// / javascript: 也能过 */
 const httpUrl = () => z.url('必须是有效的 URL').refine((u) => /^https?:\/\//i.test(u), { message: '只允许 http:// 或 https://' });
@@ -54,9 +55,15 @@ export const SpaceNameSchema = z.object({
   name: z.string().min(1, 'name 不能为空').describe('space 名称，仅字母/数字/下划线/连字符，长度 1-40')
 });
 
-/** space_new 比切换 / 关闭多一个可选的 headed */
+/** space_new 比切换 / 关闭多几个可选项:headed、身份(代理 / 拟人,记进工作区,以后每次都用) */
 export const SpaceNewSchema = SpaceNameSchema.extend({
-  headed: z.boolean().optional().describe('这个工作区要不要可见窗口。一般不用给：默认无头，要人工时 wait_for_human 会自动弹窗')
+  headed: z.boolean().optional().describe('这个工作区要不要可见窗口。一般不用给：默认无头，要人工时 wait_for_human 会自动弹窗'),
+  proxy: z.string().max(500)
+    .refine((v) => v.trim() === '' || isProxyUrl(v), '代理格式：http://主机:端口、https://… 或 socks5://…，可带 用户名:密码@；给空字符串 = 去掉代理')
+    .optional()
+    .describe('给这个工作区挂代理（http:// https:// socks5://，可带 用户名:密码@），记住，以后每次打开都走它；时区自动跟出口 IP。给 "" 去掉代理。'),
+  humanize: z.boolean().optional()
+    .describe('拟人操作：点击 / 输入 / 滚动像真人（鼠标走曲线、逐字输入）。慢一些，被反爬拦时再开。记住到这个工作区。'),
 });
 
 export const ScrollSchema = z.object({

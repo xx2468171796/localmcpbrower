@@ -26,9 +26,12 @@ import { SCREENSHOT_DIR, adoptLegacy, legacyOf, profileDir, removeLegacyLeftover
 import { chromium, type BrowserContext, type Cookie, type Page, type Route } from 'patchright';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as http from 'http';
 import type { ConsoleLogEntry, NetworkRequestEntry, BrowserConfig } from './types.js';
-import { EGO_HELPER_SRC } from './injected.js';
-import { MAIN_WORLD_SRC, DRAIN_SRC, buildHtmlInjector } from './inject.js';
+import { MAIN_WORLD_SRC, DRAIN_SRC } from './inject.js';
+import { buildDocumentGate } from './document-gate.js';
+import { contextOptions, effectiveTimezone, fitWindow, identityArgs, loadIdentity, maskProxy, needsGeo, patchIdentity, saveIdentity, type Identity } from './identity.js';
+import { lookupGeo } from './geoip.js';
 import { browserEnv } from './browser-env.js';
 import { currentSessionId } from './context.js';
 import { killProcessTreeSync } from './portkill.js';
@@ -37,7 +40,7 @@ import { maximizeAllWindows } from './desk/window-fit.js';
 import { extensionLaunchPatch } from './control/extension-launch.js';
 import { linuxTreeRss } from './proc-tree.js';
 import { deskGate, deskRing } from './desk/runtime.js';
-import { READ_UA_DEFAULTS_SRC, bundledChromiumVersion, headfulMetadata, majorOf, platformUserAgent, uaVersionToken, type UaDefaults, type UaMetadata } from './user-agent.js';
+import { READ_UA_DEFAULTS_SRC, bundledChromiumVersion, cachedUaDefaults, headfulMetadata, majorOf, platformUserAgent, saveUaDefaults, uaVersionToken, type UaDefaults, type UaMetadata } from './user-agent.js';
 import { RecycledSessions, idleLimitMinutes, maxOpenSpaces, needsSentinel } from './space-policy.js';
 
 const IS_LINUX = process.platform === 'linux';
@@ -176,6 +179,8 @@ interface Space {
   uaApplied: WeakMap<Page, Promise<void>>;
   /** openPage 的排队链(见 openPage) */
   pageChain: Promise<void>;
+  /** 这次启动用的身份(identity.ts);还没启动过为 null */
+  identity: Identity | null;
 }
 
 /** ensureHeaded / ensureHeadless 的结果 */
@@ -251,6 +256,7 @@ class BrowserManager {
       uaOverride: null,
       uaApplied: new WeakMap<Page, Promise<void>>(),
       pageChain: Promise.resolve(),
+      identity: null,
     };
   }
 
@@ -505,7 +511,10 @@ class BrowserManager {
     return sp.launching;
   }
 
-  private async doLaunchSpace(sp: Space): Promise<BrowserContext> {
+  /**
+   * relaunched:已经按查到的代理出口时区重启过一次,不再查(防止接口时区来回变时反复重启)
+   */
+  private async doLaunchSpace(sp: Space, relaunched = false): Promise<BrowserContext> {
     if (sp.context) {
       return sp.context;
     }
@@ -562,15 +571,20 @@ class BrowserManager {
     // Windows 专属：无需额外启动参数，通用参数已足够
     const winArgs: string[] = [];
     const platformArgs = IS_LINUX ? linuxArgs : IS_MAC ? macArgs : IS_WIN ? winArgs : [];
-    // 自带扩展(录制 / 浏览器内网络规则 / 全标签页):默认只在完整版 Chromium(有头)里加载,见 control/extension.ts
+    // 自带扩展(录制 / 浏览器内网络规则 / 全标签页):默认只在有头窗口里加载,见 control/extension.ts
     const ext = extensionLaunchPatch(headless);
+    // 工作区身份(屏幕 / 语言 / 代理 / 时区),每次启动都一样,见 identity.ts
+    const identity = loadIdentity(sp.userDataDir, sp.name === DEFAULT_SPACE);
+    sp.identity = identity;
+    const win = fitWindow(this.config.viewportWidth, this.config.viewportHeight, identity.screen, headless);
     const launchArgs = [
       ...commonArgs.filter((a) => !ext?.removeArgs.includes(a)),
       ...platformArgs,
       ...(ext?.args ?? []),
+      ...identityArgs(identity, headless),
       // 托管工位有头:不给窗口大小、启动即最大化(viewport: null,页面跟着窗口走),切分辨率时 openbox 会把最大化窗口撑满新屏幕。
       // --window-size 会盖过 --start-maximized(实测 2560x1440 屏上窗口仍是 1920x1080),所以二选一
-      ...(deskConfig.managed && !headless ? ['--start-maximized'] : [`--window-size=${this.config.viewportWidth},${this.config.viewportHeight}`]),
+      ...(deskConfig.managed && !headless ? ['--start-maximized'] : [`--window-size=${win.width},${win.height}`]),
     ];
 
     if (this.config.devtools) launchArgs.push('--auto-open-devtools-for-tabs');
@@ -579,25 +593,28 @@ class BrowserManager {
     const devtoolsPort = deskConfig.devtoolsPort ?? (this.config.devtools ? 9222 : null);
     if (devtoolsPort !== null && sp.name === DEFAULT_SPACE) launchArgs.push(`--remote-debugging-port=${devtoolsPort}`);
 
-    // 无头才改 UA(去掉 HeadlessChrome);有头的真 Chromium UA 和 Client Hints 本来就自洽,不碰。见 user-agent.ts
-    const uaToken = headless ? uaVersionToken(UA_VERSION_OVERRIDE, bundledChromiumVersion()) : null;
+    // 无头才改 UA(去掉 HeadlessChrome);有头的真 Chromium UA 和 Client Hints 本来就自洽,不碰。
+    // 用启动参数改(Worker 里也生效),但只在已经缓存过这个内核原生 Client Hints 时 —— 第一次启动先不改,读原生值。见 user-agent.ts
+    const bundled = bundledChromiumVersion();
+    const cachedUa = headless ? cachedUaDefaults(bundled) : null;
+    const uaToken = cachedUa ? uaVersionToken(UA_VERSION_OVERRIDE, bundled) : null;
     const launchUa = uaToken ? platformUserAgent(process.platform, uaToken) : null;
+    if (launchUa) launchArgs.push(`--user-agent=${launchUa}`);
 
     const context = await chromium.launchPersistentContext(
       path.resolve(sp.userDataDir),
       {
         headless,
-        // patchright 在无显式 channel 时，即使 headless:false 也可能悄悄选中
-        // chrome-headless-shell（阉割掉窗口渲染的专用二进制），导致有头模式实际不弹窗。
-        // 显式指定 channel 强制走完整版 chrome.exe，真正弹出可见窗口。
-        // 无头要加载扩展(BROWSER_EXTENSION=on)时也得用完整版:headless shell 不支持扩展,改走新无头模式
-        ...(headless && !ext?.needsFullChromium ? {} : { channel: 'chromium' as const }),
+        // 一律用完整版 Chromium(有头 = 窗口,无头 = 新无头模式)。不用 chrome-headless-shell:
+        // 它没有 GPU(WebGL 是 SwiftShader)、没有完整的 window.chrome、mimeTypes 为空,一眼就是机器人;
+        // 有头时不显式指定 channel,patchright 还可能悄悄选中它导致不弹窗。
+        channel: 'chromium',
         slowMo: this.config.slowMo,
         viewport: null,
         args: launchArgs,
         ignoreDefaultArgs: ['--enable-automation', ...(ext?.ignoreDefaultArgs ?? [])],
-        // 性能优化选项
-        bypassCSP: true,                    // 绕过 CSP，加速页面加载
+        // 不再 bypassCSP:它让站点的 CSP 整个失效(页面能察觉,也降低了被访问页面的安全边界)。
+        // 注入的 console 捕获脚本改为把自己的 hash 加进 CSP(inject.ts / csp.ts)
         // 本机单用忽略 HTTPS 错误(内网自签站点照常打开);托管工位不忽略:证书有问题的页面上,
         // fill_secret 的站点核对就没有意义(中间人能冒充任何站点)。fill_secret 自己另有证书校验(secrets/tls-check.ts)
         ignoreHTTPSErrors: !deskConfig.managed,
@@ -605,45 +622,35 @@ class BrowserManager {
         env: browserEnv(),
         javaScriptEnabled: true,
         acceptDownloads: true,
-        // 平台对应 UA(macOS / Linux / Windows 各自匹配),只在无头时给
-        ...(launchUa ? { userAgent: launchUa } : {}),
-        extraHTTPHeaders: {
-          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-          'Accept-Encoding': 'gzip, deflate, br'
-        }
+        // 代理、跟出口走的时区(身份,见 identity.ts)。语言走启动参数,不再用 extraHTTPHeaders 改请求头
+        // (以前写死的 Accept-Encoding 少了真 Chrome 会发的 zstd,反而是破绽)
+        ...contextOptions(identity),
       }
     );
 
-    // patchright 为规避 Console.enable 检测泄漏，彻底禁用了 CDP Console 域，
-    // 导致 page.on('console') 收不到页面脚本自己的 console.log/warn/error。
-    // 用 exposeBinding 搭一条不经过 CDP Console 域的旁路：页面内 console 方法被
-    // 劫持后直接把日志转发回 Node 端，绕开被禁用的通道。exposeBinding 与
-    // addInitScript 一样对该 context 下所有现有/后续页面自动生效。
-    // 多会话下必须按 source.page 找回**该页所属会话**的缓冲，否则日志会串台。
-    await context.exposeBinding('__mcpConsoleLog', (source, type: string, text: string) => {
-      const st = this.ownerOfPage(sp, source.page);
-      if (!st) return;
-      st.consoleLogs.push({ type: type as ConsoleLogEntry['type'], text, timestamp: Date.now() });
-      if (st.consoleLogs.length > 2000) {
-        st.consoleLogs = st.consoleLogs.slice(-1000);
-      }
-    });
+    // ── console 捕获:addInitScript 原生执行(patchright 1.63 + 完整版 Chromium 实测,早于页面脚本、不受 CSP 限制),见 src/inject.ts。
+    // 指纹伪装已经删掉:完整版 Chromium 原生就像真浏览器,JS 改出来的值反而是破绽(docs/architecture.md §12)。
+    await context.addInitScript(MAIN_WORLD_SRC);
 
-    // ── 反爬指纹伪装 + console 劫持:走 route 注入 HTML,而不是 addInitScript
-    //
-    // 原实现用 context.addInitScript(),实测(2026-08-31 / patchright 1.62.2)**整段从未执行**,
-    // 6 项指纹伪装全部形同虚设:navigator.webdriver 直接暴露、window.chrome 不存在、plugins 为空,
-    // 爬公网站点基本会被当成机器人。page.addInitScript 与 CDP
-    // Page.addScriptToEvaluateOnNewDocument 同样无效(下发成功但不执行)。
-    // 唯一可用的通道是拦 HTML 响应把 <script> 注进 <head> —— 详见 src/inject.ts 的实测表。
-    //
-    // ⚠️ 排错提醒:判断脚本"有没有执行"必须走 DOM(跨世界共享)。
-    // page.evaluate 跑在**隔离世界**,读不到主世界的 window.X,会把"执行了"误判成"没执行"。
-    //
+    // 这个内核还没缓存过原生 Client Hints(这次没改 UA 启动):趁还没装路由读一次存起来,下次就能用启动参数改 UA
+    let uaDefaults = cachedUa;
+    if (headless && !cachedUa) {
+      uaDefaults = await within(this.readUaDefaults(context).catch(() => null), LAUNCH_PROBE_TIMEOUT_MS, null);
+      const real = context.browser()?.version();
+      if (uaDefaults && real) saveUaDefaults(real, uaDefaults);
+      // 存好了(而且就是这次要用的内核)就按启动参数改 UA 马上重启一次,否则这一回 Shared / Service Worker 里还是 HeadlessChrome。
+      // 下次启动读得到缓存,不会再走到这里(缓存写不进去时 cachedUaDefaults 仍是 null,也就不重启,不会循环)
+      if (cachedUaDefaults(bundled)) {
+        await context.close().catch(() => { /* 已经关了 */ });
+        return this.doLaunchSpace(sp, relaunched);
+      }
+    }
+
+    // ── 本服务地址与工位白名单。文档请求白名单为空时原样交回浏览器自己发(不再 Node 代取,见 document-gate.ts)。
     // 装在 **context** 级:页面级 route(set_block_rules)优先匹配,放行时调 route.fallback()
     // 就会落到这里,两者互不冲突。若改成页面级,两个 '**/*' handler 的优先级会打架。
     // 先过工位白名单:点链接 / 页面脚本跳到名单外的站点(含 iframe)在这里拦下,不只拦工具参数里的网址
-    const inject = buildHtmlInjector([MAIN_WORLD_SRC, EGO_HELPER_SRC], {
+    const documentGate = buildDocumentGate({
       allows: (url) => deskGate.allows(url),
       restricting: () => deskGate.status().allowlist.length > 0,
       onBlocked: (url) => { deskRing.push({ kind: 'gate', space: sp.name, url, detail: 'blocked_by_allowlist' }); },
@@ -657,7 +664,7 @@ class BrowserManager {
         await route.abort('blockedbyclient').catch(() => { /* 已被别处处理 */ });
         return;
       }
-      await inject(route);
+      await documentGate(route);
     });
 
     // 浏览器被外部关掉(用户点 X / 崩溃)时把 space 打回未启动态,
@@ -676,8 +683,12 @@ class BrowserManager {
     // afterLaunch 期间浏览器就没了(启动即崩):上面的 close 处理看 sp.context 还不是它会忽略,这里自己兜住
     let closedEarly = false;
     context.once('close', () => { closedEarly = true; });
-    await this.afterLaunch(sp, context, headless, launchUa);
+    await this.afterLaunch(sp, context, headless, uaDefaults, cachedUa !== null);
     if (closedEarly) throw new Error(`space '${sp.name}' 浏览器启动后立刻退出了`);
+    if (!relaunched && await this.adoptProxyGeo(sp, context, identity)) {
+      await context.close().catch(() => { /* 已经关了 */ });
+      return this.doLaunchSpace(sp, true);
+    }
     sp.context = context;
     // 托管工位有头:profile 里记着上次的窗口位置时 --start-maximized 也可能不生效,启动后再经 CDP 设一次最大化(不等它)
     if (deskConfig.managed && !headless) void maximizeAllWindows([context]).catch(() => { /* 尽力而为 */ });
@@ -690,19 +701,18 @@ class BrowserManager {
    *      原实现读 `browser._process.pid` —— 那是服务端对象上的字段,客户端拿到的 Browser 上**根本没有**,
    *      实测恒为 undefined,所以 pid 一直是 null,退出钩子从来没杀到过浏览器。改用 CDP SystemInfo.getProcessInfo,
    *      三平台一致。
-   *   2. 无头:读真实的默认 Client Hints,算出要给每个页面补的 UA 覆盖,并给已有 / 以后的页面下发。
+   *   2. 无头:按原生 Client Hints(缓存或刚读到的)算出要给每个页面补的 UA 覆盖,并给已有 / 以后的页面下发。
    */
-  private async afterLaunch(sp: Space, context: BrowserContext, headless: boolean, launchUa: string | null): Promise<void> {
+  private async afterLaunch(sp: Space, context: BrowserContext, headless: boolean, defaults: UaDefaults | null, uaByFlag: boolean): Promise<void> {
     sp.chromiumPid = await within(this.readChromiumPid(context), LAUNCH_PROBE_TIMEOUT_MS, null);
     sp.uaOverride = null;
     if (!headless) return;
     const real = context.browser()?.version() ?? null;
     const token = uaVersionToken(UA_VERSION_OVERRIDE, real);
     if (!real || !token) return;
-    if (launchUa && !UA_VERSION_OVERRIDE && majorOf(bundledChromiumVersion()) !== majorOf(real)) {
+    if (uaByFlag && !UA_VERSION_OVERRIDE && majorOf(bundledChromiumVersion()) !== majorOf(real)) {
       console.warn(`[BrowserManager] patchright 记录的内核版本和实际启动的(${real})对不上,页面 UA 以实际为准`);
     }
-    const defaults = await within(this.readUaDefaults(context), LAUNCH_PROBE_TIMEOUT_MS, null);
     sp.uaOverride = {
       userAgent: platformUserAgent(process.platform, token),
       userAgentMetadata: headfulMetadata(defaults, real, UA_VERSION_OVERRIDE),
@@ -710,6 +720,28 @@ class BrowserManager {
     // window.open 弹出的页、人手动开的页也要补;openPage 自己会等下发完成
     context.on('page', (page) => { void this.applyUa(sp, page); });
     await Promise.all(context.pages().map((p) => this.applyUa(sp, p)));
+  }
+
+  /**
+   * 挂了代理、还没查过出口(或换了代理)时:经浏览器自己查一次出口 IP 和时区,记进身份。
+   * 返回 true = 时区和这次启动用的不一样,要按新身份重启一次(只在第一次 / 换代理后发生)。
+   * 查不到不影响启动,只是时区不跟出口,打一条日志。
+   */
+  private async adoptProxyGeo(sp: Space, context: BrowserContext, identity: Identity): Promise<boolean> {
+    if (!needsGeo(identity) || !identity.proxy) return false;
+    const geo = await lookupGeo(context);
+    if (!geo) {
+      console.warn(`[BrowserManager] space '${sp.name}' 经代理 ${maskProxy(identity.proxy)} 查不到出口时区,时区先跟系统`);
+      return false;
+    }
+    const next: Identity = { ...identity, geo: { ...geo, proxy: identity.proxy, at: Date.now() } };
+    saveIdentity(sp.userDataDir, next);
+    return effectiveTimezone(next) !== effectiveTimezone(identity);
+  }
+
+  /** 当前会话所在工作区的拟人开关;null = 身份里没设,跟环境变量 */
+  public humanizeForCurrentSession(): boolean | null {
+    return this.spaceFor(currentSessionId()).identity?.humanize ?? null;
   }
 
   private async readChromiumPid(context: BrowserContext): Promise<number | null> {
@@ -725,17 +757,27 @@ class BrowserManager {
     }
   }
 
-  /** 在启动自带的空白页上读默认 Client Hints(只读,不导航);没有空白页 / 读不到返回 null */
+  /**
+   * 读浏览器原生的 Client Hints。navigator.userAgentData 只在安全上下文里有,启动自带的 about:blank 不是
+   * (新无头实测读到 null —— 以前组出来的 platformVersion 一直是空的),所以临时起一个回环小页面
+   * (127.0.0.1 算安全上下文),开个标签页读完就关。只在某个内核版本第一次启动时做(结果缓存,见 user-agent.ts),
+   * 在装路由之前做(工位白名单会拦这个地址)。读不到返回 null。
+   */
   private async readUaDefaults(context: BrowserContext): Promise<UaDefaults | null> {
-    const page = context.pages()[0];
-    if (!page) return null;
-    const s = await context.newCDPSession(page);
+    const srv = http.createServer((_req, res) => { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><title>ua</title>'); });
+    await new Promise<void>((resolve) => srv.listen(0, '127.0.0.1', resolve));
+    const addr = srv.address();
+    const page = await context.newPage();
     try {
+      if (!addr || typeof addr === 'string') return null;
+      await page.goto(`http://127.0.0.1:${addr.port}/`, { timeout: LAUNCH_PROBE_TIMEOUT_MS });
+      const s = await context.newCDPSession(page);
       const r = await s.send('Runtime.evaluate', { expression: READ_UA_DEFAULTS_SRC, awaitPromise: true, returnByValue: true });
       const v: unknown = r.result.value;
       return v && typeof v === 'object' ? (v as UaDefaults) : null;
     } finally {
-      await s.detach().catch(() => { /* noop */ });
+      await page.close().catch(() => { /* 浏览器可能已经没了 */ });
+      srv.close();
     }
   }
 
@@ -1047,9 +1089,8 @@ class BrowserManager {
   /**
    * 把页面里攒着的 console 日志取回本会话缓冲。
    *
-   * 主世界的 console 劫持调不到 exposeBinding(实测在主世界是 undefined),
-   * 所以它把日志写进一个隐藏 DOM 节点;这里从**隔离世界**把它排空 —— DOM 跨世界共享,
-   * 这是两个世界之间唯一可靠的通道。详见 src/inject.ts。
+   * 主世界的 console 捕获把日志攒在页面闭包里;这里从**隔离世界**派发随机名字的事件取走(事件跨世界共享,
+   * 字符串 detail 能跨世界传)。详见 src/inject.ts。
    *
    * 取走即删除,重复调用不会重复上报。只扫本会话自己的页面,不会串台。
    * 单页失败(已关闭/跨域限制)只跳过该页,不影响其它页 —— 读日志失败绝不该让工具失败。
@@ -1423,8 +1464,12 @@ class BrowserManager {
    * 已存在同名 space 则直接切过去,不重复创建。切换只作用于调用方会话。
    * headed:这个工作区要不要可见窗口(新建时直接按它开;已存在且形态不同则原地换)。
    * 不给就按服务默认(通常无头;要人工时 wait_for_human 会自动弹窗)。
+   * identity:改这个工作区的身份(代理 / 拟人),记进 identity.json,以后每次启动都用;
+   * 代理变了而浏览器正开着 → 关掉按新代理重开(登录态在 profile 里,不丢)。
    */
-  public async createSpace(name: string, headed?: boolean): Promise<{ name: string; created: boolean; headed: boolean; reason?: string }> {
+  public async createSpace(
+    name: string, headed?: boolean, identity: { proxy?: string; humanize?: boolean } = {},
+  ): Promise<{ name: string; created: boolean; headed: boolean; reason?: string; proxy: string | null; humanize: boolean | null; restarted?: boolean }> {
     const clean = name.trim();
     if (!clean) throw new Error('space 名不能为空');
     if (!/^[A-Za-z0-9_-]{1,40}$/.test(clean)) {
@@ -1446,8 +1491,27 @@ class BrowserManager {
     if (!created && headed !== undefined && sp.headed !== headed) {
       reason = (await this.switchMode(sp, headed)).reason;
     }
+    let restarted = false;
+    if (identity.proxy !== undefined || identity.humanize !== undefined) {
+      while (sp.launching) await sp.launching.catch(() => { /* 起不来就按新身份再起 */ });
+      const patched = patchIdentity(sp.userDataDir, clean === DEFAULT_SPACE, identity);
+      sp.identity = patched.identity;
+      if (patched.proxyChanged && sp.context) {
+        // 主动重开不是「崩溃」:先置空再关,别让 close 事件把会话标成「被清掉过」
+        const ctx = sp.context;
+        sp.context = null;
+        sp.chromiumPid = null;
+        this.wipeSessionPages(sp, false);
+        await ctx.close().catch(() => { /* 已经关了 */ });
+        restarted = true;
+      }
+    }
     await this.launchSpace(sp);
-    return { name: clean, created, headed: sp.headed, ...(reason ? { reason } : {}) };
+    const id = sp.identity;
+    return {
+      name: clean, created, headed: sp.headed, ...(reason ? { reason } : {}),
+      proxy: maskProxy(id?.proxy ?? null), humanize: id?.humanize ?? null, ...(restarted ? { restarted } : {}),
+    };
   }
 
   /** 切换调用方会话的 space(必须已存在) */

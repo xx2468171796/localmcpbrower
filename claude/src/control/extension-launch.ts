@@ -2,8 +2,8 @@
  * 自带扩展的加载参数(只管「启动浏览器时加什么参数」,不依赖 BrowserManager,browser.ts 引用它不会成环)。
  *
  * 开关 BROWSER_EXTENSION:
- *   auto(默认)= 只在完整版 Chromium 里加载(有头窗口,本机弹窗和虚拟机工位都是);无头的 headless shell 不支持扩展,跳过;
- *   on  = 无头也加载(无头改用完整版 Chromium 的新无头模式,更重一点);
+ *   auto(默认)= 只在有头窗口里加载(本机弹窗和虚拟机工位都是);无头不加载(省内存,无头时也用不上录制);
+ *   on  = 无头也加载;
  *   off = 不加载。
  */
 
@@ -30,8 +30,6 @@ export interface ExtensionLaunchPatch {
   removeArgs: string[];
   /** patchright 默认参数里要去掉的 */
   ignoreDefaultArgs: string[];
-  /** 需要完整版 Chromium(channel: 'chromium');无头时意味着改用新无头模式 */
-  needsFullChromium: boolean;
 }
 
 /** 返回 null = 这次不加载扩展 */
@@ -43,6 +41,5 @@ export function extensionLaunchPatch(headless: boolean, env: Record<string, stri
     args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`],
     removeArgs: ['--disable-extensions'],
     ignoreDefaultArgs: ['--disable-extensions'],
-    needsFullChromium: true,
   };
 }

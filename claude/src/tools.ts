@@ -69,7 +69,7 @@ export async function setViewport(input: unknown): Promise<ToolResult<{ width: n
 
 export async function getConsoleLogs(): Promise<ToolResult<ConsoleLogEntry[]>> {
   try {
-    // 先把页面里攒着的日志排空取回 —— 主世界的 console 劫持只能写 DOM,得由这边主动来取(见 browser.ts drainPageLogs / inject.ts)。
+    // 先把页面里攒着的日志排空取回 —— 主世界的 console 捕获把日志攒在页面里,得由这边主动来取(见 browser.ts drainPageLogs / inject.ts)。
     // ⚠️ 边界(不是 bug):execute_js / run_script 跑在隔离世界,它们内部的 console.log 不经过主世界劫持,不会出现在这里。
     await withTimeout(getBrowserManager().drainPageLogs(), 5000, '读取页面日志').catch(() => { /* 先给已有的 */ });
     return { success: true, data: getBrowserManager().getConsoleLogs() };
@@ -300,10 +300,14 @@ export async function spaceList(): Promise<ToolResult<{
   }
 }
 
-export async function spaceNew(input: unknown): Promise<ToolResult<{ name: string; created: boolean; headed: boolean; reason?: string; active: string }>> {
+export async function spaceNew(input: unknown): Promise<ToolResult<{
+  name: string; created: boolean; headed: boolean; reason?: string; active: string; proxy: string | null; humanize: boolean | null; restarted?: boolean;
+}>> {
   try {
-    const { name, headed } = parseInput(SpaceNewSchema, input);
-    const res = await getBrowserManager().createSpace(name, headed);
+    const { name, headed, proxy, humanize } = parseInput(SpaceNewSchema, input);
+    const res = await getBrowserManager().createSpace(name, headed, {
+      ...(proxy !== undefined ? { proxy } : {}), ...(humanize !== undefined ? { humanize } : {}),
+    });
     return { success: true, data: { ...res, active: getBrowserManager().getActiveSpace() } };
   } catch (error) {
     return failFrom(error);

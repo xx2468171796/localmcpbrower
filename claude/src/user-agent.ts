@@ -11,20 +11,22 @@
  *     navigator.userAgentData.brands 和 Sec-CH-UA 请求头仍是「HeadlessChrome 153」,
  *     platformVersion 还被改成 UA 里冻结的「10.0」(真机 Win11 是 13 以上)。三处自相矛盾,比不改更显眼。
  *
- * 现在的做法(无头):
- *   1. 启动选项 userAgent 仍然给(patchright 会把它下发到每个页面、跨域 iframe、Service Worker,覆盖面最全),
- *      版本取 patchright 自带的 browsers.json(就是这次要启动的那个内核),格式与真 Chrome 一致:`Chrome/<主版本>.0.0.0`;
- *   2. 启动后从浏览器读出真实的默认 Client Hints,只把 HeadlessChrome 这个品牌换掉,
- *      再用 CDP Emulation.setUserAgentOverride 给**每个页面**补上完整的 userAgentMetadata(brands / fullVersionList /
- *      真实 platformVersion …)。页面上的这次下发晚于 patchright 自己那次,以它为准。
- * 剩下的缺口:跨域 iframe、Worker 的 Client Hints 品牌仍带 HeadlessChrome(CDP 只能按页面下发);
- * 要完全一致就用有头(wait_for_human 那种按需弹窗)。
+ * 现在的做法(无头,2026-10-17 改,体检 test/stealth-check.mjs 和 CreepJS 发现两处缺口后):
+ *   1. 新无头模式原生的 Client Hints 本来就对(品牌是 Chromium、平台版本是真的),只有 UA 字符串带 HeadlessChrome。
+ *   2. UA 用启动参数 `--user-agent` 改 —— 页面、iframe、各种 Worker(含 Service / Shared Worker)、请求头全都一致。
+ *      以前用的 patchright userAgent 选项管不到 Service / Shared Worker(CreepJS 在 Worker 里看到 HeadlessChrome)。
+ *   3. 但自定义 UA 后浏览器原生的高熵 Client Hints 会变空(platformVersion、fullVersionList),所以页面上仍用
+ *      CDP Emulation.setUserAgentOverride 补完整的 userAgentMetadata。这份元数据要从**没改过 UA** 的浏览器里读:
+ *      某个内核版本第一次启动时不改 UA,读出原生值存进数据目录(ua-defaults.json,按平台 + 内核版本),
+ *      以后都用参数 + 缓存。第一次那一回 Worker 里的 UA 仍带 HeadlessChrome,换内核版本后重来一次。
+ * 剩下的缺口:Worker 里的高熵 Client Hints 是空的(CDP 只能按页面下发);要完全一致就用有头。
  *
  * UA_CHROME_VERSION 只作显式覆盖:设了就用它(例如要伪装成某个版本),不设就按真实版本。
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { DATA_ROOT } from './paths.js';
 
 export interface Brand { brand: string; version: string }
 
@@ -63,6 +65,34 @@ export const READ_UA_DEFAULTS_SRC = `(async () => {
   return { brands: d.brands, mobile: d.mobile, platform: d.platform, ...h };
 })()`;
 
+const UA_CACHE_FILE = path.join(DATA_ROOT, 'ua-defaults.json');
+
+/** 缓存键:平台 + 内核完整版本(换内核就作废) */
+function uaCacheKey(version: string): string {
+  return `${process.platform}/${version}`;
+}
+
+/** 某个内核版本没改过 UA 时的原生 Client Hints;没缓存过返回 null */
+export function cachedUaDefaults(version: string | null): UaDefaults | null {
+  if (!version) return null;
+  try {
+    const all = JSON.parse(fs.readFileSync(UA_CACHE_FILE, 'utf8')) as Record<string, UaDefaults | undefined>;
+    const hit = all[uaCacheKey(version)];
+    return hit && typeof hit.platformVersion === 'string' && hit.platformVersion !== '' ? hit : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 记下原生 Client Hints(只留当前这一个版本,旧版本的作废);写失败不影响启动 */
+export function saveUaDefaults(version: string, defaults: UaDefaults): void {
+  if (!defaults.platformVersion) return;
+  try {
+    fs.mkdirSync(path.dirname(UA_CACHE_FILE), { recursive: true });
+    fs.writeFileSync(UA_CACHE_FILE, JSON.stringify({ [uaCacheKey(version)]: defaults }, null, 2));
+  } catch { /* 下次再读一遍原生值 */ }
+}
+
 /** patchright 自带的内核版本(browsers.json);读不出返回 null(不让启动因此失败) */
 export function bundledChromiumVersion(): string | null {
   try {
@@ -73,7 +103,7 @@ export function bundledChromiumVersion(): string | null {
     const json = JSON.parse(fs.readFileSync(path.join(path.dirname(pkg), 'browsers.json'), 'utf8')) as {
       browsers?: Array<{ name?: string; browserVersion?: string }>;
     };
-    const hit = json.browsers?.find((b) => b.name === 'chromium-headless-shell') ?? json.browsers?.find((b) => b.name === 'chromium');
+    const hit = json.browsers?.find((b) => b.name === 'chromium');
     return hit?.browserVersion && /^\d+(\.\d+)*$/.test(hit.browserVersion) ? hit.browserVersion : null;
   } catch {
     return null;
