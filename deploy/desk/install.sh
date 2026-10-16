@@ -30,6 +30,11 @@ while [ $# -gt 0 ]; do
 done
 
 HERE=$(cd "$(dirname "$0")" && pwd)
+# 开跑时的自己。直接跑 /opt/ai-desk/src 里那份时,拉代码会把 $0 换成新文件,而 bash 手里还是旧内容在跑 ——
+# 拿 $0 和新版比永远相等、不会用新版重跑(2026-10-17 就因此漏装了字体和 openbox 配置),所以比开跑时的快照
+SELF_SNAPSHOT=$(mktemp)
+cp "$0" "$SELF_SNAPSHOT"
+trap 'rm -f "$SELF_SNAPSHOT"' EXIT
 REPO_URL=http://192.168.110.246:3001/gonggong/localmcpbrower.git
 SRC=/opt/ai-desk/src
 RELEASES=/opt/ai-desk/releases
@@ -65,8 +70,9 @@ if [ "$BUILD" = 1 ]; then
   fi
   # 拉下来的可能是新版本的本脚本:bash 是边读边执行的,接着跑旧的会漏掉新步骤(2026-10-16 就漏装过 polkit 规则)。
   # 换成刚拉的那份从头再跑一次(--branch 已定,不再拉)
-  if [ -z "${DESK_INSTALL_REEXEC:-}" ] && ! cmp -s "$0" "$SRC/deploy/desk/install.sh"; then
+  if [ -z "${DESK_INSTALL_REEXEC:-}" ] && ! cmp -s "$SELF_SNAPSHOT" "$SRC/deploy/desk/install.sh"; then
     echo "install: 脚本有新版本,用新版重跑"
+    rm -f "$SELF_SNAPSHOT"   # exec 之后 EXIT 陷阱不会跑
     args=(--branch "$BRANCH"); [ "$FIREWALL" = 1 ] || args+=(--no-firewall)
     DESK_INSTALL_REEXEC=1 exec bash "$SRC/deploy/desk/install.sh" "${args[@]}"
   fi
