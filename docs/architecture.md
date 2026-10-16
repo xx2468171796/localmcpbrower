@@ -236,6 +236,12 @@
 
 **身份不变量**：同一工作区每次启动的屏幕、时区、语言、代理一致；JS、请求头、Worker 里看到的语言 / 时区一致（都用上下文选项，不用页面级覆盖）；平台不伪装（字体和 GPU 跟着真实系统，改平台反而自相矛盾）。
 **对外接口**：`space_new` 新增可选 `proxy`（`http://` / `socks5://`，可带账号，存进身份；给 `""` 清掉）、`humanize`（布尔）；环境变量 `BROWSER_HUMANIZE=1` 让所有工作区默认拟人，`BROWSER_PROXY` 给默认工作区挂代理。代理账号密码不进事件流 / 日志 / 工具结果（打码）。
+**已知取舍（2026-10-17 独立审查后）**：
+- console 捕获的 `console.log.toString()` 不带函数名（Proxy 的限制）；换成在 CDP 会话上开 `Runtime.enable` 更糟（页面打日志会调 `Error.prepareStackTrace`，经典 CDP 检测）。`BROWSER_CONSOLE_CAPTURE=off` 可关。
+- 「经重定向落到本服务」靠 `Sec-Fetch-*`，浏览器只对安全上下文目标（https、localhost、127.x）发这些头：服务绑在局域网 IP 的明文 http 上时这道拦不住，此时 `/mcp`、`/admin` 仍要令牌。
+- 挂了代理的工作区不忽略证书错误（`fill_secret` 的证书校验是本进程直连验的，代理可以冒充站点）。换代理和换形态走同一条原地重启（拒绝打断别人的在途调用、带上会话 cookie 和标签页）。
+- `window.open` 弹出页的第一个文档没有 console 捕获（脚本按页面装，来不及）。
+
 **做不到的（如实写清）**：没有 GPU 的 Linux 机器（工位机）WebGL 只能是 SwiftShader 软件渲染，这是硬特征，原生改不了、JS 改了又是谎言，不改；体检照实报。canvas / 音频指纹噪声需要改内核（CloakBrowser 那一层），不做。
 **Linux 字体**：工位机 / Linux 本机装 CJK、彩色 emoji 和与 Windows 字体等宽的开源字体（`deploy/desk/install.sh`、`mcp.mjs install` 在 Linux 上提示 / 安装），缺字体是被拦的常见原因。
 

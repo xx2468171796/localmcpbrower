@@ -28,7 +28,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as http from 'http';
 import type { ConsoleLogEntry, NetworkRequestEntry, BrowserConfig } from './types.js';
-import { MAIN_WORLD_SRC, DRAIN_SRC } from './inject.js';
+import { MAIN_WORLD_SRC, DRAIN_SRC, consoleCaptureEnabled } from './inject.js';
 import { buildDocumentGate } from './document-gate.js';
 import { contextOptions, effectiveTimezone, fitWindow, identityArgs, loadIdentity, maskProxy, needsGeo, patchIdentity, saveIdentity, type Identity } from './identity.js';
 import { lookupGeo } from './geoip.js';
@@ -54,6 +54,10 @@ const UA_VERSION_OVERRIDE = (process.env['UA_CHROME_VERSION'] ?? '').trim() || u
 
 /** 启动后读 pid / 默认 Client Hints 的 CDP 调用最多等多久;超时就跳过,不拖住启动 */
 const LAUNCH_PROBE_TIMEOUT_MS = 3_000;
+/** 经代理查出口时区失败后,隔多久再查 */
+const GEO_RETRY_MS = 6 * 60 * 60 * 1000;
+/** 首次启动读原生 Client Hints(开回环小页面)的期限;只在每个内核版本第一次启动时发生,给宽一点 */
+const UA_PROBE_TIMEOUT_MS = 10_000;
 
 /** snapshotState 读单个标签页标题最多等多久(页面卡在弹窗里时 title() 会一直等) */
 const TITLE_TIMEOUT_MS = 1_000;
@@ -237,6 +241,8 @@ class BrowserManager {
   private callSpace = new AsyncLocalStorage<Space>();
   /** 标签页被系统清掉过(空闲回收 / 崩溃 / 管理员重启)的会话;下一次工具结果带 recycled: true */
   private recycled = new RecycledSessions();
+  /** 「工作区 profile + 代理」→ 上次查出口时区失败的时刻(adoptProxyGeo 隔 GEO_RETRY_MS 再试) */
+  private geoFailedAt = new Map<string, number>();
 
   private constructor(config: BrowserConfig) {
     this.config = config;
@@ -628,10 +634,11 @@ class BrowserManager {
         args: launchArgs,
         ignoreDefaultArgs: ['--enable-automation', ...(ext?.ignoreDefaultArgs ?? [])],
         // 不再 bypassCSP:它让站点的 CSP 整个失效(页面能察觉,也降低了被访问页面的安全边界)。
-        // 注入的 console 捕获脚本改为把自己的 hash 加进 CSP(inject.ts / csp.ts)
+        // (console 捕获脚本按页面经 CDP 装,本来就不受 CSP 限制)
         // 本机单用忽略 HTTPS 错误(内网自签站点照常打开);托管工位不忽略:证书有问题的页面上,
-        // fill_secret 的站点核对就没有意义(中间人能冒充任何站点)。fill_secret 自己另有证书校验(secrets/tls-check.ts)
-        ignoreHTTPSErrors: !deskConfig.managed,
+        // fill_secret 的站点核对就没有意义(中间人能冒充任何站点)。fill_secret 自己另有证书校验(secrets/tls-check.ts),
+        // 但它是本进程直连验的;挂了代理的工作区浏览器走代理,代理可以冒充站点 —— 所以有代理时也不忽略,由浏览器自己拒
+        ignoreHTTPSErrors: !deskConfig.managed && !identity.proxy,
         // 浏览器只拿去掉了令牌 / 密码类变量的环境副本(browser-env.ts)
         env: browserEnv(),
         javaScriptEnabled: true,
@@ -648,9 +655,10 @@ class BrowserManager {
     // 这个内核还没缓存过原生 Client Hints(这次没改 UA 启动):趁还没装路由读一次存起来,下次就能用启动参数改 UA
     let uaDefaults = cachedUa;
     if (headless && !cachedUa) {
-      uaDefaults = await within(this.readUaDefaults(context).catch(() => null), LAUNCH_PROBE_TIMEOUT_MS, null);
-      const real = context.browser()?.version();
-      if (uaDefaults && real) saveUaDefaults(real, uaDefaults);
+      uaDefaults = await within(this.readUaDefaults(context).catch(() => null), UA_PROBE_TIMEOUT_MS, null);
+      // 缓存键用查缓存时用的同一个版本(patchright 记录的内核版本),两者对不上时也不会每次都重读
+      const key = bundled ?? context.browser()?.version();
+      if (uaDefaults && key) saveUaDefaults(key, uaDefaults);
       // 存好了(而且就是这次要用的内核)就按启动参数改 UA 马上重启一次,否则这一回 Shared / Service Worker 里还是 HeadlessChrome。
       // 下次启动读得到缓存,不会再走到这里(缓存写不进去时 cachedUaDefaults 仍是 null,也就不重启,不会循环)
       if (cachedUaDefaults(bundled)) {
@@ -702,6 +710,7 @@ class BrowserManager {
       await context.close().catch(() => { /* 已经关了 */ });
       return this.doLaunchSpace(sp, true);
     }
+    if (closedEarly) throw new Error(`space '${sp.name}' 浏览器在查代理出口期间退出了`);
     sp.context = context;
     // 托管工位有头:profile 里记着上次的窗口位置时 --start-maximized 也可能不生效,启动后再经 CDP 设一次最大化(不等它)
     if (deskConfig.managed && !headless) void maximizeAllWindows([context]).catch(() => { /* 尽力而为 */ });
@@ -746,9 +755,13 @@ class BrowserManager {
    */
   private async adoptProxyGeo(sp: Space, context: BrowserContext, identity: Identity): Promise<boolean> {
     if (!needsGeo(identity) || !identity.proxy) return false;
+    // 查不到的(代理挡了查询接口等)隔一阵再试,别让每次启动(含空闲回收后重开)都白等最多 20 秒
+    const key = `${sp.userDataDir}\n${identity.proxy}`;
+    if ((this.geoFailedAt.get(key) ?? 0) > Date.now() - GEO_RETRY_MS) return false;
     const geo = await lookupGeo(context);
     if (!geo) {
-      console.warn(`[BrowserManager] space '${sp.name}' 经代理 ${maskProxy(identity.proxy)} 查不到出口时区,时区先跟系统`);
+      this.geoFailedAt.set(key, Date.now());
+      console.warn(`[BrowserManager] space '${sp.name}' 经代理 ${maskProxy(identity.proxy)} 查不到出口时区,时区先跟系统(6 小时后再查)`);
       return false;
     }
     const next: Identity = { ...identity, geo: { ...geo, proxy: identity.proxy, at: Date.now() } };
@@ -787,7 +800,7 @@ class BrowserManager {
     const page = await context.newPage();
     try {
       if (!addr || typeof addr === 'string') return null;
-      await page.goto(`http://127.0.0.1:${addr.port}/`, { timeout: LAUNCH_PROBE_TIMEOUT_MS });
+      await page.goto(`http://127.0.0.1:${addr.port}/`, { timeout: UA_PROBE_TIMEOUT_MS });
       const s = await context.newCDPSession(page);
       const r = await s.send('Runtime.evaluate', { expression: READ_UA_DEFAULTS_SRC, awaitPromise: true, returnByValue: true });
       const v: unknown = r.result.value;
@@ -814,7 +827,7 @@ class BrowserManager {
     const run = (async () => {
       const s = await page.context().newCDPSession(page);
       await s.send('Page.enable');
-      await s.send('Page.addScriptToEvaluateOnNewDocument', { source: MAIN_WORLD_SRC });
+      if (consoleCaptureEnabled()) await s.send('Page.addScriptToEvaluateOnNewDocument', { source: MAIN_WORLD_SRC });
       if (ov) await s.send('Emulation.setUserAgentOverride', { userAgent: ov.userAgent, userAgentMetadata: ov.userAgentMetadata });
     })();
     const p = within(run.catch(() => { /* 页面可能刚被关掉 */ }), LAUNCH_PROBE_TIMEOUT_MS, undefined);
@@ -855,18 +868,26 @@ class BrowserManager {
       sp.headed = headed;
       return { headed, switched: true, restored: [] };
     }
+    return this.restartInPlace(sp, headed, headed ? '弹出窗口' : '收起窗口', headed ? '要人工处理,换成有窗口的' : '人工处理完,收起窗口换回无头');
+  }
+
+  /**
+   * 关掉正开着的浏览器、按目标形态和当前身份(identity.json)原地重开:换形态、换代理都走这里。
+   * 会话 cookie 和各会话的标签页带过去(doSwitchMode)。action 给报错用,why 给日志用。
+   */
+  private restartInPlace(sp: Space, headed: boolean, action: string, why: string): Promise<ModeSwitchResult> {
     // 别的调用正在用这个浏览器(另一个窗口在跑 navigate / 批量抓取…):关掉它等于把别人的活掐断。
     // 宁可明确拒绝,让 AI 等那边跑完再来。inflight 里含调用方自己这一次,先减掉。
     const self = this.callSpace.getStore() === sp ? 1 : 0;
     const others = sp.inflight - self;
     if (others > 0) {
       throw new Error(
-        `工作区 '${sp.name}' 还有 ${others} 个别的调用正在用浏览器,现在${headed ? '弹出窗口' : '收起窗口'}会打断它们。`
-        + '等那些调用结束后再试;或用 space_new 开一个单独的工作区处理需要人工的页面。');
+        `工作区 '${sp.name}' 还有 ${others} 个别的调用正在用浏览器,现在${action}会打断它们。`
+        + '等那些调用结束后再试;或用 space_new 开一个单独的工作区。');
     }
-    // 整个换形态过程挂在 launching 上:这期间进来的 getPage / launchSpace 都等它,
+    // 整个重开过程挂在 launching 上:这期间进来的 getPage / launchSpace 都等它,
     // 不会有人趁浏览器关着另起一个,也不会被空闲回收、makeRoomFor 挑中
-    const run = this.doSwitchMode(sp, headed);
+    const run = this.doSwitchMode(sp, headed, why);
     const launching = run.then(() => {
       if (!sp.context) throw new Error(`space '${sp.name}' 换形态后浏览器没起来`);
       return sp.context;
@@ -876,7 +897,7 @@ class BrowserManager {
     return run;
   }
 
-  private async doSwitchMode(sp: Space, headed: boolean): Promise<ModeSwitchResult> {
+  private async doSwitchMode(sp: Space, headed: boolean, why: string): Promise<ModeSwitchResult> {
     const old = sp.context!;
     // 1. 记下每个会话的标签页和焦点
     const memos: TabMemo[] = [];
@@ -890,7 +911,7 @@ class BrowserManager {
     try { cookies = await old.cookies(); } catch { /* 取不到就只靠 profile */ }
 
     // 3. 关掉、按新形态重开(同一个 userDataDir)
-    await this.shutSpaceBrowser(sp, headed ? '要人工处理,换成有窗口的' : '人工处理完,收起窗口换回无头', true);
+    await this.shutSpaceBrowser(sp, why, true);
     sp.headed = headed;
     let reason: string | undefined;
     try {
@@ -1517,15 +1538,17 @@ class BrowserManager {
     let restarted = false;
     if (identity.proxy !== undefined || identity.humanize !== undefined) {
       while (sp.launching) await sp.launching.catch(() => { /* 起不来就按新身份再起 */ });
+      if (identity.proxy !== undefined && sp.context) {
+        // 换代理要重开浏览器:先查有没有别人的调用在跑,有就拒绝(不先改身份,免得下次启动悄悄换了代理)
+        const self = this.callSpace.getStore() === sp ? 1 : 0;
+        if (sp.inflight - self > 0) throw new Error(`工作区 '${clean}' 还有别的调用正在用浏览器,现在换代理会打断它们。等那些调用结束后再试`);
+      }
       const patched = patchIdentity(sp.userDataDir, clean === DEFAULT_SPACE, identity);
       sp.identity = patched.identity;
       if (patched.proxyChanged && sp.context) {
-        // 主动重开不是「崩溃」:先置空再关,别让 close 事件把会话标成「被清掉过」
-        const ctx = sp.context;
-        sp.context = null;
-        sp.chromiumPid = null;
-        this.wipeSessionPages(sp, false);
-        await ctx.close().catch(() => { /* 已经关了 */ });
+        // 和换形态同一条路:挂在 launching 上重开,会话 cookie 和各会话的标签页带过去
+        const r = await this.restartInPlace(sp, sp.headed, '换代理', '换了代理,按新身份重开');
+        if (r.reason) reason = reason ? `${reason};${r.reason}` : r.reason;
         restarted = true;
       }
     }

@@ -232,7 +232,7 @@ space_close({ name: "job1" })   # 关闭并释放（default 不可关）
 
 每个工作区有固定「身份」（存在它的 profile 目录 identity.json 里，每次打开都一样 = 网站眼里同一个回访用户）：
 屏幕尺寸（default 1920x1080，其它首次随机一个常见分辨率）、语言 zh-CN，可选：
-space_new({ name: "us1", proxy: "socks5://user:pass@host:1080" })  # 挂代理，记住；时区自动跟出口 IP
+space_new({ name: "us1", proxy: "http://user:pass@host:3128" })   # 挂代理(socks5 不能带账号密码),记住;时区自动跟出口 IP
 space_new({ name: "us1", humanize: true })                          # 拟人操作，记住
 space_new({ name: "us1", proxy: "" })                               # 去掉代理（浏览器开着会自动重开，登录态不丢）
 代理账号密码不进时间线 / 工具结果（打码成 ***）。
@@ -284,7 +284,7 @@ space_new({ name: "us1", proxy: "" })                               # 去掉代�
 - 无头也用完整版 Chromium（新无头模式）：有 GPU、完整的 `window.chrome`、5 个 PDF 插件，不再用 headless shell；
 - 网页请求由浏览器自己发（TLS 指纹、请求头都是真 Chrome 的），站点的 CSP 照常生效；
 - 无头时 UA 去掉 HeadlessChrome（页面、各种 Worker、请求头一致），Client Hints 用浏览器原生值；屏幕尺寸、语言按工作区身份给；
-- 页面里只装一段 console 捕获（给 `get_console_logs` 用），不留全局变量、不插 DOM 节点。
+- 页面里只装一段 console 捕获（给 `get_console_logs` 用），不留全局变量、不插 DOM 节点；唯一已知破绽是 `console.log.toString()` 不带函数名，要最隐身就设 `BROWSER_CONSOLE_CAPTURE=off`。
 
 自测：`cd claude && node test/stealth-check.mjs`（本地探针逐项判，0 项破绽才算过；加 `--online` 另看 sannysoft / CreepJS / BrowserScan）。
 做不到的：没有显卡的 Linux 机器（工位机）WebGL 只能是软件渲染，这是硬特征；canvas / 音频指纹没做噪声（要改内核）。
@@ -299,7 +299,7 @@ Linux 上缺字体也容易被拦：`mcp.mjs install`（root）/ 工位 `install
 - 输入逐字敲，间隔 40–160ms 起伏、词与标点后偶尔停顿，偶尔按错相邻键再退格改正（**密码框从不出错字**）；长文本只逐字敲前 200 字（`fill_form` 每个字段前 60 字），其余整段插入；
 - 滚动用多格滚轮、逐渐减速，最后精确落到目标位置。
 
-代价是慢：一次点击约 1 秒，输入约每字 0.2 秒。元素被挡住、不在视口、输入框类型不适合逐字敲（日期、颜色等）或敲完值对不上时，自动退回原来的点击 / 填值方式，不会比关着时更容易失败。
+代价是慢：一次点击约 1 秒，输入约每字 0.2 秒。动手之前发现元素被挡住、不在视口、输入框类型不适合逐字敲（日期、颜色等）时，自动退回原来的点击 / 填值方式；已经点下去 / 敲过字之后不再重来一遍（防重复提交），页面自己改写了输入值（掩码、长度限制）按页面的为准。
 不设时行为与以前完全一样。工作区级开关见 `space_new`。
 
 ---
@@ -420,6 +420,7 @@ Linux 上缺字体也容易被拦：`mcp.mjs install`（root）/ 工位 `install
 | `ALLOW_BROWSER_CDP=1` | 允许 cdp_send 发浏览器级命令 |
 | `BROWSER_EXTENSION` | 自带扩展：`auto`（默认，只在有窗口时加载）/ `on`（无头也加载）/ `off` |
 | `BROWSER_HUMANIZE=1` | 所有工作区默认拟人操作（鼠标曲线、逐字输入、滚轮缓动），见「拟人操作」一节；工作区自己设了 humanize 以它为准 |
+| `BROWSER_CONSOLE_CAPTURE=off` | 不装页面 console 捕获(`get_console_logs` 就拿不到页面日志)。装着时 `console.log.toString()` 不带函数名,是一行就能查出的破绽;对隐身要求最高时关掉 |
 | `BROWSER_PROXY` | 默认工作区第一次建身份时挂的代理（`http://` / `socks5://`…）；之后以 identity.json 为准，改用 `space_new({ name: "default", proxy })` |
 | `IDLE_CLOSE_MIN` 等 | 空闲回收，0 = 永不回收（长流程建议 0） |
 | `DEVTOOLS_PORT` | 浏览器远程调试端口（多工位同机时**别开**：回环端口无鉴权，邻居能接管；真要开按工位分配，别撞） |

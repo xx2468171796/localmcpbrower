@@ -173,6 +173,8 @@ npm run test:headed       # 按需弹窗(2.3.0):自己起一份独立服务测,�
 - **反检测**(`docs/architecture.md` §12):无头改用完整版 Chromium 的新无头模式(更像真浏览器,内存略高);网页请求由浏览器自己发;
   页面里不再做任何指纹伪装;每个工作区有固定身份,`space_new` 可挂 `proxy`(时区跟出口)、开 `humanize`(拟人操作)。
   新内核第一次启动会多重启一次浏览器(读原生 Client Hints,之后缓存),属正常。自测:`cd claude && node test/stealth-check.mjs`。
+  看得见的变化:无头窗口不再比「屏幕减任务栏」大(默认工作区 1920x1080 屏上窗口高最多 1032);新建工作区的屏幕尺寸各不相同(固定在身份里);
+  无头浏览器内存比以前的 headless shell 高一些;Linux 不再禁 GPU(没显卡时 WebGL 走 SwiftShader)。
 
 **2.3.1 搬登录态**:`node mcp.mjs merge-headed` 把旧 `browser-headed`(profile `user_data_headed`)里的 cookie 并进 `browser`
 (两边都有的取过期更晚的,不拿旧的盖新的;会话 cookie 和 localStorage 搬不了),会先暂停在跑的浏览器服务、合并完原样恢复。

@@ -13,8 +13,8 @@ import { isForeignNavigation } from '../../dist/desk/gate.js';
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'identity-'));
 
 test('代理地址:格式校验、打码、拆账号', () => {
-  for (const ok of ['http://1.2.3.4:8080', 'socks5://u:p@host:1080', 'https://proxy.example.com']) assert.ok(isProxyUrl(ok), ok);
-  for (const bad of ['ftp://x:1', 'host:8080', 'http://a b:1', 'http://x/path']) assert.ok(!isProxyUrl(bad), bad);
+  for (const ok of ['http://1.2.3.4:8080', 'http://u:p@host:3128', 'socks5://host:1080', 'https://proxy.example.com']) assert.ok(isProxyUrl(ok), ok);
+  for (const bad of ['ftp://x:1', 'host:8080', 'http://a b:1', 'http://x/path', 'socks5://u:p@host:1080']) assert.ok(!isProxyUrl(bad), bad);
   assert.equal(maskProxy('socks5://user:pa%40ss@h:1080'), 'socks5://***@h:1080');
   assert.equal(maskProxy(null), null);
   assert.deepEqual(proxyOption('socks5://user:pa%40ss@h:1080'), { server: 'socks5://h:1080', username: 'user', password: 'pa@ss' });
@@ -38,6 +38,7 @@ test('身份落盘:没有就建、坏了重建、再读一样;换代理清掉出
   assert.deepEqual(loadIdentity(dir, false, {}), a);
   fs.writeFileSync(path.join(dir, 'identity.json'), '{broken');
   assert.equal(loadIdentity(dir, true, {}).screen.width, 1920);
+  assert.ok(fs.readdirSync(dir).some((n) => n.startsWith('identity.json.broken-')), '坏文件要留备份');
   const withGeo = { ...loadIdentity(dir, true, {}), proxy: 'http://p:1', geo: { proxy: 'http://p:1', ip: '1.1.1.1', timezone: 'America/New_York', country: 'US', at: 1 } };
   fs.writeFileSync(path.join(dir, 'identity.json'), JSON.stringify(withGeo));
   const same = patchIdentity(dir, true, { humanize: true });
@@ -72,7 +73,8 @@ test('启动参数:语言三处一致;屏幕只给无头;窗口收进屏幕', ()
   assert.deepEqual(identityArgs(id, false, 'win32'), ['--lang=zh-CN', '--accept-lang=zh-CN,zh,en']);
   assert.ok(identityArgs(id, true, 'win32').includes('--screen-info={0,0 1366x768 workAreaBottom=48}'));
   assert.ok(identityArgs(id, true, 'linux').some((a) => a.endsWith('workAreaTop=32}')));
-  assert.deepEqual(fitWindow(1280, 800, { width: 1366, height: 768 }, true), { width: 1280, height: 688 });
+  assert.deepEqual(fitWindow(1280, 800, { width: 1366, height: 768 }, true, 'win32'), { width: 1280, height: 720 });
+  assert.deepEqual(fitWindow(1920, 1080, { width: 1920, height: 1080 }, true, 'linux'), { width: 1920, height: 1048 });
   assert.deepEqual(fitWindow(1280, 800, { width: 1366, height: 768 }, false), { width: 1280, height: 800 });
 });
 

@@ -21,7 +21,7 @@
  * ## console 捕获怎么做到不留痕迹
  *
  * patchright 禁用了 CDP Console 域(开了会被检测),page.on('console') 收不到页面日志,只能在主世界里接:
- * - console 方法用 `Proxy` 包:`Function.prototype.toString` 对 Proxy 照样给出 `[native code]`,`name` / `length` 透传;
+ * - console 方法用 `Proxy` 包:`Function.prototype.toString` 对 Proxy 给出 `[native code]`(但不带函数名,见 consoleCaptureEnabled),`name` / `length` 透传;
  * - 记录时只存参数**引用**,不序列化 —— 真浏览器(没开开发者工具)不会去读日志对象的属性,
  *   当场 JSON.stringify 会触发对象上的 getter,这是检测 CDP / 自动化的经典手法;取日志时才有界地序列化;
  * - 不设全局变量、不插 DOM 节点;
@@ -32,6 +32,16 @@
  */
 
 import { randomBytes } from 'node:crypto';
+
+/**
+ * 装不装 console 捕获(BROWSER_CONSOLE_CAPTURE=off 关掉)。已知取舍:Proxy 包过的 console.log 的 toString 是
+ * `function () { [native code] }`,真 Chrome 是 `function log() { [native code] }` —— 一行就能查出来。
+ * 别的路更糟:在我们的 CDP 会话上开 Runtime.enable 拿日志,页面一打日志就会调 Error.prepareStackTrace(经典 CDP 检测,
+ * 2026-10-17 实测),所以默认仍装;对隐身要求最高的场景关掉它(get_console_logs 就拿不到页面日志了)。
+ */
+export function consoleCaptureEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  return !/^(off|0|false|no)$/i.test((env['BROWSER_CONSOLE_CAPTURE'] ?? '').trim());
+}
 
 /** 这次服务进程里请求 / 应答日志用的事件名(随机,页面猜不到) */
 const EVT = 'e' + randomBytes(8).toString('hex');

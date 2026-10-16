@@ -30,6 +30,9 @@ const PROBE_SRC = String.raw`
     window.chrome ? Object.keys(window.chrome).join(',') : 'none', '新无头 / 有头有 loadTimes、csi;只补一个 {runtime:{}} 反而可疑');
   add('permissions.query 原生', isNative(navigator.permissions.query), '');
   add('console.log 原生', isNative(console.log), Function.prototype.toString.call(console.log).slice(0, 60));
+  // 已知取舍(src/inject.ts consoleCaptureEnabled):console 捕获开着时 toString 不带函数名,只报不判;BROWSER_CONSOLE_CAPTURE=off 时应带名
+  var logSrc = Function.prototype.toString.call(console.log);
+  add('console.log toString 带函数名', /function log\(\)/.test(logSrc) ? true : null, logSrc.slice(0, 40) + (/function log\(\)/.test(logSrc) ? '' : '(console 捕获开着,已知取舍)'));
   add('Function.toString 原生', isNative(Function.prototype.toString), '');
 
   // ── 注入痕迹

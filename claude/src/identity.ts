@@ -24,7 +24,7 @@ const GeoSchema = z.object({ proxy: z.string(), ip: z.string(), timezone: z.stri
 const IdentitySchema = z.object({
   version: z.literal(1),
   screen: ScreenSchema,
-  locale: z.string().regex(/^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$/),
+  locale: z.string().regex(/^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/),
   proxy: z.string().nullable(),
   humanize: z.boolean().nullable(),
   geo: GeoSchema.nullable(),
@@ -42,9 +42,13 @@ const DEFAULT_SCREEN: Screen = { width: 1920, height: 1080 };
 
 const PROXY_RE = /^(https?|socks5):\/\/([^\s/@]+@)?[^\s/@:]+(:\d{1,5})?\/?$/i;
 
-/** 代理地址格式校验(space_new 的入参和 BROWSER_PROXY 都过它) */
+/**
+ * 代理地址格式校验(space_new 的入参和 BROWSER_PROXY 都过它)。
+ * socks5 带账号密码的不收:Chromium 不支持 SOCKS5 认证,收下了工作区会起不来。
+ */
 export function isProxyUrl(url: string): boolean {
-  return PROXY_RE.test(url.trim());
+  const v = url.trim();
+  return PROXY_RE.test(v) && !/^socks5:\/\/[^/]*@/i.test(v);
 }
 
 /** 给人看 / 进事件流的代理地址:账号密码换成 *** */
@@ -76,15 +80,27 @@ export function defaultIdentity(isDefaultSpace: boolean, env: Record<string, str
   };
 }
 
-/** 读身份;没有或坏了就按默认新建并写回(坏文件不让启动失败) */
+/**
+ * 读身份;没有就按默认新建并写回。
+ * 文件在但坏了(手改坏、格式不认):原样留一份 identity.json.broken-<时刻> 并大声报错,再按默认建 ——
+ * 默认身份没有代理,不报错的话工作区会悄悄改成直连、暴露真实出口。写不进去(杀毒软件占着等)不让启动失败。
+ */
 export function loadIdentity(dir: string, isDefaultSpace: boolean, env: Record<string, string | undefined> = process.env): Identity {
   const file = path.join(dir, IDENTITY_FILE);
-  try {
-    const parsed = IdentitySchema.safeParse(JSON.parse(fs.readFileSync(file, 'utf8')));
-    if (parsed.success) return parsed.data;
-  } catch { /* 没有或读不了:按默认建 */ }
+  let raw: string | null = null;
+  try { raw = fs.readFileSync(file, 'utf8'); } catch { /* 没有:按默认建 */ }
+  if (raw !== null) {
+    let parsed: ReturnType<typeof IdentitySchema.safeParse> | null = null;
+    try { parsed = IdentitySchema.safeParse(JSON.parse(raw)); } catch { /* 不是 JSON */ }
+    if (parsed?.success) return parsed.data;
+    const backup = `${file}.broken-${Date.now()}`;
+    try { fs.copyFileSync(file, backup); } catch { /* 备份不了也照样往下 */ }
+    console.error(`[identity] ${file} 坏了,已备份到 ${backup},按默认身份重建 —— 原来挂的代理不再生效,请用 space_new 重新设置`);
+  }
   const fresh = defaultIdentity(isDefaultSpace, env);
-  saveIdentity(dir, fresh);
+  try { saveIdentity(dir, fresh); } catch (e) {
+    console.error(`[identity] 写不进 ${file}:${e instanceof Error ? e.message : String(e)}(这次先用默认身份)`);
+  }
   return fresh;
 }
 
@@ -113,23 +129,27 @@ export function acceptLanguages(locale: string): string {
 }
 
 /** 任务栏 / 菜单栏占掉的高度(无头时报给页面的可用区域;真机上 availHeight 总比 height 小) */
-function workArea(platform: NodeJS.Platform): string {
-  if (platform === 'darwin') return 'workAreaTop=25';
-  if (platform === 'linux') return 'workAreaTop=32';
-  return 'workAreaBottom=48';
+function workArea(platform: NodeJS.Platform): { edge: 'workAreaTop' | 'workAreaBottom'; px: number } {
+  if (platform === 'darwin') return { edge: 'workAreaTop', px: 25 };
+  if (platform === 'linux') return { edge: 'workAreaTop', px: 32 };
+  return { edge: 'workAreaBottom', px: 48 };
 }
 
 /** 身份对应的启动参数。--screen-info 只给无头(有头用真实屏幕) */
 export function identityArgs(id: Identity, headless: boolean, platform: NodeJS.Platform = process.platform): string[] {
   const args = [`--lang=${id.locale}`, `--accept-lang=${acceptLanguages(id.locale)}`];
-  if (headless) args.push(`--screen-info={0,0 ${id.screen.width}x${id.screen.height} ${workArea(platform)}}`);
+  const wa = workArea(platform);
+  if (headless) args.push(`--screen-info={0,0 ${id.screen.width}x${id.screen.height} ${wa.edge}=${wa.px}}`);
   return args;
 }
 
 /** 窗口不能比屏幕大(无头时屏幕是报出来的,窗口按配置开,得收进屏幕里) */
-export function fitWindow(width: number, height: number, screen: Screen, headless: boolean): { width: number; height: number } {
+export function fitWindow(
+  width: number, height: number, screen: Screen, headless: boolean, platform: NodeJS.Platform = process.platform,
+): { width: number; height: number } {
   if (!headless) return { width, height };
-  return { width: Math.min(width, screen.width), height: Math.min(height, screen.height - 80) };
+  // 最多和「最大化」一样大:屏幕减去任务栏 / 菜单栏
+  return { width: Math.min(width, screen.width), height: Math.min(height, screen.height - workArea(platform).px) };
 }
 
 /** 现在该用的时区:有代理且查过出口就跟出口走;否则 null = 跟系统 */
