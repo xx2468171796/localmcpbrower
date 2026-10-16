@@ -171,7 +171,7 @@
 | 5 Hermes 面板 | 左聊天右画面 + 时间线 + 接管按钮 | 你在 hm-admin 里边聊边看边接管 |
 | 6 编排 | fork n8n，加「浏览器工位」节点 | 定时流程跑通「登录 → 导出 → 通知」 |
 
-第三层（自编译 Chromium）不排期：只在某个网站用前两层确实过不去时再评估。
+第三层（自编译 Chromium）不排期：只在某个网站用前两层确实过不去时再评估。反检测见 §12。
 
 ## 11. 工位管理（第 4 期，2026-10-15 定）
 
@@ -218,7 +218,26 @@
 **旧工位 main** 迁成 `admin`（序号 0，端口 8080 / 3215 不变，数据目录搬到 `/home/desk-admin/data`），令牌 / 密码原样沿用，Hermes 侧什么都不用改。
 2026-10-15 已完成：停机 6.4 秒；同日开 `leixin`（序号 1）、`wanghaohao`（序号 2）并接上各自的 Hermes。
 
-## 12. 约束
+## 12. 反检测（2026-10-17 定，参考 CloakBrowser 的思路，不用它的闭源内核）
+
+**原则：原生优先，能不伪装就不伪装。** JS 改出来的值本身就是破绽（自有属性、非原生 `toString`、`instanceof` 不对），
+所以只走三条原生通道：**内核形态**（完整版 Chromium）→ **启动参数 / 上下文选项**（`--screen-info`、`--accept-lang`、`locale`、`timezoneId`、`proxy`）→ **CDP 覆盖**（UA / Client Hints，已有）。
+页面里注入的脚本只剩 console 捕获一件事，而且不留痕迹。验收靠体检脚本 `claude/test/stealth-check.mjs`（本地探针逐项判 + `--online` 看公网检测站），改前改后各跑一次对比。
+
+| 模块（文件） | 职责 | 不负责 |
+|---|---|---|
+| `browser.ts` 启动处 | 无头一律用完整版 Chromium 的**新无头模式**（不再用 headless shell：它没有 GPU、`window.chrome`、mimeTypes）；无头时 `--screen-info` 给出与身份一致的屏幕；`--accept-lang` 定语言；不再用 `extraHTTPHeaders` 改请求头 | 身份怎么定 |
+| `inject.ts` | 只注入 console 捕获：方法用 `Proxy` 包（`toString` 仍是原生）、日志存在闭包里、不设全局变量、不插 DOM 节点、脚本执行完把自己的 `<script>` 删掉；跨世界取日志用随机名字的 `CustomEvent`（字符串能跨世界）；**不剥 CSP**，改为把本脚本的 sha256 加进 `script-src`（`csp.ts`，纯函数） | 指纹伪装（全部删掉） |
+| **新** `identity.ts` | 工作区身份 `identity.json`（存在该工作区 profile 目录里，跟着登录态走）：屏幕尺寸、时区、语言、代理、拟人开关。首次创建按种子从常见分辨率里挑（默认工作区固定 1920×1080），以后每次启动都一样 = 「同一个回访用户」 | 读写 profile 里别的东西 |
+| **新** `geoip.ts` | 有代理时，经这个工作区的浏览器自己（走代理）查一次出口 IP 的时区 / 国家，记进身份；和启动时用的不一致就按新身份重启一次（只发生在第一次或换代理后） | 代理本身的可用性 |
+| **新** `humanize/` | 拟人输入：鼠标走带随机扰动的贝塞尔曲线、点在元素内的随机位置、按下抬起有间隔；逐字输入带节奏；滚轮分段缓动。纯计算（`path.ts` / `timing.ts`，随机数可注入，单测可复现）+ 执行（`actions.ts`） | 决定要不要拟人（看身份 / 环境变量） |
+
+**身份不变量**：同一工作区每次启动的屏幕、时区、语言、代理一致；JS、请求头、Worker 里看到的语言 / 时区一致（都用上下文选项，不用页面级覆盖）；平台不伪装（字体和 GPU 跟着真实系统，改平台反而自相矛盾）。
+**对外接口**：`space_new` 新增可选 `proxy`（`http://` / `socks5://`，可带账号，存进身份；给 `""` 清掉）、`humanize`（布尔）；环境变量 `BROWSER_HUMANIZE=1` 让所有工作区默认拟人，`BROWSER_PROXY` 给默认工作区挂代理。代理账号密码不进事件流 / 日志 / 工具结果（打码）。
+**做不到的（如实写清）**：没有 GPU 的 Linux 机器（工位机）WebGL 只能是 SwiftShader 软件渲染，这是硬特征，原生改不了、JS 改了又是谎言，不改；体检照实报。canvas / 音频指纹噪声需要改内核（CloakBrowser 那一层），不做。
+**Linux 字体**：工位机 / Linux 本机装 CJK、彩色 emoji 和与 Windows 字体等宽的开源字体（`deploy/desk/install.sh`、`mcp.mjs install` 在 Linux 上提示 / 安装），缺字体是被拦的常见原因。
+
+## 13. 约束
 
 - 裁判层（`claude/eval/**`、各 `package.json`、`claude/tsconfig.json`、`.ankotti/evolve.json`、CI）AI 不改；`/health` 字段与 `browserAlive: true` 行为不改；`_meta['localmcp/result']` 与 `{success,data,error}` 外形不改。
 - 改了工具行为 → 更新 `USAGE.md`；改了安装 / 配置 → 更新 `UPDATE-PROMPT.md` 与 `mcp.mjs config`。
