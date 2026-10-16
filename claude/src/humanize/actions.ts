@@ -2,7 +2,7 @@
  * 拟人操作的执行层:把 path.ts / timing.ts 算出的轨迹、节奏用 patchright 的 Page.mouse / keyboard 真正做出来。
  *
  * 约定:
- *  - 元素层面做不了(不可见、没有框、被别的元素挡住、不在视口、输入框类型不适合逐字敲、敲完值对不上)
+ *  - 元素层面做不了(不可见、没有框、被别的元素挡住、不在视口、输入框类型不适合逐字敲)
  *    一律抛 HumanMiss —— 调用方(tools/interact.ts)接住后退回原来的可靠路径,拟人永远不让工具变得更不可靠;
  *  - 每一步之间都检查取消(throwIfCancelled + 可取消的 sleep),工具取消 / 期限照常生效;
  *  - 鼠标按下后无论如何都会抬起(finally),不会把按键卡在按下状态。
@@ -147,13 +147,16 @@ async function approach(page: Page, loc: Locator): Promise<Point> {
   return pt;
 }
 
-/** 按下 → 停 40–120ms → 抬起;抬起放在 finally,取消也不会卡在按下状态 */
+/**
+ * 按下 → 停 40–120ms → 抬起;抬起放在 finally,取消也不会卡在按下状态。
+ * 抬起出错(按钮把自己所在的弹窗 / 页面关掉了)不算失败:按下去那一刻点击已经生效,再报错调用方会以为没点上。
+ */
 async function press(page: Page): Promise<void> {
   await page.mouse.down();
   try {
     await sleep(Math.round(uniform(rand, 40, 120)));
   } finally {
-    await page.mouse.up();
+    await page.mouse.up().catch(() => { /* 页面已经因为这次点击变了 */ });
   }
 }
 
@@ -241,7 +244,7 @@ async function typeSteps(page: Page, text: string, password: boolean): Promise<v
  * 拟人输入:点进输入框 → 有旧内容先全选删除 → 按节奏逐字敲(偶尔敲错再退格改正,密码框不出错)。
  * 长文本只逐字敲前 humanChars 个字,剩下的用 keyboard.insertText 一次插入 ——
  * 几千字逐字敲要好几分钟,会撞上工具期限;开头一段有节奏已经足够像人。
- * 敲完在页面里比对最终值(值不回传,密码不出页面),对不上就是 HumanMiss,由调用方用 fill 兜底。
+ * 敲完不再核对重填:页面自己改写的值(掩码、长度限制)按页面的来,见函数末尾。
  */
 export async function humanType(page: Page, frame: Frame, selector: string, text: string, opts: HumanTypeOptions = {}): Promise<void> {
   const loc = await locate(frame, selector);
@@ -257,11 +260,13 @@ export async function humanType(page: Page, frame: Frame, selector: string, text
     await pause(uniform(rand, 80, 200));
     await page.keyboard.insertText(rest);
   }
-  const same = await orMiss(loc.evaluate((el, want) => {
+  // 字已经敲进去了:这之后不能再抛 HumanMiss(调用方会再 fill 一遍 —— 联想搜索已触发、分格验证码框里的字已经跳到下一格)。
+  // 值和要求不一样多半是页面自己改写的(输入掩码、自动大写、长度限制),按页面的来;核对不了也不管
+  const same = await loc.evaluate((el, want) => {
     if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return el.value === want;
     return (el.textContent ?? '') === want;
-  }, text, { timeout: 2000 }), '核对输入结果失败');
-  if (!same) throw new HumanMiss('逐字输入后的值与要求不一致');
+  }, text, { timeout: 2000 }).catch(() => true);
+  if (!same) console.warn('[humanize] 逐字输入后页面改写了输入框的值(格式化 / 长度限制),按页面的为准,不再重填');
 }
 
 /** 等窗口滚动停下来(滚轮滚动可能带平滑动画),最多 800ms */

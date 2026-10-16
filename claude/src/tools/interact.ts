@@ -20,11 +20,11 @@ import {
 } from './common.js';
 import { withTimeout } from './timing.js';
 import {
-  elementBox, humanClick, humanDrag, humanHover, humanizeActive, humanScroll, humanType, isCancelled,
+  HumanMiss, elementBox, humanClick, humanDrag, humanHover, humanizeActive, humanScroll, humanType, isCancelled,
 } from '../humanize/index.js';
 
 /**
- * 拟人开着就先走拟人路径,元素层面走不通(没有框、被挡、类型不合适、值对不上……)退回原有实现;
+ * 拟人开着就先走拟人路径,动手之前发现走不通(没有框、被挡、类型不合适……)退回原有实现;
  * 取消照常抛出。拟人关着时直接走原有实现,行为与以前完全一样。
  */
 async function humanFirst(human: () => Promise<void>, fallback: () => Promise<void>): Promise<void> {
@@ -33,7 +33,9 @@ async function humanFirst(human: () => Promise<void>, fallback: () => Promise<vo
     await human();
     return;
   } catch (e) {
-    if (isCancelled(e)) throw e;
+    // 只有 HumanMiss(动手之前就发现走不通)才退回;已经按下 / 敲过键之后出的错原样抛出,
+    // 否则退回路径会再点一次 / 再填一遍(重复提交、联想搜索被触发两次)
+    if (isCancelled(e) || !(e instanceof HumanMiss)) throw e;
   }
   throwIfCancelled();
   await fallback();
