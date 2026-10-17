@@ -1,104 +1,68 @@
-# AI 工作指引(Claude Code / Codex 通用)
+# AI guide (Claude Code / Codex)
 
-本仓提供一个本地 MCP:**浏览器操控**。
+This repo is a local MCP server: **browser control**. (The database MCP was retired 2026-09-25; use the baolei bastion's `db_*` tools.)
 
-> 数据库 MCP 已于 2026-09-25 撤下,库一律用堡垒机 baolei MCP 的 `db_*`(历史版本见 git 历史)。
+This file is an **index**. Don't read all docs (100 KB+); open only the one you need. Reply to the user in Chinese; AI-only docs here are in English.
 
-> 这份是**索引**,别一上来通读全部文档(共 100KB+)。按下表只读需要的那份。
-
-| 你要做什么 | 读哪份 |
+| Task | Read |
 |---|---|
-| **开工先看**：现状、红线、去哪找（一屏） | **`.ankotti/MEMORY.md`** |
-| **改代码前**：升级方向、模块边界、AI 浏览器工位分期 | **`docs/architecture.md`**（新增领域或改边界先改它） |
-| **发版**（打包、上传、登记、本机服务 / ai-kit 两条更新通道） | **`docs/memory/release.md`**（照着做；脚本 `claude/scripts/pack-release.mjs`、`register-release.mjs`） |
-| 员工电脑怎么拿到新版 | 不用人管：堡垒机本机服务自动装 / 更新（默认通道），ai-kit 兜底；见 `docs/memory/release.md` |
-| 在**别的机器**上手动安装/升级（开发者、没接堡垒机的机器） | **`UPDATE-PROMPT.md`** —— 整段贴给那台机的 AI 即可 |
-| 部署时逐步执行 + 故障处置 | `AI-DEPLOY.md` |
-| 了解工具怎么配合用 | `USAGE.md` |
-| 了解协议/架构为什么这么设计、踩过哪些坑 | **`MCP-V2-PLAN.md`**(含七条踩坑清单) |
-| **验证本机装得对不对** | 跑 `npm run test:smoke`(浏览器 57 工具);3.0 工位能力跑 `node claude/test/desk-e2e.mjs` |
-| **改了工具行为,看有没有退步** | 跑 `pnpm eval`(50 道本地题,和 `claude/eval/baseline.json` 比,不放行就别交) |
-| **改了浏览器启动 / 注入 / UA,看会不会被识别成机器人** | 跑 `node claude/test/stealth-check.mjs`(本地探针,0 项破绽才算过;`--online` 另看公网检测站) |
-| 想知道「AI 用这些工具干活顺不顺」(AI 做题考卷,草案未启用) | `claude/eval/mcp-exam/SPEC.md`(给业主的说明 `docs/review/2026-10-14-exam-proposal.md`) |
-| Codex 专属配置与排错 | `CODEX.md` |
-| ~~`HTTP-DESIGN.md`~~ | 描述的是**已被 pipe 取代**的旧会话架构,只作历史参考 |
+| **Start here**: current state, red lines, routing (one screen) | **`.ankotti/MEMORY.md`** |
+| **Before changing code**: direction, module boundaries, AI desk phases | **`docs/architecture.md`** (update it first for a new domain or boundary change) |
+| **Release** (pack, upload, register; local-host and ai-kit update channels) | **`docs/memory/release.md`** (scripts `claude/scripts/pack-release.mjs`, `register-release.mjs`) |
+| How staff PCs get new versions | Automatic: bastion local host (default channel), ai-kit as fallback — see `docs/memory/release.md` |
+| Manual install / upgrade on another machine (developers, machines without the bastion) | **`UPDATE-PROMPT.md`** — paste it whole to that machine's AI |
+| Deploy step by step + troubleshooting | `AI-DEPLOY.md` |
+| How the tools fit together | `USAGE.md` |
+| Why the protocol / architecture is this way, pitfalls | **`MCP-V2-PLAN.md`** (§3 pitfall list) |
+| **Check this install** | `npm run test:smoke` (57 tools); desk features `node claude/test/desk-e2e.mjs` |
+| **Changed tool behaviour — regression?** | `pnpm eval` (50 local tasks vs `claude/eval/baseline.json`; don't ship unless it passes) |
+| **Changed launch / injection / UA — bot detection?** | `node claude/test/stealth-check.mjs` (local probes, 0 findings; `--online` for public sites) |
+| AI tool-use exam (draft, not enabled) | `claude/eval/mcp-exam/SPEC.md` (owner note `docs/review/2026-10-14-exam-proposal.md`) |
+| Codex config and troubleshooting | `CODEX.md` |
+| ~~`HTTP-DESIGN.md`~~ | Old session architecture **replaced by pipes**; history only |
 
-## 当前形态(2026-09-25)
+## Current shape
 
-- **MCP SDK v2**,v1 已完全移除。服务端新旧协议双线都支持;
-  **日常实际走 `2025-11-25`** —— 客户端在 stdio 上不探测新协议,客户端升级后会自动走新的
-- 两个常驻服务(PM2):`claudemcp-headless` 3215 / `claudemcp-browser`(有头)3213
-- 客户端经 **`bin/shim.mjs`** 以 stdio 接入,shim 把字节转发到常驻进程的 named pipe / unix socket。
-  **一条 socket = 一个客户端窗口**
-- 工具数:浏览器 **57**(3.0 新增 cdp_send、fill_secret、login_with_asset、run_flow、录制三件套、browser_tabs / downloads / block_rules)
-- **按需弹窗**(2.3.0):浏览器平时无头,`wait_for_human` / `request_human` 一进来把当前工作区原地换成有窗口的
-  (同一个 profile,cookie / 标签页网址带过去),`hide_window` 收回。有头服务 3213 暂时保留一个版本做兼容。
-  实现在 `BrowserManager.switchMode`,测试 `npm run test:headed`
+- **MCP SDK v2** only. Server speaks old and new protocol versions; in practice clients use `2025-11-25` (no probing over stdio).
+- Two resident PM2 services: `claudemcp-headless` 3215 / `claudemcp-browser` (headed, compat) 3213.
+- Clients connect over stdio via **`bin/shim.mjs`** (or the launcher `~/.ankotti/browser-mcp/shim.mjs`), which forwards bytes to the service's named pipe / unix socket. **One socket = one client window.**
+- 57 tools (3.0 added cdp_send, fill_secret, login_with_asset, run_flow, recording ×3, browser_tabs / downloads / block_rules).
+- **On-demand window** (2.3.0): headless by default; `wait_for_human` / `request_human` switch the workspace to a visible window in place (same profile, cookies / tab URLs carried over); `hide_window` returns. `BrowserManager.switchMode`, test `npm run test:headed`.
 
-## 会话语义(容易搞错,先看清)
+## Session semantics
 
-| | 行为 | 切换 |
+| | Behaviour | Switch |
 |---|---|---|
-| **登录态 / cookie** | **始终共享**,与下面开关无关 | — |
-| **浏览器标签页** | **默认共享** —— 任何窗口都能接管别的窗口开的页 | `PIPE_ISOLATED=1` 切隔离 |
+| **Login state / cookies** | **Always shared** | — |
+| **Tabs** | **Shared by default** — any window can take over another's page | `PIPE_ISOLATED=1` isolates |
 
-## 客户端注册
+## Client registration
 
-```bash
-node claude/mcp.mjs config     # 打印适配本机的注册命令(含绝对路径),照它执行
-```
+`node claude/mcp.mjs config` prints the registration commands for this machine (absolute paths). In Codex `~/.codex/config.toml`, Windows paths **must be TOML literal strings (single quotes)**: in `"D:\nodejs\node.exe"` the `\n` becomes a newline.
 
-Codex 写 `~/.codex/config.toml` 时,Windows 路径**必须用 TOML 字面量字符串(单引号)**:
-双引号会把 `"D:\nodejs\node.exe"` 里的 `\n` 当成换行,路径直接废掉。
+## Must know before changing code
 
-## 改代码前必须知道的
+1. **`page.evaluate` runs in an isolated world.** Check whether an injected script ran **through the DOM** (shared across worlds); reading main-world `window.X` from `page.evaluate` reports "not run".
+2. **Page scripts are installed per page over CDP only** (`Page.enable`, then `Page.addScriptToEvaluateOnNewDocument`, see `browser.ts preparePage`). `context.addInitScript` runs under patchright 1.63 but **breaks cross-site iframes** (chrome-error). Never go back to "route intercepts HTML and injects `<script>`": the document is then fetched by Node and sites see Node's TLS fingerprint. Don't add fingerprint spoofing; run `node claude/test/stealth-check.mjs` first (anti-detection: `docs/architecture.md` §12).
+3. **Don't set the pipe leg's `legacy` to `'reject'`** — stdio clients don't probe the new protocol; nothing would connect.
+4. **Shared session ids carry a generation** — `BrowserManager` leaves tombstones on reclaim; a fixed id means "never connects again after the last window closes".
+5. **v2 error "`ZodObject` not assignable to `ZodRawShape`"**: check `outputSchema` first — the error points the wrong way.
 
-1. **`page.evaluate` 跑在隔离世界。** 判断注入脚本有没有执行**必须走 DOM**(跨世界共享),
-   用 `page.evaluate` 读主世界的 `window.X` 会把"执行了"误判成"没执行"。
-2. **页面脚本只能按页面经 CDP 装**(先 `Page.enable` 再 `Page.addScriptToEvaluateOnNewDocument`,见 `browser.ts preparePage`)。
-   `context.addInitScript` 在 patchright 1.63 下能执行,但会让**跨站 iframe 加载失败**(chrome-error);
-   别再回到「route 拦 HTML 注 `<script>`」——那样文档由 Node 代取,网站看到的是 Node 的 TLS 指纹(最硬的机器人特征)。
-   也别往页面里加指纹伪装,改之前先跑 `node claude/test/stealth-check.mjs`(反检测见 `docs/architecture.md` §12)。
-3. **别把 pipe 腿的 `legacy` 改成 `'reject'`** —— 客户端在 stdio 上不探测新协议,改了全部连不上。
-4. **共享会话 id 必须带代际** —— `BrowserManager` 回收时会立墓碑,固定 id 会导致
-   "最后一个窗口关掉后永远连不上"。
-5. **v2 里报「`ZodObject` 不能赋给 `ZodRawShape`」时先查 `outputSchema`** —— 真凶多半是它,
-   报错指向反了。
+More pitfalls: `MCP-V2-PLAN.md` §3.
 
-更完整的踩坑清单见 `MCP-V2-PLAN.md` 第 3 节。
+## Judge layer (AI must not modify)
 
-## 裁判层(AI 不得修改)
+`claude/eval/**` (exam, test pages, pass rules, baseline), root and `claude/` `package.json` (exception: release commits bump `version` only), `claude/tsconfig.json`, `.ankotti/evolve.json`, CI config. Improve the code under test until `pnpm eval` passes; judge-layer changes are auto-closed. Baseline (`pnpm eval:baseline`) is updated by humans only.
+Anti-cheat: baseline is read before the service under test starts; judge files are fingerprinted before and after (changed → fail, exit 3); the service gets whitelisted env only, HOME / USERPROFILE / APPDATA point to a temp dir (no bastion key); the evolve pipeline runs `claude/eval/**` from trusted main, no credentials, no network.
 
-`claude/eval/**`(考卷、测试页、放行规则、基线)、根目录和 `claude/` 的 `package.json`、`claude/tsconfig.json`、
-`.ankotti/evolve.json`、CI 配置属于**裁判层**,只有人能改。
-AI 改进代码时只能改被测代码,让 `pnpm eval` 放行;碰到裁判层的改动会被自动关掉。基线(`pnpm eval:baseline`)也只由人更新。
+## Development rules
 
-考卷的防作弊(被测代码是 AI 可改的,不能让它改分数或拿到密钥):
-- 基线在起被测服务之前读进内存;裁判文件跑前跑后各算一次指纹,中途被改过 → 不放行(退出码 3);
-- 被测服务只拿白名单环境变量,HOME / USERPROFILE / APPDATA 指向临时目录,读不到本机 baolei 密钥;
-- 进化流水线应从可信的 main 拷贝运行 `claude/eval/**`,工作区只当被测对象,并且不带凭据、不联网。
+- **stdio is first-class**: must run without PM2 or ports (`node dist/server.js --stdio`).
+- Keep the HTTP leg: **the only way to share across machines** (named pipes are local).
+- Never commit `.env` or credentials (pushes are mirrored to a private GitHub repo; history is permanent).
+- Tool behaviour changed → update `USAGE.md`; install / config changed → update `UPDATE-PROMPT.md` and `mcp.mjs config`.
+- After TypeScript changes: build in `claude/`, then `npm run test:smoke`.
 
-## 开发约束
+## Updating the local MCP
 
-- **stdio 一等公民**:不依赖 PM2 或端口也要能跑(`node dist/server.js --stdio`)
-- HTTP 腿保留:**跨机共享只有这条路**(named pipe 只能本机用)
-- 不提交 `.env` 与任何凭据(本仓 push 后会**强制镜像到 GitHub 私有仓**;私有归私有,
-  但 Git 历史永久留存、仓库可见性又随时可能改,凭据一旦进去就很难真正清掉)
-- 改了工具行为 → 更新 `USAGE.md`;改了安装/配置行为 → 更新 `UPDATE-PROMPT.md` 与 `mcp.mjs config`
-- 改完 TypeScript 记得在 `claude/` 下构建,然后跑 `npm run test:smoke`
-
-## 更新本机 MCP
-
-员工电脑不用手动更新:堡垒机本机服务 / ai-kit 会在浏览器空闲时自动换到发布中心给的版本(`node ~/.ankotti/ai-kit/browser-mcp.mjs status`
-看本机在跑哪个版本、由谁管)。只有**用 git 装的开发机**,用户说"更新本地 MCP"时才:
-
-```bash
-node claude/mcp.mjs update
-```
-
-它会 `git pull --ff-only`、重装依赖、校验 Chromium、重建 `dist/`、重启在跑的 PM2 服务。
-工作区有未提交改动会安全中止 —— 让用户先提交或 stash。
-完事提醒用户:Claude Code 输入 `/mcp` 重连,Codex 重启。
-
-⚠️ 从 **v1 升到 v2** 时 `mcp.mjs update` 不够,必须先 `rm -rf node_modules package-lock.json`
-再装 —— 包名整个换了,旧目录会让构建拿到过期依赖。详见 `UPDATE-PROMPT.md`。
+Staff PCs update themselves (local host / ai-kit switch to the release-center version when the browser is idle; `node ~/.ankotti/ai-kit/browser-mcp.mjs status` shows the running version and manager). Only on a **git-installed dev machine**, when the user says "更新本地 MCP": `node claude/mcp.mjs update` (git pull --ff-only, reinstall deps, check Chromium, rebuild `dist/`, restart running PM2 services; aborts on uncommitted changes). Then tell the user (in Chinese) to `/mcp` reconnect in Claude Code or restart Codex. Upgrading **v1 → v2** needs `rm -rf node_modules package-lock.json` first (see `UPDATE-PROMPT.md`).

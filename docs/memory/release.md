@@ -1,37 +1,37 @@
-# 发版与更新通道（2026-10-17 起）
+# Release and update channels (since 2026-10-17)
 
-结论：员工电脑上的浏览器 MCP 由**堡垒机本机服务 ankotti-local** 装 / 更新（业主 2026-10-17 定为默认通道），下的是**解开就能跑**的发布包，电脑上不 npm install、不编译；本机服务还没装的电脑由 **ai-kit 更新器**兜底。开发者自己的机器和没接堡垒机的机器才走 git + 构建（`UPDATE-PROMPT.md`）。
+Staff PCs get the browser MCP from the **bastion local host ankotti-local** (owner 2026-10-17: default channel) as a **run-as-unpacked** package: no npm install, no build on PCs. PCs without the local host fall back to the **ai-kit updater**. Only dev machines and machines without the bastion use git + build (`UPDATE-PROMPT.md`).
 
-## 发布项目（堡垒机发布中心）
+## Release projects (bastion release center)
 
-| 项目 | 谁用 | 包 |
+| Project | Used by | File |
 |---|---|---|
-| `localmcpbrower-windows-x86_64` / `localmcpbrower-linux-x86_64` | 本机服务（组件 `localmcpbrower`） | `localmcpbrower-<os>-<arch>-<版本>.tgz` |
-| `localmcpbrower` | ai-kit `browser-mcp.mjs`（后备） | `localmcpbrower-<版本>.tgz` |
+| `localmcpbrower-windows-x86_64` / `localmcpbrower-linux-x86_64` | local host (component `localmcpbrower`) | `localmcpbrower-<os>-<arch>-<v>.tgz` |
+| `localmcpbrower` | ai-kit `browser-mcp.mjs` (fallback) | `localmcpbrower-<v>.tgz` |
 
-三个包内容相同（生产依赖没有原生模块），只是项目分开登记。包里：`claude/`（dist、bin、extension、PM2 配置、**生产 node_modules**，不含 `.bin`）、`release.json`（project / version / commit / `deps: true`）、根上 `manifest.json`（每个文件的 sha256）。Chromium 不进包，各平台在电脑上由 `claude/bin/install-browser.mjs` 从公司下载节点 `/playwright` 装（只装完整版，不装 headless shell）。
+Same content in all three (prod deps have no native modules). Package: `claude/` (dist, bin, extension, PM2 configs, **production node_modules** without `.bin`), `release.json` (project / version / commit / `deps: true`), root `manifest.json` (sha256 per file). Chromium is not packed: `claude/bin/install-browser.mjs` installs the full build (no headless shell) from mirror nodes' `/playwright`.
 
-## 发一个版本（照做）
+## Ship a version
 
-1. 改代码 → `cd claude && npm run build && npm run test:unit`；改了工具行为再跑仓库根的 `pnpm eval`（要放行）。
-2. 版本号：`claude/package.json` 和 `package-lock.json` 的 version（历次 release 提交只改这两处），提交 `release: <版本> —— 一句话`，推 master。
-3. 打包：`cd claude && node scripts/pack-release.mjs --version <版本> --platform all`（输出到仓库根 `release/`，依赖在临时目录按锁文件装一份干净的）。
-4. 验包（可选但建议）：`node test/release-package-e2e.mjs --mirror <下载节点入口>…`——打包→解到空目录→只装 Chromium→冒烟，全程不 npm install。
-5. 上传到安装源 `sz:/opt/baolei-dl/evolve/<项目>/<版本>/<文件>`：先在 sz 上 `mkdir -p` 三个目录，再用堡垒机 `transfer_link`（upload）各传一个（链接一次性、60 分钟）。
-6. 登记：`node scripts/register-release.mjs <版本> --note "<一句话>"`（先 `--dry-run` 看一眼）。新项目第一版直接稳定版，其余先灰度；转正在面板「自我进化 → 待你处理 → 灰度中的版本」，**只有业主本人能点**。
-7. 看效果：面板「本机服务」设备详情的事件（`component.installed`）、发布中心版本普查（`/api/admin/releases/census?project=…`）。
+1. Change code → `cd claude && npm run build && npm run test:unit`; tool behaviour changed → `pnpm eval` at repo root (must pass).
+2. Bump `version` in `claude/package.json` + `package-lock.json` only; commit `release: <v> —— <中文一句话>`; push master.
+3. Pack: `cd claude && node scripts/pack-release.mjs --version <v> --platform all` (→ repo-root `release/`; deps installed clean from the lockfile in a temp dir).
+4. Verify (recommended): `node test/release-package-e2e.mjs --mirror <entry>…` — pack → unpack to an empty dir → Chromium only → smoke; no npm install.
+5. Upload to `sz:/opt/baolei-dl/evolve/<project>/<v>/<file>`: `mkdir -p` the three dirs on sz, then one bastion `transfer_link` (upload, single use, 60 min) per file.
+6. Register: `node scripts/register-release.mjs <v> --note "<中文一句话>"` (try `--dry-run` first). A new project's first version becomes stable; later ones start as canary. Promotion: panel 自我进化 → 待你处理 → 灰度中的版本, **owner only**.
+7. Watch: panel 本机服务 device events (`component.installed`), release census `/api/admin/releases/census?project=…`.
 
-## 本机服务那一侧（代码在堡垒机仓库）
+## Local-host side (code in the baolei repo)
 
-- 组件实现：baolei `local-host/ankotti-local/src/reconcile/handlers/component/browser_mcp.rs`；说明在 baolei `local-host/README.md`「Browser MCP」。
-- 流程：签名清单 → 下载节点下包（`<入口>/ankotti-dl/…`）→ 解包逐个核 sha256 + 核 release.json → `install-browser.mjs` → `release-smoke.mjs` → `host-switch.mjs`（等浏览器空闲 ≤ 5 分钟、PM2 换版本、/health 核版本，不健康自己退回）。
-- 「本机在跑哪个版本」= `~/.ankotti/browser-mcp/state.json` 的 `current`（本机服务、ai-kit、启动器 `shim.mjs` 共用）；本机服务换好写 `managedBy: "ankotti-local"`，ai-kit ≥ 1.36.1 见了就停手。
-- 下发项「浏览器 MCP 保持最新」（组件 `localmcpbrower`，所有设备，空闲 10 分钟生效）已建。下发项 AI 可以直接建 / 改 / 撤（免验证码，审计写「AI 按本人指示操作」），做错了 `POST /api/admin/local-hosts/items/:id/restore {revision}` 或面板「历史版本 / 退回」。
+- Component: baolei `local-host/ankotti-local/src/reconcile/handlers/component/browser_mcp.rs`; notes in baolei `local-host/README.md` "Browser MCP".
+- Flow: signed assignment → download via mirror nodes (`<entry>/ankotti-dl/…`) → unpack, sha256 every file, check release.json → `install-browser.mjs` → `release-smoke.mjs` → `host-switch.mjs` (wait ≤ 5 min for an idle browser, swap PM2, check /health version, restore the old version itself if unhealthy).
+- Running version = `~/.ankotti/browser-mcp/state.json` `current` (shared by local host, ai-kit, launcher). After a local-host switch it carries `managedBy: "ankotti-local"`; ai-kit ≥ 1.36.1 then stands down.
+- Desired item 「浏览器 MCP 保持最新」 (component `localmcpbrower`, all devices, idle 10 min) exists. AI may change desired items directly (audit says 「AI 按本人指示操作」); roll back with `POST /api/admin/local-hosts/items/:id/restore {revision}` or the panel's 历史版本 / 退回.
 
-## 踩过的坑
+## Pitfalls
 
-- Linux 上 npm 的 `node_modules/.bin` 是符号链接：打包时整个跳过（遍历时就跳，不能先遍历再过滤）。
-- Git Bash 的 GNU tar 把 `C:\…` 里的冒号当远程主机：解包用相对路径（`release-package-e2e.mjs`）。
-- Windows 上 `npm.cmd` 带 `shell: true` 会报 DEP0190：经 `cmd.exe /d /s /c` 调。
-- 完整版 Chromium 在 Linux / macOS 上临时目录太长会因 SingletonSocket 路径超长起不来（3.0.2 修，`src/paths.ts` 短目录 `/tmp/lmb-<id>`）。
-- 换版本时有别的会话在用浏览器：`host-switch.mjs` 退出码 3、什么都不动；手动测试可 `--idle-min 1`（仍不会打断正在执行的调用）。
+- npm `node_modules/.bin` entries are symlinks on Linux: skip `.bin` while walking (filtering afterwards is too late).
+- Git Bash GNU tar treats the colon in `C:\…` as a remote host: unpack with relative paths.
+- Windows `npm.cmd` with `shell: true` → DEP0190: call through `cmd.exe /d /s /c`.
+- Full Chromium on Linux / macOS dies if the temp dir is long (SingletonSocket path limit): fixed in 3.0.2 (`src/paths.ts`, short `/tmp/lmb-<id>`).
+- Another session using the browser during a switch: `host-switch.mjs` exits 3 and changes nothing; for manual tests use `--idle-min 1` (still never interrupts an in-flight call).
