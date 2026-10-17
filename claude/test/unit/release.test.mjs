@@ -163,3 +163,24 @@ test('install-browser: 先按顺序试下载节点的 /playwright,公共源最�
   ]);
   assert.deepEqual(downloadHosts([]), ['https://cdn.npmmirror.com/binaries/playwright']);
 });
+
+test('host-switch: 参数、空闲、健康、数据目录(绝不放进版本目录)', async () => {
+  const hs = await import('../../bin/host-switch.mjs');
+  const a = hs.parseArgs(['--to', '/v/3.0.3', '--version', '3.0.3', '--idle-min', 'x']);
+  assert.deepEqual(a, { to: '/v/3.0.3', version: '3.0.3', from: null, idleMin: 10, waitMin: 15, manager: 'ankotti-local' });
+  const now = 1_000_000;
+  assert.equal(hs.isIdle([{ inFlight: 0, lastCallAt: null }, null], now, 600_000), true);
+  assert.equal(hs.isIdle([{ inFlight: 1, lastCallAt: null }], now, 600_000), false);
+  assert.equal(hs.isIdle([{ inFlight: 0, lastCallAt: now - 60_000 }], now, 600_000), false);
+  assert.equal(hs.isIdle([{ inFlight: 0, lastCallAt: now - 700_000 }], now, 600_000), true);
+  assert.equal(hs.isIdle([{ browserSessions: 0 }], now, 600_000), false, '报不了活动的老版本不算空闲');
+  assert.equal(hs.healthy({ status: 'ok', browserAlive: true, version: '3.0.3' }, '3.0.3', true), true);
+  assert.equal(hs.healthy({ status: 'ok', browserAlive: true }, '3.0.3', true), false, '新版本必须报版本号');
+  assert.equal(hs.healthy({ status: 'ok', browserAlive: true }, '2.3.0', false), true);
+  const to = path.resolve('/c/3.0.3');
+  const base = path.resolve('/home/u/.ankotti/browser-mcp');
+  assert.equal(hs.pickDataRoot('E:/localmcp-data', null, to, base), 'E:/localmcp-data');
+  assert.equal(hs.pickDataRoot(null, 'E:\localmcp-data', to, base), 'E:\localmcp-data');
+  assert.equal(hs.pickDataRoot(null, path.join(to, 'claude', 'storage'), to, base), path.join(base, 'data'), '挑到版本目录里的不要');
+  assert.equal(hs.pickDataRoot(null, null, to, base), path.join(base, 'data'));
+});
