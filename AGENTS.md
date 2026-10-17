@@ -8,8 +8,11 @@
 
 | 你要做什么 | 读哪份 |
 |---|---|
+| **开工先看**：现状、红线、去哪找（一屏） | **`.ankotti/MEMORY.md`** |
 | **改代码前**：升级方向、模块边界、AI 浏览器工位分期 | **`docs/architecture.md`**（新增领域或改边界先改它） |
-| 在**别的机器**上安装/升级 | **`UPDATE-PROMPT.md`** —— 唯一权威,整段贴给那台机的 AI 即可 |
+| **发版**（打包、上传、登记、本机服务 / ai-kit 两条更新通道） | **`docs/memory/release.md`**（照着做；脚本 `claude/scripts/pack-release.mjs`、`register-release.mjs`） |
+| 员工电脑怎么拿到新版 | 不用人管：堡垒机本机服务自动装 / 更新（默认通道），ai-kit 兜底；见 `docs/memory/release.md` |
+| 在**别的机器**上手动安装/升级（开发者、没接堡垒机的机器） | **`UPDATE-PROMPT.md`** —— 整段贴给那台机的 AI 即可 |
 | 部署时逐步执行 + 故障处置 | `AI-DEPLOY.md` |
 | 了解工具怎么配合用 | `USAGE.md` |
 | 了解协议/架构为什么这么设计、踩过哪些坑 | **`MCP-V2-PLAN.md`**(含七条踩坑清单) |
@@ -86,7 +89,8 @@ AI 改进代码时只能改被测代码,让 `pnpm eval` 放行;碰到裁判层�
 
 ## 更新本机 MCP
 
-用户说"更新本地 MCP"时:
+员工电脑不用手动更新:堡垒机本机服务 / ai-kit 会在浏览器空闲时自动换到发布中心给的版本(`node ~/.ankotti/ai-kit/browser-mcp.mjs status`
+看本机在跑哪个版本、由谁管)。只有**用 git 装的开发机**,用户说"更新本地 MCP"时才:
 
 ```bash
 node claude/mcp.mjs update

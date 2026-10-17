@@ -184,3 +184,10 @@ test('host-switch: 参数、空闲、健康、数据目录(绝不放进版本目
   assert.equal(hs.pickDataRoot(null, path.join(to, 'claude', 'storage'), to, base), path.join(base, 'data'), '挑到版本目录里的不要');
   assert.equal(hs.pickDataRoot(null, null, to, base), path.join(base, 'data'));
 });
+
+test('register-release: 只认这个版本的三种包名,版本号里的点不当通配', async () => {
+  const { findPacks } = await import('../../scripts/register-release.mjs');
+  const names = ['localmcpbrower-3.0.3.tgz', 'localmcpbrower-windows-x86_64-3.0.3.tgz', 'localmcpbrower-linux-x86_64-3.0.3.tgz', 'localmcpbrower-3.0.30.tgz', 'localmcpbrower-3x0x3.tgz', 'other-3.0.3.tgz', 'localmcpbrower-3.0.3.tgz.part'];
+  assert.deepEqual(findPacks(names, '3.0.3').map((p) => p.project).sort(), ['localmcpbrower', 'localmcpbrower-linux-x86_64', 'localmcpbrower-windows-x86_64']);
+  assert.deepEqual(findPacks(['localmcpbrower-3.1.0-rc.1.tgz'], '3.1.0-rc.1').map((p) => p.project), ['localmcpbrower']);
+});
