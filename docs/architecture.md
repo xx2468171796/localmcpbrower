@@ -256,3 +256,7 @@
 - 裁判层（`claude/eval/**`、各 `package.json`、`claude/tsconfig.json`、`.ankotti/evolve.json`、CI）AI 不改；`/health` 字段与 `browserAlive: true` 行为不改；`_meta['localmcp/result']` 与 `{success,data,error}` 外形不改。
 - 改了工具行为 → 更新 `USAGE.md`；改了安装 / 配置 → 更新 `UPDATE-PROMPT.md` 与 `mcp.mjs config`。
 - 发布：合并后由发布中心出包，各机 ai-kit 在浏览器空闲时自动换版本；ai-desk 上手动 `git pull` + 构建 + 重启（第 4 期由管理服务接管）。
+- **发布包是「解开就能跑」的**（3.0.3 起，业主 2026-10-17：同事电脑不再自己装依赖、编译）：`scripts/pack-release.mjs` 把生产依赖打进包（没有原生模块，各平台同一份），
+  按平台分发布项目 `localmcpbrower-<os>-<arch>`（本机服务 ankotti-local 的组件规则），包根 `manifest.json` 带每个文件的 sha256；
+  电脑上只跑 `bin/install-browser.mjs`（Chromium 从公司下载节点装）和 `bin/release-smoke.mjs`。以后浏览器 MCP 的安装 / 更新归本机服务（默认通道），
+  ai-kit 更新器在本机服务铺开前当后备。验收：`test/release-package-e2e.mjs`。

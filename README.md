@@ -80,8 +80,18 @@ HTTP 模式在 Claude Code 里 `/mcp` 重连即可生效；stdio 模式下次会
 看状态：`node ~/.ankotti/ai-kit/browser-mcp.mjs status`；关掉：环境变量 `ANKOTTI_BROWSER_AUTOUPDATE=off`。细节见堡垒机仓库 `docs/architecture.md`「浏览器 MCP 自动更新」。
 
 - **`/health`** 多了 `version`（只认 `claude/package.json`）、`inFlight`、`lastCallAt`、`calls`，供更新器判断空闲。
-- **出发布包**（管理员 / 以后的构建机）：`cd claude && npm run build && node scripts/pack-release.mjs --version <版本>` → `release/localmcpbrower-<版本>.tgz`，
-  放到安装源 `/opt/baolei-dl/evolve/localmcpbrower/<版本>/` 后在堡垒机 `POST /api/admin/releases` 登记，考卷成绩用 `action=eval` 登记。
+- **出发布包**（管理员 / 以后的构建机）：`cd claude && npm run build && node scripts/pack-release.mjs --version <版本> --platform all`，
+  一次出三个包（依赖只装一次，源用 `NPM_REGISTRY` 指的公司下载节点）：`localmcpbrower-<版本>.tgz`（ai-kit 更新器用）、
+  `localmcpbrower-windows-x86_64-<版本>.tgz` / `localmcpbrower-linux-x86_64-<版本>.tgz`（本机服务 ankotti-local 用，发布项目按平台分开）。
+  3.0.3 起包里**自带生产依赖**（`claude/node_modules`，没有原生模块，各平台同一份）和根上的 `manifest.json`（每个文件的 sha256）：
+  员工电脑解开就能跑，不再 `npm install`、不编译；只有 Chromium 按平台不同，由 `node claude/bin/install-browser.mjs --mirror <下载节点入口>…`
+  从下载节点的 `/playwright` 装（只装完整版，不装用不到的 headless shell；公共源 npmmirror 最后才试）。
+  包放到安装源 `/opt/baolei-dl/evolve/<发布项目>/<版本>/` 后在堡垒机 `POST /api/admin/releases` 登记，考卷成绩用 `action=eval` 登记；
+  下载节点经 `<入口>/ankotti-dl/evolve/…` 就能拿到同一个包（sha256 一致），电脑上不用连深圳安装源。
+- **验发布包**：`cd claude && npm run build && node test/release-package-e2e.mjs [--mirror <入口>]…`——打包 → 解到空目录 → 只装 Chromium → 冒烟，
+  全程不跑 npm install（2026-10-17 Windows / ubuntu-244 各 5/5，Chromium 从内网节点 5～8 秒装好）。
+- **以后由本机服务接管**：员工电脑上的本机服务 ankotti-local（堡垒机仓库 `docs/local-host-design.md` §10 / 第 4 期）按「默认通道」装和更新浏览器 MCP，
+  ai-kit 更新器在本机服务铺到每台电脑之前继续当后备。
 - 断线续接实测：`node claude/test/shim-reconnect.mjs`。
 
 ## 考卷（自动评测）与工具调用遥测
