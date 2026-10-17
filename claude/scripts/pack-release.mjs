@@ -39,12 +39,14 @@ function arg(name) {
   return i > 0 ? process.argv[i + 1] : undefined;
 }
 
-function walk(root, rel, out) {
+/** skip(rel) 为真的不进包(连同下面的东西) */
+function walk(root, rel, out, skip = () => false) {
+  if (skip(rel)) return;
   const abs = path.join(root, rel);
   const st = fs.lstatSync(abs);
   if (st.isSymbolicLink()) throw new Error(`包里不放符号链接:${rel}`);
   if (st.isDirectory()) {
-    for (const name of fs.readdirSync(abs).sort()) walk(root, path.posix.join(rel, name), out);
+    for (const name of fs.readdirSync(abs).sort()) walk(root, path.posix.join(rel, name), out, skip);
   } else if (st.isFile()) {
     out.push(rel);
   }
@@ -123,11 +125,11 @@ export function prodDeps(root) {
   return dir;
 }
 
-/** 依赖目录里要进包的文件(相对 depsDir;不带 node_modules/.bin) */
+/** 依赖目录里要进包的文件(相对 depsDir;不带 .bin:Linux / macOS 上是符号链接,Windows 上是 .cmd,运行时都不用) */
 function depFiles(depsDir) {
   const rels = [];
-  walk(depsDir, 'node_modules', rels);
-  return rels.filter((rel) => !rel.startsWith('node_modules/.bin/'));
+  walk(depsDir, 'node_modules', rels, (rel) => path.posix.basename(rel) === '.bin');
+  return rels;
 }
 
 /** 本机服务认的平台名(和它给自己定的发布项目 local-host-<os>-<arch> 同一套) */

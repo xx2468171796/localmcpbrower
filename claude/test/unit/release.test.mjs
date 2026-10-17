@@ -136,6 +136,8 @@ test('pack: 只带运行要的文件,版本号写进 package.json / 锁文件', 
   fs.mkdirSync(path.join(deps, 'node_modules', '.bin'), { recursive: true });
   fs.writeFileSync(path.join(deps, 'node_modules', 'zod', 'index.js'), 'zod');
   fs.writeFileSync(path.join(deps, 'node_modules', '.bin', 'tsc'), 'bin');
+  // Linux 上 .bin 里是符号链接:要整个跳过,不能报「不放符号链接」(Windows 没权限建链接就只测普通文件)
+  try { fs.symlinkSync('../zod/index.js', path.join(deps, 'node_modules', '.bin', 'zod')); } catch { /* 没权限建符号链接 */ }
   const b = pack({ root, version: '2.4.1-rc.1', out, commit: 'abc', depsDir: deps, platform: 'linux-x86_64' });
   assert.equal(b.project, 'localmcpbrower-linux-x86_64');
   assert.equal(path.basename(b.file), 'localmcpbrower-linux-x86_64-2.4.1-rc.1.tgz');
