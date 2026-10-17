@@ -1,5 +1,6 @@
 // 自动更新相关的单测:活动计数(src/activity.ts)、shim 断线续接(bin/session-relay.mjs)、发布包(scripts/pack-release.mjs)
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,6 +9,7 @@ import zlib from 'node:zlib';
 import { Activity, packageVersion } from '../../dist/activity.js';
 import { LineSplitter, REPLAY_ID_PREFIX, SessionRelay } from '../../bin/session-relay.mjs';
 import { pack, tarGz } from '../../scripts/pack-release.mjs';
+import { downloadHosts } from '../../bin/install-browser.mjs';
 
 test('Activity: inFlight 随调用增减,lastCallAt 记开始和结束,结束函数重复调用只算一次', () => {
   let now = 1000;
@@ -121,13 +123,41 @@ test('pack: 只带运行要的文件,版本号写进 package.json / 锁文件', 
   const out = path.join(root, 'out');
   const a = pack({ root, version: '2.4.1-rc.1', out, commit: 'abc' });
   const files = untar(fs.readFileSync(a.file));
-  assert.deepEqual([...files.keys()].sort(), ['claude/bin/shim.mjs', 'claude/dist/server.js', 'claude/extension/manifest.json', 'claude/mcp.mjs', 'claude/package-lock.json', 'claude/package.json', 'release.json']);
+  assert.deepEqual([...files.keys()].sort(), ['claude/bin/shim.mjs', 'claude/dist/server.js', 'claude/extension/manifest.json', 'claude/mcp.mjs', 'claude/package-lock.json', 'claude/package.json', 'manifest.json', 'release.json'], '开发机自己的 node_modules 不进包');
   assert.equal(JSON.parse(files.get('claude/package.json')).version, '2.4.1-rc.1');
   assert.equal(JSON.parse(files.get('claude/package-lock.json')).packages[''].version, '2.4.1-rc.1');
   assert.equal(JSON.parse(files.get('release.json')).commit, 'abc');
+  assert.equal(JSON.parse(files.get('release.json')).deps, false);
+  assert.equal(a.project, 'localmcpbrower');
   assert.match(a.sha256, /^[0-9a-f]{64}$/);
+  // 带依赖 + 平台:依赖从 depsDir 来(不带 .bin),发布项目和文件名带平台,manifest 核得上每个文件
+  const deps = path.join(root, 'deps');
+  fs.mkdirSync(path.join(deps, 'node_modules', 'zod'), { recursive: true });
+  fs.mkdirSync(path.join(deps, 'node_modules', '.bin'), { recursive: true });
+  fs.writeFileSync(path.join(deps, 'node_modules', 'zod', 'index.js'), 'zod');
+  fs.writeFileSync(path.join(deps, 'node_modules', '.bin', 'tsc'), 'bin');
+  const b = pack({ root, version: '2.4.1-rc.1', out, commit: 'abc', depsDir: deps, platform: 'linux-x86_64' });
+  assert.equal(b.project, 'localmcpbrower-linux-x86_64');
+  assert.equal(path.basename(b.file), 'localmcpbrower-linux-x86_64-2.4.1-rc.1.tgz');
+  const bf = untar(fs.readFileSync(b.file));
+  assert.equal(bf.get('claude/node_modules/zod/index.js').toString(), 'zod');
+  assert.ok(!bf.has('claude/node_modules/.bin/tsc'));
+  assert.equal(JSON.parse(bf.get('release.json')).project, 'localmcpbrower-linux-x86_64');
+  const m = JSON.parse(bf.get('manifest.json')).files;
+  assert.deepEqual(Object.keys(m).sort(), [...bf.keys()].filter((k) => k !== 'manifest.json').sort());
+  for (const [k, sha] of Object.entries(m)) assert.equal(createHash('sha256').update(bf.get(k)).digest('hex'), sha, k);
+  assert.throws(() => pack({ root, version: '2.4.1', out, commit: 'abc', platform: 'windows-arm' }), /平台不认识/);
   assert.throws(() => pack({ root, version: 'bad version', out, commit: 'abc' }), /版本号不合法/);
   fs.rmSync(path.join(root, 'package-lock.json'));
   assert.throws(() => pack({ root, version: '2.4.1', out, commit: 'abc' }), /package-lock\.json/);
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('install-browser: 先按顺序试下载节点的 /playwright,公共源最后,重复的去掉', () => {
+  assert.deepEqual(downloadHosts(['--mirror', 'http://a:18790/c.x/', '--mirror', 'http://b/c.y', '--mirror', 'http://a:18790/c.x']), [
+    'http://a:18790/c.x/playwright',
+    'http://b/c.y/playwright',
+    'https://cdn.npmmirror.com/binaries/playwright',
+  ]);
+  assert.deepEqual(downloadHosts([]), ['https://cdn.npmmirror.com/binaries/playwright']);
 });
