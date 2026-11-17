@@ -151,7 +151,7 @@ const SERVER_INSTRUCTIONS = `本地浏览器操控 MCP。工具配合要点:
 - 现有工具做不到的浏览器能力(模拟地理位置 / 网速 / 设备、读性能指标等)用 cdp_send 直接发 CDP 命令。
 - 失败结果带错误码 code:DESK_PAUSED = 人正在接管,等一会儿再试,别换别的办法硬做;DOMAIN_BLOCKED = 网站不在本工位白名单,别绕。
 - snapshot/click/type/hover 已能穿透 iframe(含跨域),iframe 内元素同样带 ref、可直接操作。
-- 需要并行多任务或多账号隔离时用 space_new 开独立工作区(cookie/登录态互不干扰),space_switch 切换,space_list 查看。
+- 需要并行多任务或多账号隔离时用 space_new 开独立工作区(cookie/登录态互不干扰),space_switch 切换,space_list 查看。多账号要防关联(每个账号一套独立设备指纹 + 自己的代理)时给 space_new 带 fingerprint: true。
 - 自家站点的拼图滑块(页面 <html data-yz-slider="1">,或「拖动滑块完成拼图」)不用叫人:堡垒机 list_assets 搜「AI 测试通行码」取域名对得上的那条 → get_asset otp=true 拿 8 位码 → 照资产介绍用 execute_js 提交;没有这条资产或提交失败才叫人。
 - 遇到验证码 / 扫码 / 登录等必须人来处理的页面:先在对话里告诉用户要做什么,再调 wait_for_human —— 浏览器平时无头,这时会自动弹出可见窗口(登录态和页面原样带过去);人处理完调 hide_window 收起窗口。`;
 
@@ -568,7 +568,7 @@ function createMcpServer(sessionId: string = STDIO_SESSION_ID): McpServer {
 
   server.registerTool('space_new', {
     title: '新建工作区',
-    description: '新建并切换到一个隔离工作区，拥有独立的 userDataDir（cookie/登录态与其它工作区完全隔离）。用于并行跑多任务或同站多账号，互不污染。已存在同名则直接切过去。headed 一般不用给：默认无头，要人工时 wait_for_human 会自动弹窗。每个工作区有固定身份（屏幕、语言；可选 proxy 代理，时区跟出口 IP；可选 humanize 拟人操作），网站看来是同一个回访用户；被反爬拦时开一个带 proxy / humanize 的工作区再试。',
+    description: '新建并切换到一个隔离工作区，拥有独立的 userDataDir（cookie/登录态与其它工作区完全隔离）。用于并行跑多任务或同站多账号，互不污染。已存在同名则直接切过去。headed 一般不用给：默认无头，要人工时 wait_for_human 会自动弹窗。每个工作区有固定身份（屏幕、语言；可选 proxy 代理，时区跟出口 IP；可选 humanize 拟人操作），网站看来是同一个回访用户；被反爬拦时开一个带 proxy / humanize 的工作区再试。要多账号防关联（每个账号像一台不同的电脑）就带 fingerprint: true，用公司指纹浏览器内核，可以同时开多个。',
     inputSchema: SpaceNewSchema,
     outputSchema: ResultEnvelope,
     annotations: { title: '新建工作区', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } satisfies ToolAnnotations,

@@ -301,13 +301,13 @@ export async function spaceList(): Promise<ToolResult<{
 }
 
 export async function spaceNew(input: unknown): Promise<ToolResult<{
-  name: string; created: boolean; headed: boolean; reason?: string; active: string; proxy: string | null; humanize: boolean | null; restarted?: boolean;
+  name: string; created: boolean; headed: boolean; reason?: string; active: string; proxy: string | null; humanize: boolean | null; restarted?: boolean; fingerprint?: true;
 }>> {
   try {
-    const { name, headed, proxy, humanize } = parseInput(SpaceNewSchema, input);
+    const { name, headed, proxy, humanize, fingerprint } = parseInput(SpaceNewSchema, input);
     const res = await getBrowserManager().createSpace(name, headed, {
       ...(proxy !== undefined ? { proxy } : {}), ...(humanize !== undefined ? { humanize } : {}),
-    });
+    }, fingerprint);
     return { success: true, data: { ...res, active: getBrowserManager().getActiveSpace() } };
   } catch (error) {
     return failFrom(error);

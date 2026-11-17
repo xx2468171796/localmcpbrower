@@ -251,6 +251,22 @@
 **做不到的（如实写清）**：没有 GPU 的 Linux 机器（工位机）WebGL 只能是 SwiftShader 软件渲染，这是硬特征，原生改不了、JS 改了又是谎言，不改；体检照实报。canvas / 音频指纹噪声需要改内核（CloakBrowser 那一层），不做。
 **Linux 字体**：工位机 / Linux 本机装 CJK、彩色 emoji 和与 Windows 字体等宽的开源字体（`deploy/desk/install.sh`、`mcp.mjs install` 在 Linux 上提示 / 安装），缺字体是被拦的常见原因。
 
+### 12.1 指纹环境工作区（2026-11-18，业主要求把指纹浏览器并进来）
+
+`space_new({ fingerprint: true })` 开的工作区不由本服务启动浏览器，而是交给公司基建**浏览器核心 powerbrowser-core**
+（仓库 `admin/powerbrowser`，接入合同 `docs/core.md`）：指纹内核、每环境代理、页面伪装都在核心里，本服务只经调试端口接管页面。
+
+| 模块 | 负责 | 不负责 |
+|---|---|---|
+| **新** `fingerprint-core.ts` | 把核心当子进程拉起（握手行 → 端口 + 令牌）、按工作区名找 / 建环境（名字 `mcp-<工作区>`）、开 / 关、换代理；本进程退出即关 stdin，核心自己收尾 | 指纹怎么生成、代理怎么转发（核心的事） |
+| `browser.ts` | 工作区打了指纹标记（profile 目录里的 `fingerprint.json`，记环境 ID）就走 `launchFingerprintSpace`：`connectOverCDP` 接管，之后和普通工作区走同一套会话 / 标签页 / 工具 | — |
+
+- **第 12 节的规则只管本服务自己启动的浏览器**：「不做 JS 指纹伪装」对普通工作区不变（`stealth-check` 仍须 0 项）；指纹环境是业主明确要的另一种工作区，伪装由核心负责。
+- **不变量**：工作区种类建好后不能换（指纹 ↔ 普通，换了登录态和身份对不上）；指纹环境一定有窗口，`switchMode` 对它是空操作；关闭 = 断开连接 + 让核心正常关（核心等 Cookie 落盘），连接已经断了也照样通知核心。
+- **核心放哪**：`~/.ankotti/browser-core/powerbrowser-core.exe` + `browser-mcp.grant`，或环境变量 `POWERBROWSER_CORE` / `POWERBROWSER_CORE_GRANT`；核心数据目录 `<USER_DATA_DIR>-fingerprint`（有头 / 无头两个服务各一份）。没装时工具结果直接说明缺哪个文件。目前只有业主电脑装了，铺给全员等业主发话（发布包还没带核心）。
+- **已知取舍**：核心在带调试端口时不往 Worker 注入伪装（否则 patchright 接管会崩），Worker 里的显卡名 / 语言 / 字体是真实值；`execute_js` 跑在隔离世界，读不到页面脚本层的伪装值（屏幕、显卡名），网站自己的脚本看到的才是伪装后的。
+- **验收**：`node test/fingerprint-e2e.mjs`（独立服务实例，开两个环境：导航、快照、截图、指纹不同、关闭后无残留进程）；单测 `test/unit/fingerprint-core.test.mjs`。
+
 ## 13. 约束
 
 - 裁判层（`claude/eval/**`、各 `package.json`、`claude/tsconfig.json`、`.ankotti/evolve.json`、CI）AI 不改；`/health` 字段与 `browserAlive: true` 行为不改；`_meta['localmcp/result']` 与 `{success,data,error}` 外形不改。

@@ -43,6 +43,7 @@ import { linuxTreeRss } from './proc-tree.js';
 import { deskGate, deskRing } from './desk/runtime.js';
 import { READ_UA_DEFAULTS_SRC, bundledChromiumVersion, cachedUaDefaults, headfulMetadata, majorOf, platformUserAgent, saveUaDefaults, uaVersionToken, type UaDefaults, type UaMetadata } from './user-agent.js';
 import { RecycledSessions, idleLimitMinutes, maxOpenSpaces, needsSentinel } from './space-policy.js';
+import { FingerprintCore, toCoreProxy } from './fingerprint-core.js';
 
 const IS_LINUX = process.platform === 'linux';
 const IS_MAC = process.platform === 'darwin';
@@ -196,6 +197,11 @@ interface Space {
   pageChain: Promise<void>;
   /** 这次启动用的身份(identity.ts);还没启动过为 null */
   identity: Identity | null;
+  /**
+   * 指纹环境工作区(space_new { fingerprint: true }):浏览器不是本服务启动的,而是浏览器核心
+   * (fingerprint-core.ts)按这个环境 ID 打开、我们经调试端口接管。null = 普通工作区。
+   */
+  fingerprint: { profileId: string } | null;
 }
 
 /** ensureHeaded / ensureHeadless 的结果 */
@@ -278,6 +284,7 @@ class BrowserManager {
       prepared: new WeakMap<Page, Promise<void>>(),
       pageChain: Promise.resolve(),
       identity: null,
+      fingerprint: null,
     };
   }
 
@@ -331,7 +338,30 @@ class BrowserManager {
     sp.uaOverride = null;
     // 换形态(keepMode)会把标签页原样重开,不算「被清掉」;其它情况(空闲回收 / 腾位置 / 管理员重启)要让会话知道
     this.wipeSessionPages(sp, !keepMode);
-    try { await ctx.close(); } catch { /* 可能已经没了 */ }
+    try { await this.closeContext(sp, ctx); } catch { /* 可能已经没了 */ }
+  }
+
+  /**
+   * 关一个工作区的浏览器。自己启动的直接关;指纹环境的浏览器是核心的进程:先断开我们的连接,
+   * 再让核心正常关闭它(核心会等浏览器把 cookie 落盘)。
+   */
+  private async closeContext(sp: Space, ctx: BrowserContext | null): Promise<void> {
+    if (!sp.fingerprint) {
+      await ctx?.close();
+      return;
+    }
+    // 连接断了(ctx 为空)浏览器不一定退了:它是核心的进程,照样要让核心关掉,否则窗口一直留着
+    await ctx?.browser()?.close().catch(() => { /* 连接已经断了 */ });
+    await this.fingerprintCore().close(sp.fingerprint.profileId);
+  }
+
+  private core: FingerprintCore | null = null;
+
+  /** 浏览器核心(按需拉起)。数据目录跟着本服务的 profile 走:有头 / 无头两个服务各用各的,不抢锁 */
+  private fingerprintCore(): FingerprintCore {
+    const base = path.resolve(this.config.userDataDir);
+    this.core ??= new FingerprintCore(path.join(path.dirname(base), `${path.basename(base)}-fingerprint`));
+    return this.core;
   }
 
   /** 浏览器没了:清掉各会话失效的页面引用;markRecycled 时给原来有页面的会话打「被清掉过」标记 */
@@ -540,6 +570,7 @@ class BrowserManager {
       return sp.context;
     }
     this.ensureUserDataDir(sp.userDataDir);
+    if (sp.fingerprint) return this.launchFingerprintSpace(sp, sp.fingerprint.profileId);
 
     // 无显示环境自动降级为无头并告警,而不是启动失败(设计文档 §8.3)。
     // Linux 服务器上 HEADLESS=false 会因为找不到 X11/Wayland 直接 launch 失败,
@@ -673,6 +704,26 @@ class BrowserManager {
       }
     }
 
+    const closedEarly = await this.adoptContext(sp, context, headless, uaDefaults, cachedUa !== null);
+    if (closedEarly()) throw new Error(`space '${sp.name}' 浏览器启动后立刻退出了`);
+    if (!relaunched && await this.adoptProxyGeo(sp, context, identity)) {
+      await context.close().catch(() => { /* 已经关了 */ });
+      return this.doLaunchSpace(sp, true);
+    }
+    if (closedEarly()) throw new Error(`space '${sp.name}' 浏览器在查代理出口期间退出了`);
+    sp.context = context;
+    // 托管工位有头:profile 里记着上次的窗口位置时 --start-maximized 也可能不生效,启动后再经 CDP 设一次最大化(不等它)
+    if (deskConfig.managed && !headless) void maximizeAllWindows([context]).catch(() => { /* 尽力而为 */ });
+    return context;
+  }
+
+  /**
+   * 拿到浏览器上下文之后的事(自己启动的和接管指纹环境的都走这里):装工位白名单路由、挂关闭处理、做启动后准备。
+   * 返回一个函数:这期间浏览器是不是已经没了(启动即崩)。
+   */
+  private async adoptContext(
+    sp: Space, context: BrowserContext, headless: boolean, uaDefaults: UaDefaults | null, uaByFlag: boolean,
+  ): Promise<() => boolean> {
     // ── 本服务地址与工位白名单。文档请求白名单为空时原样交回浏览器自己发(不再 Node 代取,见 document-gate.ts)。
     // 装在 **context** 级:页面级 route(set_block_rules)优先匹配,放行时调 route.fallback()
     // 就会落到这里,两者互不冲突。若改成页面级,两个 '**/*' handler 的优先级会打架。
@@ -710,16 +761,27 @@ class BrowserManager {
     // afterLaunch 期间浏览器就没了(启动即崩):上面的 close 处理看 sp.context 还不是它会忽略,这里自己兜住
     let closedEarly = false;
     context.once('close', () => { closedEarly = true; });
-    await this.afterLaunch(sp, context, headless, uaDefaults, cachedUa !== null);
-    if (closedEarly) throw new Error(`space '${sp.name}' 浏览器启动后立刻退出了`);
-    if (!relaunched && await this.adoptProxyGeo(sp, context, identity)) {
-      await context.close().catch(() => { /* 已经关了 */ });
-      return this.doLaunchSpace(sp, true);
+    await this.afterLaunch(sp, context, headless, uaDefaults, uaByFlag);
+    return () => closedEarly;
+  }
+
+  /**
+   * 指纹环境工作区:让浏览器核心按环境 ID 打开(指纹内核 + 这个环境自己的代理),再经调试端口接管。
+   * 一定是有窗口的(无头会改掉指纹);身份(屏幕 / 语言 / 时区 / 代理)全归核心管,这里不加任何启动参数。
+   */
+  private async launchFingerprintSpace(sp: Space, profileId: string): Promise<BrowserContext> {
+    const opened = await this.fingerprintCore().open(profileId);
+    const browser = await chromium.connectOverCDP(opened.cdpHttp, { timeout: 20_000 });
+    const context = browser.contexts()[0];
+    if (!context) {
+      await browser.close().catch(() => { /* noop */ });
+      throw new Error(`space '${sp.name}' 的指纹环境打开了,但没拿到浏览器上下文`);
     }
-    if (closedEarly) throw new Error(`space '${sp.name}' 浏览器在查代理出口期间退出了`);
+    sp.headed = true;
+    sp.identity = loadIdentity(sp.userDataDir, false);   // 只用里面的拟人开关
+    const closedEarly = await this.adoptContext(sp, context, false, null, false);
+    if (closedEarly()) throw new Error(`space '${sp.name}' 的指纹环境启动后立刻退出了`);
     sp.context = context;
-    // 托管工位有头:profile 里记着上次的窗口位置时 --start-maximized 也可能不生效,启动后再经 CDP 设一次最大化(不等它)
-    if (deskConfig.managed && !headless) void maximizeAllWindows([context]).catch(() => { /* 尽力而为 */ });
     return context;
   }
 
@@ -876,6 +938,8 @@ class BrowserManager {
   private async switchMode(sp: Space, headed: boolean): Promise<ModeSwitchResult> {
     // 正在启动 / 正在被别的调用换形态:等它落定再判断,不并发重开同一个 profile(会抢 SingletonLock)
     while (sp.launching) await sp.launching.catch(() => { /* 启动失败也往下走,由下面重开 */ });
+    // 指纹环境一直是有窗口的(无头会改掉指纹),不换形态
+    if (sp.fingerprint) return { headed: true, switched: false, restored: [] };
     if (sp.headed === headed) return { headed, switched: false, restored: [] };
     if (headed) {
       const why = noDisplayReason();
@@ -1051,6 +1115,7 @@ class BrowserManager {
    * 三平台语义一致。幂等:pid 先置空再杀,重复调用不会重复发信号,也永远不抛异常。
    */
   public killChromiumSync(): void {
+    this.core?.stopSync();
     for (const sp of this.spaces.values()) {
       const pid = sp.chromiumPid;
       sp.chromiumPid = null;
@@ -1490,7 +1555,7 @@ class BrowserManager {
   }
 
   /** 列出所有 space 及状态(active/url 按**调用方会话**的视角给) */
-  public listSpaces(): { name: string; active: boolean; alive: boolean; headed: boolean; url: string | null }[] {
+  public listSpaces(): { name: string; active: boolean; alive: boolean; headed: boolean; url: string | null; fingerprint?: true }[] {
     const sessionId = currentSessionId();
     const activeName = this.spaceNameFor(sessionId);
     return [...this.spaces.values()].map((sp) => {
@@ -1502,6 +1567,7 @@ class BrowserManager {
         alive: this.isSpaceAlive(sp),
         headed: sp.headed,
         url: page && !page.isClosed() ? page.url() : null,
+        ...(sp.fingerprint ? { fingerprint: true as const } : {}),
       };
     });
   }
@@ -1534,8 +1600,8 @@ class BrowserManager {
    * 代理变了而浏览器正开着 → 关掉按新代理重开(登录态在 profile 里,不丢)。
    */
   public async createSpace(
-    name: string, headed?: boolean, identity: { proxy?: string; humanize?: boolean } = {},
-  ): Promise<{ name: string; created: boolean; headed: boolean; reason?: string; proxy: string | null; humanize: boolean | null; restarted?: boolean }> {
+    name: string, headed?: boolean, identity: { proxy?: string; humanize?: boolean } = {}, fingerprint?: boolean,
+  ): Promise<{ name: string; created: boolean; headed: boolean; reason?: string; proxy: string | null; humanize: boolean | null; restarted?: boolean; fingerprint?: true }> {
     const clean = name.trim();
     if (!clean) throw new Error('space 名不能为空');
     if (!/^[A-Za-z0-9_-]{1,40}$/.test(clean)) {
@@ -1552,6 +1618,9 @@ class BrowserManager {
     }
     let created = false;
     let reason: string | undefined;
+    // 这个工作区是不是指纹环境:记在它的目录里(fingerprint.json),定了就不变
+    const kind = this.resolveFingerprintKind(clean, fingerprint);
+    if (kind) return this.createFingerprintSpace(clean, identity);
     if (!this.spaces.has(clean)) {
       const fresh = this.newSpaceState(clean, this.spaceDirFor(clean));
       if (headed !== undefined) {
@@ -1591,6 +1660,66 @@ class BrowserManager {
     };
   }
 
+  private static readonly FINGERPRINT_MARK = 'fingerprint.json';
+
+  /** 工作区是不是指纹环境(读它目录里的标记);和这次要求的不一致就明说,不悄悄换一种浏览器 */
+  private resolveFingerprintKind(name: string, wanted: boolean | undefined): boolean {
+    const marked = name !== DEFAULT_SPACE && fs.existsSync(path.join(this.spaceDirFor(name), BrowserManager.FINGERPRINT_MARK));
+    const exists = this.spaces.has(name) || (name !== DEFAULT_SPACE && fs.existsSync(this.spaceDirFor(name)));
+    if (wanted === undefined) return marked;
+    if (wanted && name === DEFAULT_SPACE) throw new Error('默认工作区不能是指纹环境;请 space_new 一个新名字并带 fingerprint: true');
+    if (exists && wanted !== marked) {
+      throw new Error(marked
+        ? `工作区 '${name}' 是指纹环境,不能当普通工作区用;换个名字新建`
+        : `工作区 '${name}' 已经是普通工作区(里面有登录态),不能改成指纹环境;换个名字新建`);
+    }
+    return wanted;
+  }
+
+  /**
+   * 新建 / 切到一个指纹环境工作区:环境本身(指纹、代理、cookie)存在浏览器核心那边,名字是 mcp-<工作区名>。
+   * 给了 proxy 就改环境的代理(已经开着则重开);拟人开关仍记在工作区自己的 identity.json。
+   */
+  private async createFingerprintSpace(
+    name: string, identity: { proxy?: string; humanize?: boolean },
+  ): Promise<{ name: string; created: boolean; headed: boolean; proxy: string | null; humanize: boolean | null; restarted?: boolean; fingerprint: true }> {
+    const dir = this.spaceDirFor(name);
+    const core = this.fingerprintCore();
+    const wanted = identity.proxy?.trim();
+    const ensured = await core.ensureProfile(name, toCoreProxy(wanted));
+    let created = false;
+    let sp = this.spaces.get(name);
+    if (!sp) {
+      this.ensureUserDataDir(dir);
+      fs.writeFileSync(path.join(dir, BrowserManager.FINGERPRINT_MARK), `${JSON.stringify({ profileId: ensured.profileId })}\n`);
+      sp = this.newSpaceState(name, dir);
+      sp.headed = true;
+      sp.baseHeaded = true;
+      this.spaces.set(name, sp);
+      created = true;
+    }
+    sp.fingerprint = { profileId: ensured.profileId };
+    this.sessionSpace.set(currentSessionId(), name);
+    let restarted = false;
+    if (wanted !== undefined && !ensured.created) {
+      while (sp.launching) await sp.launching.catch(() => { /* 起不来就按新代理再起 */ });
+      const self = this.callSpace.getStore() === sp ? 1 : 0;
+      if (sp.context && sp.inflight - self > 0) throw new Error(`工作区 '${name}' 还有别的调用正在用浏览器,现在换代理会打断它们。等那些调用结束后再试`);
+      await core.setProxy(ensured.profileId, toCoreProxy(wanted));
+      if (sp.context) {
+        await this.shutSpaceBrowser(sp, '换了代理,按新代理重开', true);
+        restarted = true;
+      }
+    }
+    const patched = patchIdentity(dir, false, { ...(wanted !== undefined ? { proxy: wanted } : {}), ...(identity.humanize !== undefined ? { humanize: identity.humanize } : {}) });
+    sp.identity = patched.identity;
+    await this.launchSpace(sp);
+    return {
+      name, created, headed: true, proxy: maskProxy(patched.identity.proxy ?? null), humanize: patched.identity.humanize ?? null,
+      ...(restarted ? { restarted } : {}), fingerprint: true,
+    };
+  }
+
   /** 切换调用方会话的 space(必须已存在) */
   public async switchSpace(name: string): Promise<{ name: string }> {
     const clean = name.trim();
@@ -1615,7 +1744,7 @@ class BrowserManager {
     sp.context = null;
     sp.chromiumPid = null;
     sp.sessions.clear();
-    try { await ctx?.close(); } catch { /* noop */ }
+    try { await this.closeContext(sp, ctx); } catch { /* noop */ }
     for (const [sid, spaceName] of this.sessionSpace) {
       if (spaceName === clean) this.sessionSpace.delete(sid);
     }
@@ -1630,8 +1759,8 @@ class BrowserManager {
       sp.context = null;
       sp.chromiumPid = null;
       sp.sessions.clear();
-      if (ctx) {
-        try { await ctx.close(); } catch { /* noop */ }
+      if (ctx || sp.fingerprint) {
+        try { await this.closeContext(sp, ctx); } catch { /* noop */ }
       }
     }
     this.sessionSpace.clear();

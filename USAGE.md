@@ -236,6 +236,13 @@ space_new({ name: "us1", proxy: "http://user:pass@192.168.1.5:3128" })  # 挂代
 space_new({ name: "us1", humanize: true })                          # 拟人操作，记住
 space_new({ name: "us1", proxy: "" })                               # 去掉代理（浏览器开着会自动重开，登录态不丢）
 代理账号密码不进时间线 / 工具结果（打码成 ***）。
+
+指纹环境（多开账号、每个账号要像一台不同的电脑时用；只有装了浏览器核心的 Windows 电脑可用）：
+space_new({ name: "shop1", fingerprint: true })                     # 独立指纹（核数 / 内存 / 平台 / 时区语言等）+ 独立登录态
+space_new({ name: "shop2", fingerprint: true, proxy: "socks5://192.168.1.5:1080" })  # 每个环境自己的代理
+之后所有工具照常用（navigate / snapshot / click / take_screenshot / execute_js …），可以同时开多个、space_switch 来回切。
+和普通工作区的区别：一定有窗口（指纹内核不走无头）；名字一旦建成指纹环境就不能再当普通工作区用（反之亦然）；
+新建约 1.5 秒、切回已开着的环境是即时的；没装核心时 space_new 会直接说明缺什么。
 ```
 
 ---

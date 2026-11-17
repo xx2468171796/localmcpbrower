@@ -67,9 +67,9 @@ await step('navigate', { url: 'https://example.com' });
 await step('execute_js', { script: FIXTURE }, { note: p => brief(p, 40) });
 await step('wait_for_selector', { selector: '#fx-input' });
 await step('type', { selector: '#fx-input', text: 'hello' });
-await step('get_element_text', { selector: 'h1' }, { note: p => brief(p, 40) });
+await step('get_element_text', { selector: '#fx-a' }, { note: p => brief(p, 40) });
 await step('get_element_attribute', { selector: '#fx-a', attribute: 'href' }, { note: p => brief(p, 50) });
-await step('get_page_content', { type: 'text', selector: 'h1' }, { note: p => brief(p, 40) });
+await step('get_page_content', { type: 'text', selector: '#fx-a' }, { note: p => brief(p, 40) });
 await step('fill_form', {
   fields: [
     { selector: '#fx-input', value: 'formval' },
