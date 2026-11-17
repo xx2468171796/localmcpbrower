@@ -34,9 +34,13 @@ export function findPacks(names, version) {
 
 async function panelCookie() {
   const cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.claude.json'), 'utf8')).mcpServers?.baolei;
-  const auth = cfg?.headers?.Authorization ?? cfg?.headers?.authorization;
-  if (!cfg?.url || typeof auth !== 'string') throw new Error('~/.claude.json 里没有 baolei MCP(url + Authorization)');
-  const origin = new URL(cfg.url).origin;
+  // 两种接法:直连(url + Authorization 头),或经本机服务启动器(env 里的 BAOLEI_MCP_URL / BAOLEI_MCP_TOKEN)
+  const token = cfg?.env?.BAOLEI_MCP_TOKEN;
+  const auth = cfg?.headers?.Authorization ?? cfg?.headers?.authorization
+    ?? (typeof token === 'string' && token ? (/^Bearer\s/i.test(token) ? token : `Bearer ${token}`) : undefined);
+  const url = cfg?.url ?? cfg?.env?.BAOLEI_MCP_URL;
+  if (!url || typeof auth !== 'string') throw new Error('~/.claude.json 里没有 baolei MCP(url + Authorization,或 env 里的 BAOLEI_MCP_URL + BAOLEI_MCP_TOKEN)');
+  const origin = new URL(url).origin;
   const t = await fetch(`${origin}/api/auth/ai-ticket`, { method: 'POST', headers: { authorization: auth } });
   if (!t.ok) throw new Error(`换面板票据失败 HTTP ${t.status}`);
   const login = await fetch(`${origin}${(await t.json()).path}`, { redirect: 'manual' });

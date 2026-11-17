@@ -30,6 +30,8 @@ Same content in all three (prod deps have no native modules). Package: `claude/`
 
 ## Pitfalls
 
+- `register-release.mjs` reads the bastion key from `~/.claude.json` `mcpServers.baolei`: either `url` + `headers.Authorization` (direct) or `env.BAOLEI_MCP_URL` + `env.BAOLEI_MCP_TOKEN` (local-host launcher, since 2026-11).
+
 - npm `node_modules/.bin` entries are symlinks on Linux: skip `.bin` while walking (filtering afterwards is too late).
 - Git Bash GNU tar treats the colon in `C:\…` as a remote host: unpack with relative paths.
 - Windows `npm.cmd` with `shell: true` → DEP0190: call through `cmd.exe /d /s /c`.
