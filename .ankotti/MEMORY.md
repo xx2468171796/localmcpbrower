@@ -1,7 +1,7 @@
 # localmcpbrower memory (one screen; open details via the routing table)
 
 ## State (2026-11-18)
-- Stable **3.2.0** (promoted by the owner 2026-11-19), canary **3.3.1** (2026-11-19: 3.3.0 = MCP SDK 2.4.0 + fingerprint workspaces on Linux, core 0.2.12; 3.3.1 = Linux core rebuilt on Ubuntu 20.04, glibc >= 2.31, so Ubuntu 22.04 / Debian 11 work; promotion = owner): release packages bundle production deps, one release project per platform. Staff PCs are installed / updated by the bastion local host ankotti-local (≥ 0.1.6, default channel); ai-kit is the fallback.
+- Stable **3.2.0** (promoted by the owner 2026-11-19), Stable **3.3.1** since 2026-11-19 (3.3.0 = MCP SDK 2.4.0 + fingerprint workspaces on Linux, core 0.2.12; 3.3.1 = Linux core rebuilt on Ubuntu 20.04, glibc >= 2.31, so Ubuntu 22.04 / Debian 11 work; promote on the owner's word with `claude/scripts/promote-release.mjs`): release packages bundle production deps, one release project per platform. Staff PCs are installed / updated by the bastion local host ankotti-local (≥ 0.1.6, default channel); ai-kit is the fallback.
 - MCP SDK 2.4.0 (protocol 2025-11-25). The owner asked for the MCP upgrade on 2026-11-19, which is why the SDK lines in `claude/package.json` were changed by the AI that once; the judge-layer rule below still stands.
 - Browser: patchright 1.63 + full Chromium (headless too; no headless shell); no JS fingerprint spoofing; `node claude/test/stealth-check.mjs` must report 0 findings.
 - 57 tools (smoke 59 steps); PM2 `claudemcp-headless` 3215 / `claudemcp-browser` 3213; clients via `bin/shim.mjs` or launcher `~/.ankotti/browser-mcp/shim.mjs`.

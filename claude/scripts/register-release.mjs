@@ -32,7 +32,7 @@ export function findPacks(names, version) {
   return names.map((file) => ({ file, m: re.exec(file) })).filter((x) => x.m).map((x) => ({ project: x.m[1], file: x.file }));
 }
 
-async function panelCookie() {
+export async function panelCookie() {
   const cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.claude.json'), 'utf8')).mcpServers?.baolei;
   // 两种接法:直连(url + Authorization 头),或经本机服务启动器(env 里的 BAOLEI_MCP_URL / BAOLEI_MCP_TOKEN)
   const token = cfg?.env?.BAOLEI_MCP_TOKEN;

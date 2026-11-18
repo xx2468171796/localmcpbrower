@@ -18,7 +18,7 @@ Same content in all three (prod deps have no native modules). Package: `claude/`
 3. Pack: `cd claude && node scripts/pack-release.mjs --version <v> --platform all` (→ repo-root `release/`; deps installed clean from the lockfile in a temp dir).
 4. Verify (recommended): `node test/release-package-e2e.mjs --mirror <entry>…` — pack → unpack to an empty dir → Chromium only → smoke; no npm install.
 5. Upload to `sz:/opt/baolei-dl/evolve/<project>/<v>/<file>`: `mkdir -p` the three dirs on sz, then one bastion `transfer_link` (upload, single use, 60 min) per file.
-6. Register: `node scripts/register-release.mjs <v> --note "<中文一句话>"` (try `--dry-run` first). A new project's first version becomes stable; later ones start as canary. Promotion: panel 自我进化 → 待你处理 → 灰度中的版本, **owner only**.
+6. Register: `node scripts/register-release.mjs <v> --note "<中文一句话>"` (try `--dry-run` first). A new project's first version becomes stable; later ones start as canary. Promotion: when the owner says so, the AI runs `node scripts/promote-release.mjs <v>` (all three projects; `--status` only looks). The bastion allows the owner's own AI to promote since 2026-11-19 (baolei `ReleaseApproval`); the panel button (自我进化 → 待你处理 → 灰度中的版本) still works. Never promote without the owner's word for that version.
 7. Watch: panel 本机服务 device events (`component.installed`), release census `/api/admin/releases/census?project=…`.
 
 ## Local-host side (code in the baolei repo)
