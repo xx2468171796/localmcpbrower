@@ -23,7 +23,8 @@ export const CORE_RELEASE: { version: string; builds: Readonly<Record<string, Co
   version: '0.2.12',
   builds: {
     'win32-x64': { dir: 'windows-x64', file: 'powerbrowser-core.exe', sha256: 'bda86fe2dd27a320d4cf52cb08d05e67b360a80c6a8305456917d5402998525a', size: 4_242_432 },
-    'linux-x64': { dir: 'linux-x64', file: 'powerbrowser-core', sha256: '769c83b6b20465b0b80faab9d8f2e4da4562be2c192cf326fb377628f52445d9', size: 4_633_872 },
+    // 在 Ubuntu 20.04 上编的(只要求 glibc 2.31):Ubuntu 20.04 / 22.04 / 24.04、Debian 11 / 12 / 13 都能跑
+    'linux-x64': { dir: 'linux-x64-glibc231', file: 'powerbrowser-core', sha256: '88e52618be21318bd2e09e9e7a742c9ef316514789f23539ff93e3db35bc354e', size: 4_659_992 },
   },
 };
 
