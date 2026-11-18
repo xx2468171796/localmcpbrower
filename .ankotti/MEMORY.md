@@ -19,6 +19,7 @@
 | Need | Read |
 |---|---|
 | Release, release projects, local-host takeover, release pitfalls | `docs/memory/release.md` |
+| Service shape, session semantics, client registration, must-know code pitfalls, dev-machine update | `docs/memory/dev-notes.md` |
 | Architecture, anti-detection, desks, boundaries | `docs/architecture.md` |
 | Tool usage | `USAGE.md` |
 | Protocol / pipe design, pitfalls | `MCP-V2-PLAN.md` |
