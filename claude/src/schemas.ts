@@ -67,7 +67,7 @@ export const SpaceNewSchema = SpaceNameSchema.extend({
   prewarm: z.array(z.string().min(1).max(40)).max(12).optional()
     .describe('只和 fingerprint: true 一起用:顺便在后台并行预热这些名字的指纹环境(直连,没有就新建),之后 space_new / space_switch 到它们是即时的。一次要开一批账号时用,比一个个开快几倍。'),
   fingerprint: z.boolean().optional()
-    .describe('true = 指纹环境工作区：用公司指纹浏览器内核，这个工作区有自己独立的一套设备指纹（显卡、字体、屏幕、音频…），时区语言跟出口 IP，网站看来是另一台电脑。多账号 / 多开防关联时用，每个账号一个工作区。一定有窗口；只在新建时定，之后不能改；仅 Windows。'),
+    .describe('true = 指纹环境工作区：用公司指纹浏览器内核，这个工作区有自己独立的一套设备指纹（显卡、字体、屏幕、音频…），时区语言跟出口 IP，网站看来是另一台电脑。多账号 / 多开防关联时用，每个账号一个工作区。一定有窗口（Linux 要有图形界面或虚拟屏）；只在新建时定，之后不能改；支持 Windows 和 Linux，macOS 暂不支持。'),
 });
 
 export const ScrollSchema = z.object({

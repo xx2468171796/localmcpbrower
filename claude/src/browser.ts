@@ -775,6 +775,9 @@ class BrowserManager {
    * 一定是有窗口的(无头会改掉指纹);身份(屏幕 / 语言 / 时区 / 代理)全归核心管,这里不加任何启动参数。
    */
   private async launchFingerprintSpace(sp: Space, profileId: string): Promise<BrowserContext> {
+    // 指纹内核不走无头:没有图形界面的 Linux 先说清楚,别等内核启动失败才报一个看不懂的错
+    const noDisplay = noDisplayReason();
+    if (noDisplay) throw new Error(`指纹环境一定有窗口。${noDisplay}`);
     const opened = await this.fingerprintCore().open(profileId);
     const browser = await chromium.connectOverCDP(opened.cdpHttp, { timeout: 20_000 });
     const context = browser.contexts()[0];

@@ -2,12 +2,18 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseHandshake, toCoreProxy } from '../../dist/fingerprint-core.js';
-import { CORE_RELEASE, looksLikeGrant, sha256Hex } from '../../dist/core-install.js';
+import { CORE_RELEASE, coreBuildFor, looksLikeGrant, sha256Hex } from '../../dist/core-install.js';
 import { maxOpenSpaces } from '../../dist/space-policy.js';
 
 test('核心安装:钉住的版本信息、授权文件格式、校验值', () => {
   assert.match(CORE_RELEASE.version, /^\d+\.\d+\.\d+$/);
-  assert.match(CORE_RELEASE.sha256, /^[0-9a-f]{64}$/);
+  for (const b of Object.values(CORE_RELEASE.builds)) {
+    assert.match(b.sha256, /^[0-9a-f]{64}$/);
+    assert.ok(b.size > 1_000_000);
+  }
+  assert.equal(coreBuildFor('win32', 'x64').file, 'powerbrowser-core.exe');
+  assert.equal(coreBuildFor('linux', 'x64').file, 'powerbrowser-core');
+  assert.equal(coreBuildFor('darwin', 'arm64'), null);
   assert.ok(looksLikeGrant(`${'a'.repeat(120)}.${'B_-9'.repeat(22)}\n`));
   assert.equal(looksLikeGrant('<html>404 not found</html>'), false);
   assert.equal(looksLikeGrant('abc.def'), false);

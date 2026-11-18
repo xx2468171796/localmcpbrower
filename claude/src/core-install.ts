@@ -1,12 +1,13 @@
 /**
  * 浏览器核心(powerbrowser-core)在这台电脑上的安装:第一次用指纹环境时自己从公司下载源取,不用人装。
  *
- *   ~/.ankotti/browser-core/<版本>/powerbrowser-core.exe   核心程序(版本和 sha256 钉在下面,换核心 = 发一版本服务)
+ *   ~/.ankotti/browser-core/<版本>/powerbrowser-core[.exe]  核心程序(各平台的版本和 sha256 钉在下面,换核心 = 发一版本服务)
  *   ~/.ankotti/browser-core/browser-mcp.grant               授权文件(核心自己验签和有效期;过期了重新取一次)
  *
  * 程序按 sha256 校验,对不上不落地;按版本分目录,所以正在跑的旧核心不挡新版本落盘。
  * 环境变量 POWERBROWSER_CORE / POWERBROWSER_CORE_GRANT 指了文件就用指的(开发时用),不下载。
- * 下载源:ANKOTTI_DOWNLOAD_SOURCE(默认公司下载源),路径 browser-core/…
+ * 下载源:ANKOTTI_DOWNLOAD_SOURCE(默认公司下载源),路径 browser-core/<版本>/<平台>/…
+ * 各平台是同一份核心代码(仓库 admin/powerbrowser)编出来的;没有登记的平台(目前 macOS)用到时明说不支持。
  */
 
 import { createHash } from 'node:crypto';
@@ -15,14 +16,23 @@ import os from 'node:os';
 import path from 'node:path';
 
 /** 本服务配套的核心版本(仓库 admin/powerbrowser 的 powerbrowser-core) */
-export const CORE_RELEASE = {
-  version: '0.2.11',
-  sha256: '24a595e2312c7081dd58ffe1fbcd46e85be397cf8799ac01bbe66fa25f40ce0c',
-  size: 4_298_752,
-} as const;
+export interface CoreBuild { dir: string; file: string; sha256: string; size: number }
+
+/** 本服务配套的核心版本(仓库 admin/powerbrowser 的 powerbrowser-core);键 = Node 的 `<platform>-<arch>` */
+export const CORE_RELEASE: { version: string; builds: Readonly<Record<string, CoreBuild>> } = {
+  version: '0.2.12',
+  builds: {
+    'win32-x64': { dir: 'windows-x64', file: 'powerbrowser-core.exe', sha256: 'bda86fe2dd27a320d4cf52cb08d05e67b360a80c6a8305456917d5402998525a', size: 4_242_432 },
+    'linux-x64': { dir: 'linux-x64', file: 'powerbrowser-core', sha256: '769c83b6b20465b0b80faab9d8f2e4da4562be2c192cf326fb377628f52445d9', size: 4_633_872 },
+  },
+};
+
+/** 这台电脑该用哪个核心;没有对应构建就返回 null(纯函数,测试可以传别的平台) */
+export function coreBuildFor(platform: string = process.platform, arch: string = process.arch): CoreBuild | null {
+  return CORE_RELEASE.builds[`${platform}-${arch}`] ?? null;
+}
 
 const GRANT_NAME = 'browser-mcp.grant';
-const EXE_NAME = 'powerbrowser-core.exe';
 const DOWNLOAD_TIMEOUT_MS = 120_000;
 
 export interface CoreFiles { exe: string; grant: string }
@@ -70,17 +80,20 @@ async function ensureExe(): Promise<string> {
     if (!fs.existsSync(fromEnv)) throw new Error(`POWERBROWSER_CORE 指的核心程序不存在:${fromEnv}`);
     return fromEnv;
   }
-  const file = path.join(homeDir(), CORE_RELEASE.version, EXE_NAME);
+  const build = coreBuildFor();
+  if (!build) throw new Error(`指纹环境还不支持这个系统(${process.platform}-${process.arch});目前有 Windows 和 Linux 的 x64`);
+  const file = path.join(homeDir(), CORE_RELEASE.version, build.file);
   if (verifiedExe === file && fs.existsSync(file)) return file;
-  if (fs.existsSync(file) && sha256Hex(fs.readFileSync(file)) === CORE_RELEASE.sha256) {
+  if (fs.existsSync(file) && sha256Hex(fs.readFileSync(file)) === build.sha256) {
     verifiedExe = file;
     return file;
   }
-  const buf = await download(`${CORE_RELEASE.version}/${EXE_NAME}`);
-  if (buf.length !== CORE_RELEASE.size || sha256Hex(buf) !== CORE_RELEASE.sha256) {
-    throw new Error(`下载到的浏览器核心校验不过(大小 ${buf.length},应为 ${CORE_RELEASE.size}),没有安装;稍后再试`);
+  const buf = await download(`${CORE_RELEASE.version}/${build.dir}/${build.file}`);
+  if (buf.length !== build.size || sha256Hex(buf) !== build.sha256) {
+    throw new Error(`下载到的浏览器核心校验不过(大小 ${buf.length},应为 ${build.size}),没有安装;稍后再试`);
   }
   placeFile(file, buf);
+  if (process.platform !== 'win32') fs.chmodSync(file, 0o755);
   console.log(`[core-install] 浏览器核心 ${CORE_RELEASE.version} 已装到 ${file}`);
   verifiedExe = file;
   return file;
@@ -102,7 +115,6 @@ async function ensureGrant(refresh: boolean): Promise<string> {
 
 /** 核心程序和授权文件都就位(缺了就下载);refreshGrant = 授权过期后重新取一次 */
 export async function ensureCore(opts: { refreshGrant?: boolean } = {}): Promise<CoreFiles> {
-  if (process.platform !== 'win32') throw new Error('指纹环境目前只支持 Windows');
   const [exe, grant] = await Promise.all([ensureExe(), ensureGrant(opts.refreshGrant === true)]);
   return { exe, grant };
 }

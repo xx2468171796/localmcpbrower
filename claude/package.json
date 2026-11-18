@@ -1,6 +1,6 @@
 {
   "name": "claudemcp-browser",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "description": "Claude Code MCP browser server — Playwright browser automation over stdio / Streamable HTTP",
   "main": "dist/server.js",
   "type": "module",
@@ -26,11 +26,11 @@
     "test:unit": "tsc && node --test test/unit/"
   },
   "dependencies": {
-    "@modelcontextprotocol/client": "^2.1.0",
-    "@modelcontextprotocol/core": "^2.1.0",
-    "@modelcontextprotocol/express": "^2.0.1",
-    "@modelcontextprotocol/node": "^2.1.0",
-    "@modelcontextprotocol/server": "^2.1.0",
+    "@modelcontextprotocol/client": "^2.4.0",
+    "@modelcontextprotocol/core": "^2.4.0",
+    "@modelcontextprotocol/express": "^2.0.2",
+    "@modelcontextprotocol/node": "^2.1.2",
+    "@modelcontextprotocol/server": "^2.4.0",
     "@mozilla/readability": "^0.6.0",
     "defuddle": "^0.19.4",
     "express": "^5.2.1",

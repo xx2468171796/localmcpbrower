@@ -1,6 +1,6 @@
 /**
  * 指纹环境工作区端到端(space_new { fingerprint: true }):自己起一个独立的 stdio 服务实例(临时 profile 目录,
- * 不碰常驻服务),开两个指纹环境,走真实工具;要求这台电脑装了浏览器核心(~/.ankotti/browser-core)。
+ * 不碰常驻服务),开两个指纹环境,走真实工具;浏览器核心缺了会自动下载;Windows / Linux 都能跑(Linux 要有 DISPLAY)。
  *
  *   node test/fingerprint-e2e.mjs
  *
@@ -79,8 +79,11 @@ await new Promise((r) => setTimeout(r, 6000));
 // 临时目录下不该再有进程(核心随服务退出,浏览器随核心退出)
 let left = '';
 try {
-  left = execFileSync('powershell', ['-NoProfile', '-Command',
-    `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${path.basename(scratch)}*' -and $_.Name -ne 'powershell.exe' } | ForEach-Object { $_.Name } | Sort-Object -Unique`], { encoding: 'utf8', timeout: 30_000 }).trim();
+  left = process.platform === 'win32'
+    ? execFileSync('powershell', ['-NoProfile', '-Command',
+      `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${path.basename(scratch)}*' -and $_.Name -ne 'powershell.exe' } | ForEach-Object { $_.Name } | Sort-Object -Unique`], { encoding: 'utf8', timeout: 30_000 }).trim()
+    // pgrep 没匹配到时退出码 1(= 没有残留);-a 带命令行方便看是谁
+    : execFileSync('sh', ['-c', `pgrep -af '${path.basename(scratch)}' | grep -v pgrep | cut -c1-80 || true`], { encoding: 'utf8', timeout: 30_000 }).trim();
 } catch { left = '(查不了)'; }
 check('退出后没有残留进程', left === '', left.replace(/\s+/g, ' '));
 try { fs.rmSync(scratch, { recursive: true, force: true }); } catch { /* 留给系统清 */ }
