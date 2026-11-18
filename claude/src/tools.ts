@@ -302,13 +302,22 @@ export async function spaceList(): Promise<ToolResult<{
 
 export async function spaceNew(input: unknown): Promise<ToolResult<{
   name: string; created: boolean; headed: boolean; reason?: string; active: string; proxy: string | null; humanize: boolean | null; restarted?: boolean; fingerprint?: true;
+  prewarming?: string[]; prewarmSkipped?: { name: string; reason: string }[];
 }>> {
   try {
-    const { name, headed, proxy, humanize, fingerprint } = parseInput(SpaceNewSchema, input);
+    const { name, headed, proxy, humanize, fingerprint, prewarm } = parseInput(SpaceNewSchema, input);
+    if (prewarm?.length && !fingerprint) throw new ToolError('INVALID_ARGS', 'prewarm 只能和 fingerprint: true 一起用');
     const res = await getBrowserManager().createSpace(name, headed, {
       ...(proxy !== undefined ? { proxy } : {}), ...(humanize !== undefined ? { humanize } : {}),
     }, fingerprint);
-    return { success: true, data: { ...res, active: getBrowserManager().getActiveSpace() } };
+    const warm = prewarm?.length ? getBrowserManager().prewarmFingerprintSpaces(prewarm.filter((n) => n.trim() !== name.trim())) : null;
+    return {
+      success: true,
+      data: {
+        ...res, active: getBrowserManager().getActiveSpace(),
+        ...(warm?.started.length ? { prewarming: warm.started } : {}), ...(warm?.skipped.length ? { prewarmSkipped: warm.skipped } : {}),
+      },
+    };
   } catch (error) {
     return failFrom(error);
   }

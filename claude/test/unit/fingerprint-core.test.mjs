@@ -2,6 +2,24 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseHandshake, toCoreProxy } from '../../dist/fingerprint-core.js';
+import { CORE_RELEASE, looksLikeGrant, sha256Hex } from '../../dist/core-install.js';
+import { maxOpenSpaces } from '../../dist/space-policy.js';
+
+test('核心安装:钉住的版本信息、授权文件格式、校验值', () => {
+  assert.match(CORE_RELEASE.version, /^\d+\.\d+\.\d+$/);
+  assert.match(CORE_RELEASE.sha256, /^[0-9a-f]{64}$/);
+  assert.ok(looksLikeGrant(`${'a'.repeat(120)}.${'B_-9'.repeat(22)}\n`));
+  assert.equal(looksLikeGrant('<html>404 not found</html>'), false);
+  assert.equal(looksLikeGrant('abc.def'), false);
+  assert.equal(sha256Hex(Buffer.from('abc')), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+});
+
+test('指纹环境的同时打开上限单独算:默认 12,0 = 不限', () => {
+  assert.equal(maxOpenSpaces(undefined, 12), 12);
+  assert.equal(maxOpenSpaces('x', 12), 12);
+  assert.equal(maxOpenSpaces('0', 12), Infinity);
+  assert.equal(maxOpenSpaces('20', 12), 20);
+});
 
 test('握手行:就绪、失败、日志行', () => {
   assert.deepEqual(

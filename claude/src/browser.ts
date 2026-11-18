@@ -322,6 +322,8 @@ class BrowserManager {
 
   /** 同时最多开着几个工作区浏览器(含默认),超出先关最久没用的空闲那个;MAX_OPEN_SPACES=0 = 不限 */
   private static readonly MAX_OPEN_SPACES = maxOpenSpaces(process.env['MAX_OPEN_SPACES']);
+  /** 指纹环境单独算(多开账号就是要同时开着一批),默认 12 个;MAX_OPEN_FINGERPRINT_SPACES=0 = 不限 */
+  private static readonly MAX_OPEN_FINGERPRINT_SPACES = maxOpenSpaces(process.env['MAX_OPEN_FINGERPRINT_SPACES'], 12);
 
   /**
    * 关掉一个工作区的浏览器(不删工作区,会话留着,下次调用自动重开)。
@@ -448,10 +450,13 @@ class BrowserManager {
 
   /** 新开一个工作区浏览器之前:已开的够数了,就关掉最久没用、且没有在途调用的那个 */
   private async makeRoomFor(sp: Space): Promise<void> {
-    const open = [...this.spaces.values()].filter((s) => s !== sp && (s.context || s.launching));
-    if (open.length < BrowserManager.MAX_OPEN_SPACES) return;
+    // 普通工作区和指纹环境各算各的上限:开一批指纹环境不会把默认工作区挤掉,反过来也一样
+    const kind = Boolean(sp.fingerprint);
+    const limit = kind ? BrowserManager.MAX_OPEN_FINGERPRINT_SPACES : BrowserManager.MAX_OPEN_SPACES;
+    const open = [...this.spaces.values()].filter((s) => s !== sp && Boolean(s.fingerprint) === kind && (s.context || s.launching));
+    if (open.length < limit) return;
     const victim = open.filter((s) => s.context && s.inflight === 0 && !s.launching).sort((a, b) => a.lastUsed - b.lastUsed)[0];
-    if (victim) await this.shutSpaceBrowser(victim, `同时开着的工作区浏览器已达上限 ${BrowserManager.MAX_OPEN_SPACES} 个,它最久没用`);
+    if (victim) await this.shutSpaceBrowser(victim, `同时开着的${kind ? '指纹环境' : '工作区浏览器'}已达上限 ${limit} 个,它最久没用`);
   }
 
   private newSessionState(): SessionState {
@@ -1687,18 +1692,8 @@ class BrowserManager {
     const core = this.fingerprintCore();
     const wanted = identity.proxy?.trim();
     const ensured = await core.ensureProfile(name, toCoreProxy(wanted));
-    let created = false;
-    let sp = this.spaces.get(name);
-    if (!sp) {
-      this.ensureUserDataDir(dir);
-      fs.writeFileSync(path.join(dir, BrowserManager.FINGERPRINT_MARK), `${JSON.stringify({ profileId: ensured.profileId })}\n`);
-      sp = this.newSpaceState(name, dir);
-      sp.headed = true;
-      sp.baseHeaded = true;
-      this.spaces.set(name, sp);
-      created = true;
-    }
-    sp.fingerprint = { profileId: ensured.profileId };
+    const created = !this.spaces.has(name);
+    const sp = this.adoptFingerprintSpace(name, ensured.profileId);
     this.sessionSpace.set(currentSessionId(), name);
     let restarted = false;
     if (wanted !== undefined && !ensured.created) {
@@ -1718,6 +1713,63 @@ class BrowserManager {
       name, created, headed: true, proxy: maskProxy(patched.identity.proxy ?? null), humanize: patched.identity.humanize ?? null,
       ...(restarted ? { restarted } : {}), fingerprint: true,
     };
+  }
+
+  /** 把一个指纹环境登记成工作区(已登记就只更新环境 ID);不切会话、不开浏览器 */
+  private adoptFingerprintSpace(name: string, profileId: string): Space {
+    let sp = this.spaces.get(name);
+    if (!sp) {
+      const dir = this.spaceDirFor(name);
+      this.ensureUserDataDir(dir);
+      fs.writeFileSync(path.join(dir, BrowserManager.FINGERPRINT_MARK), `${JSON.stringify({ profileId })}
+`);
+      sp = this.newSpaceState(name, dir);
+      sp.headed = true;
+      sp.baseHeaded = true;
+      this.spaces.set(name, sp);
+    }
+    sp.fingerprint = { profileId };
+    return sp;
+  }
+
+  /**
+   * 预热一批指纹环境:后台并行建好并打开(直连;要代理的单独 space_new),不切调用方的会话。
+   * 之后 space_new / space_switch 到它们是即时的。个别失败只记日志,用到时会照常重试并报错。
+   * 返回真正开始预热的名字(已开着的、不是指纹环境的名字跳过)。
+   */
+  public prewarmFingerprintSpaces(names: string[]): { started: string[]; skipped: { name: string; reason: string }[] } {
+    const started: string[] = [];
+    const skipped: { name: string; reason: string }[] = [];
+    for (const raw of [...new Set(names.map((n) => n.trim()))]) {
+      try {
+        if (!/^[A-Za-z0-9_-]{1,40}$/.test(raw)) throw new Error('名称仅允许字母、数字、下划线、连字符,长度 1-40');
+        this.resolveFingerprintKind(raw, true);
+        const existing = this.spaces.get(raw);
+        if (existing?.context || existing?.launching) { skipped.push({ name: raw, reason: '已经开着' }); continue; }
+      } catch (e) {
+        skipped.push({ name: raw, reason: e instanceof Error ? e.message : String(e) });
+        continue;
+      }
+      started.push(raw);
+      void (async () => {
+        const ensured = await this.fingerprintCore().ensureProfile(raw, toCoreProxy(undefined));
+        const sp = this.adoptFingerprintSpace(raw, ensured.profileId);
+        sp.identity ??= patchIdentity(sp.userDataDir, false, {}).identity;
+        await this.launchSpace(sp);
+      })().catch((e: unknown) => {
+        console.warn(`[BrowserManager] 预热指纹环境 '${raw}' 没成功(用到时会再试):${e instanceof Error ? e.message : String(e)}`);
+      });
+    }
+    return { started, skipped };
+  }
+
+  /** 服务启动时调:这台电脑用过指纹环境(有标记的工作区)就先把核心拉起来,第一次打开不用等 */
+  public warmFingerprintCore(): void {
+    try {
+      const root = path.dirname(this.spaceDirFor('x'));
+      const used = fs.existsSync(root) && fs.readdirSync(root).some((d) => fs.existsSync(path.join(root, d, BrowserManager.FINGERPRINT_MARK)));
+      if (used) this.fingerprintCore().warm();
+    } catch { /* 预热是锦上添花 */ }
   }
 
   /** 切换调用方会话的 space(必须已存在) */

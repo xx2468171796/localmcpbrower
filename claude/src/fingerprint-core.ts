@@ -8,18 +8,16 @@
  *   - 我们一直攥着它的 stdin;本进程退出 = stdin 关闭,核心自己关掉所有浏览器再退出,不留孤儿进程。
  *   - 一个数据目录只能有一个核心(有头 / 无头两个服务各用各的目录)。
  *
- * 核心和授权文件放哪:环境变量 POWERBROWSER_CORE / POWERBROWSER_CORE_GRANT,
- * 否则 ~/.ankotti/browser-core/powerbrowser-core.exe 与 browser-mcp.grant(由本机服务 / 发布包放好)。
+ * 核心和授权文件放哪、缺了怎么自己下载:core-install.ts。
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { browserEnv } from './browser-env.js';
+import { ensureCore, grantIsManaged } from './core-install.js';
 
-const HOME_DIR = path.join(os.homedir(), '.ankotti', 'browser-core');
 /** 第一次用要下载浏览器内核(约 190MB),握手等久一点 */
 const HANDSHAKE_TIMEOUT_MS = 240_000;
 const API_TIMEOUT_MS = 60_000;
@@ -59,15 +57,6 @@ export function parseHandshake(line: string): Handshake | { error: string } | nu
   return { port: v['port'], token: v['token'], version: String(v['version'] ?? '') };
 }
 
-function locate(envName: string, fileName: string, what: string): string {
-  const fromEnv = process.env[envName]?.trim();
-  const file = fromEnv || path.join(HOME_DIR, fileName);
-  if (!fs.existsSync(file)) {
-    throw new Error(`这台电脑还没装指纹浏览器核心(找不到${what}:${file})。请管理员经本机服务下发,或设环境变量 ${envName}`);
-  }
-  return file;
-}
-
 export class FingerprintCore {
   private child: ChildProcess | null = null;
   private starting: Promise<Handshake> | null = null;
@@ -82,10 +71,31 @@ export class FingerprintCore {
     return this.starting;
   }
 
-  private spawnCore(): Promise<Handshake> {
-    if (process.platform !== 'win32') return Promise.reject(new Error('指纹环境目前只支持 Windows'));
-    const exe = locate('POWERBROWSER_CORE', 'powerbrowser-core.exe', '核心程序');
-    const grant = locate('POWERBROWSER_CORE_GRANT', 'browser-mcp.grant', '授权文件');
+  /** 提前把核心拉起来(服务启动时调):之后第一次开指纹环境不用等下载和启动。失败只记日志,用到时再报 */
+  warm(): void {
+    void this.start().catch((e: unknown) => {
+      console.warn(`[fingerprint-core] 预热没成功(用到时会再试):${e instanceof Error ? e.message : String(e)}`);
+    });
+  }
+
+  /** 核心已经在跑(不拉起它) */
+  get running(): boolean {
+    return Boolean(this.ready && this.child && this.child.exitCode === null);
+  }
+
+  private async spawnCore(): Promise<Handshake> {
+    const files = await ensureCore();
+    try {
+      return await this.spawnWith(files.exe, files.grant);
+    } catch (e) {
+      // 授权文件过期 / 换过签名:重新取一份再试一次(环境变量指定的文件不替人换)
+      if (!grantIsManaged() || !/授权/.test(e instanceof Error ? e.message : '')) throw e;
+      const fresh = await ensureCore({ refreshGrant: true });
+      return this.spawnWith(fresh.exe, fresh.grant);
+    }
+  }
+
+  private spawnWith(exe: string, grant: string): Promise<Handshake> {
     fs.mkdirSync(this.dataDir, { recursive: true });
     const child = spawn(exe, ['serve', '--data-dir', this.dataDir, '--grant', grant], {
       stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true, env: browserEnv(),
@@ -146,7 +156,7 @@ export class FingerprintCore {
   }
 
   async close(profileId: string): Promise<void> {
-    if (!this.ready || !this.child) return;   // 核心没在跑 = 浏览器也没在跑
+    if (!this.running) return;   // 核心没在跑 = 浏览器也没在跑
     await this.api('POST', `/profiles/${profileId}/close`).catch((e: unknown) => {
       console.warn(`[fingerprint-core] 关闭环境 ${profileId} 失败:${e instanceof Error ? e.message : String(e)}`);
     });

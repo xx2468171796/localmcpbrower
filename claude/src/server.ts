@@ -1127,6 +1127,7 @@ async function runStdio(): Promise<void> {
   // 预热浏览器，失败不阻塞，首个请求会重试
   await getBrowserManager().killOrphans();
   getBrowserManager().startReaper();
+  getBrowserManager().warmFingerprintCore();
   try {
     await getBrowserManager().getContext();
     console.error('[Server] Browser ready (stdio mode)');
@@ -1208,6 +1209,7 @@ async function runHttp(): Promise<void> {
   console.log('[Server] Starting browser...');
   await getBrowserManager().killOrphans();
   getBrowserManager().startReaper();
+  getBrowserManager().warmFingerprintCore();
   try { await getBrowserManager().getContext(); console.log('[Server] Browser ready'); }
   catch (e) { console.error(`[Server] Browser start failed, will retry on first request: ${e instanceof Error ? e.message : String(e)}`); }
   const app = createApp();

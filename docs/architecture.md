@@ -263,7 +263,8 @@
 
 - **第 12 节的规则只管本服务自己启动的浏览器**：「不做 JS 指纹伪装」对普通工作区不变（`stealth-check` 仍须 0 项）；指纹环境是业主明确要的另一种工作区，伪装由核心负责。
 - **不变量**：工作区种类建好后不能换（指纹 ↔ 普通，换了登录态和身份对不上）；指纹环境一定有窗口，`switchMode` 对它是空操作；关闭 = 断开连接 + 让核心正常关（核心等 Cookie 落盘），连接已经断了也照样通知核心。
-- **核心放哪**：`~/.ankotti/browser-core/powerbrowser-core.exe` + `browser-mcp.grant`，或环境变量 `POWERBROWSER_CORE` / `POWERBROWSER_CORE_GRANT`；核心数据目录 `<USER_DATA_DIR>-fingerprint`（有头 / 无头两个服务各一份）。没装时工具结果直接说明缺哪个文件。目前只有业主电脑装了，铺给全员等业主发话（发布包还没带核心）。
+- **核心怎么装（3.2.0，`core-install.ts`）**：第一次用到时自己从公司下载源取（`<ANKOTTI_DOWNLOAD_SOURCE>/browser-core/<版本>/powerbrowser-core.exe` 与 `browser-core/grants/browser-mcp.grant`，源文件在 sz `/opt/baolei-dl/browser-core/`），装到 `~/.ankotti/browser-core/<版本>/`。程序的版本 + sha256 钉在 `CORE_RELEASE`（校验不过不落地）；**换核心 = 传新文件到下载源 + 改 `CORE_RELEASE` + 发一版本服务**。授权文件由核心自己验签，过期时自动重新取一次（续签 = 管理员重新签发后覆盖下载源上的文件）。环境变量 `POWERBROWSER_CORE` / `POWERBROWSER_CORE_GRANT` 可指向本地文件（开发用）。核心数据目录 `<USER_DATA_DIR>-fingerprint`（有头 / 无头两个服务各一份）。
+- **预热与上限（3.2.0）**：服务启动时，这台电脑有指纹环境工作区就先把核心拉起来；`space_new` 的 `prewarm` 在后台并行打开一批环境（`prewarmFingerprintSpaces`，不切会话、失败只记日志）；指纹环境的同时打开上限单独算（默认 12，`MAX_OPEN_FINGERPRINT_SPACES`），不和普通工作区互相挤。实测：开一个约 0.6–0.8 秒，预热过的 `space_new` 4 毫秒。
 - **已知取舍**：核心在带调试端口时不往 Worker 注入伪装（否则 patchright 接管会崩），Worker 里的显卡名 / 语言 / 字体是真实值；`execute_js` 跑在隔离世界，读不到页面脚本层的伪装值（屏幕、显卡名），网站自己的脚本看到的才是伪装后的。
 - **验收**：`node test/fingerprint-e2e.mjs`（独立服务实例，开两个环境：导航、快照、截图、指纹不同、关闭后无残留进程）；单测 `test/unit/fingerprint-core.test.mjs`。
 

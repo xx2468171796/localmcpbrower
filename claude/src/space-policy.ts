@@ -15,12 +15,12 @@ export function idleLimitMinutes(raw: string | undefined, def: number): number {
   return n > 0 ? n : Infinity;
 }
 
-/** MAX_OPEN_SPACES:没设 / 看不懂 → 4;0 → 不限;其它取整且至少 1 */
-export function maxOpenSpaces(raw: string | undefined): number {
+/** MAX_OPEN_SPACES:没设 / 看不懂 → def(普通工作区 4);0 → 不限;其它取整且至少 1 */
+export function maxOpenSpaces(raw: string | undefined, def = 4): number {
   const s = (raw ?? '').trim();
-  if (!s) return 4;
+  if (!s) return def;
   const n = Number(s);
-  if (!Number.isFinite(n) || n < 0) return 4;
+  if (!Number.isFinite(n) || n < 0) return def;
   if (n === 0) return Infinity;
   return Math.max(1, Math.floor(n));
 }

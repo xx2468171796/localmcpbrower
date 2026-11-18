@@ -34,11 +34,15 @@ function check(label, ok, note = '') {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${note ? `  — ${note}` : ''}`);
 }
 
-const MEASURE = `const s = document.createElement('span'); s.style.font = '16px Arial'; s.textContent = 'The quick brown fox jumps over the lazy dog 0123456789'; document.body.appendChild(s); const r = s.getClientRects()[0]; s.remove(); return JSON.stringify({ w: r.width, h: r.height, cores: navigator.hardwareConcurrency, mem: navigator.deviceMemory, tz: Intl.DateTimeFormat().resolvedOptions().timeZone, wd: navigator.webdriver });`;
+const MEASURE = `const s = document.createElement('span'); s.style.font = '16px Arial'; s.textContent = 'The quick brown fox jumps over the lazy dog 0123456789'; document.body.appendChild(s); const r = s.getClientRects()[0]; s.remove(); const ac = new OfflineAudioContext(1, 5000, 44100); const osc = ac.createOscillator(); osc.type = 'triangle'; osc.frequency.value = 10000; const comp = ac.createDynamicsCompressor(); osc.connect(comp); comp.connect(ac.destination); osc.start(0); const data = (await ac.startRendering()).getChannelData(0); let audio = 0; for (let i = 4500; i < 5000; i++) audio += Math.abs(data[i]); const gl = document.createElement('canvas').getContext('webgl'); const ext = gl && gl.getExtension('WEBGL_debug_renderer_info'); const gpu = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : null; return JSON.stringify({ audio, gpu, x: r.x, w: r.width, h: r.height, cores: navigator.hardwareConcurrency, mem: navigator.deviceMemory, tz: Intl.DateTimeFormat().resolvedOptions().timeZone, wd: navigator.webdriver });`;
 const prints = {};
 try {
   for (const name of ['fpa', 'fpb']) {
-    const made = await call('space_new', { name, fingerprint: true });
+    // 开 fpa 时顺便预热 fpb:轮到 fpb 时它已经开着,space_new 应该是即时的
+    if (name === 'fpb') await new Promise((r) => setTimeout(r, 2500));
+    const made = await call('space_new', { name, fingerprint: true, ...(name === 'fpa' ? { prewarm: ['fpb', 'default'] } : {}) });
+    if (name === 'fpa') check('预热:fpb 开始预热,default 被跳过', made.parsed?.data?.prewarming?.join() === 'fpb' && made.parsed?.data?.prewarmSkipped?.[0]?.name === 'default', JSON.stringify(made.parsed?.data?.prewarmSkipped ?? null).slice(0, 90));
+    if (name === 'fpb') check('预热过的环境 space_new 是即时的', made.ms < 400, `${made.ms}ms`);
     check(`${name}: space_new fingerprint`, made.parsed?.success === true && made.parsed?.data?.fingerprint === true, `${made.ms}ms ${JSON.stringify(made.parsed?.data ?? made.parsed).slice(0, 140)}`);
     const nav = await call('navigate', { url: 'https://example.com/' });
     check(`${name}: navigate`, nav.parsed?.success === true, `${nav.ms}ms`);
@@ -51,8 +55,8 @@ try {
     prints[name] = typeof value === 'string' ? JSON.parse(value) : value;
     check(`${name}: execute_js`, Boolean(prints[name]?.w), `${js.ms}ms ${JSON.stringify(prints[name])}`);
   }
-  check('两个环境的指纹不同', prints.fpa?.w !== prints.fpb?.w || prints.fpa?.cores !== prints.fpb?.cores || prints.fpa?.mem !== prints.fpb?.mem,
-    `fpa w=${prints.fpa?.w} fpb w=${prints.fpb?.w}`);
+  check('两个环境的指纹不同', Boolean(prints.fpa?.gpu) && (prints.fpa?.gpu !== prints.fpb?.gpu || prints.fpa?.x !== prints.fpb?.x),
+    `显卡 ${prints.fpa?.gpu?.slice(7, 45)} / ${prints.fpb?.gpu?.slice(7, 45)};排版 x ${prints.fpa?.x} / ${prints.fpb?.x}`);
   check('navigator.webdriver 为 false', prints.fpa?.wd === false && prints.fpb?.wd === false);
   const list = await call('space_list');
   const spaces = list.parsed?.data?.spaces ?? [];

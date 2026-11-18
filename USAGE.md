@@ -242,7 +242,10 @@ space_new({ name: "shop1", fingerprint: true })                     # 独立指�
 space_new({ name: "shop2", fingerprint: true, proxy: "socks5://192.168.1.5:1080" })  # 每个环境自己的代理
 之后所有工具照常用（navigate / snapshot / click / take_screenshot / execute_js …），可以同时开多个、space_switch 来回切。
 和普通工作区的区别：一定有窗口（指纹内核不走无头）；名字一旦建成指纹环境就不能再当普通工作区用（反之亦然）；
-新建约 1.5 秒、切回已开着的环境是即时的；没装核心时 space_new 会直接说明缺什么。
+新建不到 1 秒、切回已开着的环境是即时的；核心第一次用到时自动从公司下载源装好（约 4 MB，另有浏览器内核约 190 MB 只下一次）。
+一次要开一批账号：space_new({ name: "shop1", fingerprint: true, prewarm: ["shop2", "shop3", "shop4"] })
+  # shop1 立刻可用，其余在后台并行打开（直连；要代理的单独 space_new），之后 space_new / space_switch 到它们是即时的
+同时开着的指纹环境默认最多 12 个（和普通工作区的 4 个分开算，超了关最久没用的，再用到自动重开；运维可用 MAX_OPEN_FINGERPRINT_SPACES 调，0 = 不限）。
 ```
 
 ---
